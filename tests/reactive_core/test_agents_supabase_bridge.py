@@ -1,16 +1,14 @@
 """Unit tests for ``agents.supabase_client`` with a mocked Supabase client.
 
 The smoke suite only covers imports/surface/credential failure. These tests
-pin the semantics the bridge promises to mirror from ``mcp-memory/server.py``:
+pin the semantics the bridge promises:
 
-1. Reads never surface soft-deleted memories (``deleted_at IS NOT NULL``).
-2. Project-scoped reads include global (NULL-project) memories via ``or_()``.
-3. ``list_goals`` orders by priority then deadline (NULLs last).
-4. Writes that affect no rows raise loudly — no silent no-ops
+1. ``list_goals`` orders by priority then deadline (NULLs last).
+2. Writes that affect no rows raise loudly — no silent no-ops
    (``store_event``, ``mark_event_processed``).
-5. ``update_goal_progress`` parses JSON-string progress and retries on
+3. ``update_goal_progress`` parses JSON-string progress and retries on
    optimistic-concurrency conflicts before surrendering.
-6. ``audit`` is best-effort — backend failures must never propagate.
+4. ``audit`` is best-effort — backend failures must never propagate.
 
 The supabase-py builder returns ``self`` from every chain method until
 ``execute()``. ``_FakeQuery`` mirrors that contract and records every call,
@@ -89,69 +87,6 @@ def _find(
         if call[0] == name:
             return call
     raise AssertionError(f"method {name!r} was not called; chain={chain!r}")
-
-
-# -- list_memories ---------------------------------------------------------
-
-
-def test_list_memories_excludes_soft_deleted() -> None:
-    """Soft-deleted rows must never leak to agents — MCP parity."""
-    from agents import supabase_client
-
-    cli = _FakeClient()
-    cli.preset("memories", _FakeResult(data=[{"id": 1}]))
-
-    rows = supabase_client.list_memories(client=cli)
-
-    assert rows == [{"id": 1}]
-    is_call = _find(cli.chains["memories"][0], "is_")
-    assert is_call[1] == ("deleted_at", "null"), is_call
-
-
-def test_list_memories_project_filter_includes_global() -> None:
-    """`project=X` must OR-in global (NULL-project) memories, not strict-eq."""
-    from agents import supabase_client
-
-    cli = _FakeClient()
-    cli.preset("memories", _FakeResult(data=[]))
-
-    supabase_client.list_memories(project="jarvis", client=cli)
-
-    chain = cli.chains["memories"][0]
-    or_call = _find(chain, "or_")
-    (query_string,) = or_call[1]
-    assert "project.eq.jarvis" in query_string, query_string
-    assert "project.is.null" in query_string, query_string
-    # Must NOT also apply a strict .eq("project", ...) — that would exclude globals.
-    offenders = [c for c in chain if c[0] == "eq" and c[1][:1] == ("project",)]
-    assert not offenders, offenders
-
-
-def test_list_memories_without_project_skips_project_filter() -> None:
-    from agents import supabase_client
-
-    cli = _FakeClient()
-    cli.preset("memories", _FakeResult(data=[]))
-
-    supabase_client.list_memories(client=cli)
-
-    chain = cli.chains["memories"][0]
-    assert "or_" not in _names(chain)
-    assert not any(c[0] == "eq" and c[1][:1] == ("project",) for c in chain)
-
-
-def test_list_memories_type_filter_uses_strict_eq() -> None:
-    """Type filter is strict (no global fallback) — matches MCP."""
-    from agents import supabase_client
-
-    cli = _FakeClient()
-    cli.preset("memories", _FakeResult(data=[]))
-
-    supabase_client.list_memories(type="feedback", client=cli)
-
-    chain = cli.chains["memories"][0]
-    type_eq = [c for c in chain if c[0] == "eq" and c[1][:1] == ("type",)]
-    assert type_eq and type_eq[0][1] == ("type", "feedback"), type_eq
 
 
 # -- list_goals ------------------------------------------------------------

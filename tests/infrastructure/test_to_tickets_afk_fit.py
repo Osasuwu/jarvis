@@ -220,7 +220,9 @@ def test_load_protected_paths_real_config_has_both_repos():
     assert "SergazyNarynov/redrobot" in config
     # .mcp.json dropped in #1800 — hasn't existed at repo root since
     # commit b807d3d (MCP registration moved to user level).
-    assert "mcp-memory/**" in config["Osasuwu/jarvis"]["guarded"]
+    # mcp-memory/** dropped in #1801 — the directory no longer exists,
+    # the memory stack having been retired along with its Supabase tables.
+    assert "supabase/**" in config["Osasuwu/jarvis"]["guarded"]
     assert "CLAUDE.md" in config["Osasuwu/jarvis"]["hitl"]
     assert any(
         p.startswith("redrobot/driver/") for p in config["SergazyNarynov/redrobot"]["guarded"]
@@ -286,15 +288,16 @@ def test_real_config_jarvis_hitl_file_is_class_3():
     assert verdict.matched_files == ("CLAUDE.md",)
 
 
-def test_real_config_jarvis_mcp_memory_is_class_2():
-    """Proof for #1708 AC: mcp-memory/server.py, previously a blanket AFK-no
-    (class-3-equivalent) hitl entry, now yields class 2 under the guarded
-    bucket — it's a shared surface recoverable via a locked plan, not a
-    categorical security boundary."""
+def test_real_config_jarvis_supabase_path_is_class_2():
+    """supabase/** is a shared surface (consumers outside this repo) —
+    recoverable via a locked plan, not a categorical security boundary.
+    (mcp-memory/** carried the equivalent class-2 guard before #1801 retired
+    the directory; supabase/** is the sole surviving guarded entry for jarvis.)
+    """
     repo_root = Path(__file__).resolve().parents[2]
     config = load_protected_paths(repo_root / "config" / "protected-paths.json")
     verdict = classify_static_paths(
-        ["mcp-memory/server.py"],
+        ["supabase/schema.sql"],
         repo="Osasuwu/jarvis",
         config=config,
     )

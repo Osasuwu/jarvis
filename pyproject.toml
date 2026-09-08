@@ -34,21 +34,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Core: MCP memory server (cross-device persistent memory via Supabase)
-memory = [
-  # Floor raised to 2.0 in #1294: mcp-memory/server.py, mcp-status/server.py,
-  # and scripts/telegram-mcp-server.py are now all ported to the v2 API
-  # (constructor-param `Server(on_list_tools=..., on_call_tool=...)` in place
-  # of 1.x decorator registration; `MCPServer`/`Context` from
-  # `mcp.server.mcpserver` in place of `mcp.server.fastmcp.FastMCP`).
-  # tests/memory/test_memory_server_script_launch.py is the tripwire that
-  # would go red again on a v1-only environment. Upper-bounded <3 per #1296 —
-  # lift once the ported files are re-verified against the v3 API when it ships.
+# scripts/telegram-mcp-server.py — the sole surviving MCP server after the
+# memory/status/morning stack retirement (#1801). Floor raised to mcp 2.0 in
+# #1294 (v2 API: constructor-param `Server(on_list_tools=..., on_call_tool=...)`,
+# `MCPServer`/`Context` from `mcp.server.mcpserver`). Upper-bounded <3 per
+# #1296 — lift once this server is re-verified against the v3 API when it
+# ships. nest-asyncio/python-json-logger/telethon carried no declared home in
+# this file until #1801 folded mcp-memory/requirements.txt's bounds in here.
+telegram = [
   "mcp>=2.0.0,<3",
-  "supabase>=2.0.0,<3",
-  "voyageai>=0.2.3,<1",
-  "httpx>=0.27,<1",
-  "pyyaml>=6.0.3,<7",
+  "nest-asyncio>=1.6.0,<2",
+  "python-json-logger>=4.2.0,<5",
+  "telethon>=1.44.0,<2",
 ]
 # Pillar 7: reactive-core agents (Ollama + Postgres + Supabase bridge).
 # LangGraph (langgraph / langgraph-checkpoint-postgres / langchain-ollama) was
@@ -77,11 +74,15 @@ agents = [
   # NOTIFY_TRANSPORT (#1547). Lazily imported (try/except ImportError) so the
   # registry still resolves telegram/none/dotted-path without it installed.
   "apprise>=1.12.0,<2",
+  # config-file parsing (agents/sandcastle_config.py, agents/plan_review_config.py).
+  # Relocated from the retired `memory` extra (#1801) — an `agents`-package
+  # concern, not a memory-stack one.
+  "pyyaml>=6.0.3,<7",
 ]
 # All runtime components
 full = [
-  "jarvis-agent[memory]",
   "jarvis-agent[agents]",
+  "jarvis-agent[telegram]",
 ]
 # Development
 dev = [

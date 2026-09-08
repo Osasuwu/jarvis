@@ -18,7 +18,7 @@ output and decides.
 
 ## Why the query can only surface candidates
 
-`task_queue` (`mcp-memory/schema.sql`) has no column for "manual
+`task_queue` (`supabase/schema.sql`) has no column for "manual
 intervention" and no FK to the PR that closed the issue — it only knows its
 own FSM state. The query below finds rows that are `done` *and* look like
 they came from `/dispatch` (not a manually-enqueued row, not a Slice-1/pre-

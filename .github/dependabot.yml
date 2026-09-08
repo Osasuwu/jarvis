@@ -11,16 +11,6 @@ updates:
       day: monday
     target-branch: main
 
-  # Python dependencies (MCP memory server: requirements.txt + uv.lock) (#1313)
-  # Dependabot updates the ranges in requirements.txt/pyproject.toml; uv.lock
-  # is regenerated automatically by dependabot-lockfile.yml (same as above).
-  - package-ecosystem: pip
-    directory: "/mcp-memory"
-    schedule:
-      interval: weekly
-      day: monday
-    target-branch: main
-
   # GitHub Actions
   - package-ecosystem: github-actions
     directory: "/"

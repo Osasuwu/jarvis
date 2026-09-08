@@ -141,12 +141,14 @@ def test_run_server_tracked_survives_unwritable_log_dir(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Static regression guards on the three launcher scripts themselves
+# Static regression guards on the launcher script(s) themselves.
+#
+# run-memory-server.py and run-status-server.py were retired along with the
+# rest of the memory stack (#1801) — run-telegram-mcp.py is the sole
+# surviving launcher this guard covers.
 # ---------------------------------------------------------------------------
 
 _LAUNCHERS = [
-    _REPO_ROOT / "scripts" / "run-memory-server.py",
-    _REPO_ROOT / "scripts" / "run-status-server.py",
     _REPO_ROOT / "scripts" / "run-telegram-mcp.py",
 ]
 

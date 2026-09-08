@@ -40,16 +40,16 @@ You (any device)
   |     |-- ~/.claude/skills/      12 universal slash commands (user-level, CWD-agnostic)
   |     |-- ~/.claude/SOUL.md      personality (auto-loaded)
   |     |-- ~/.claude/settings.json    hooks (SessionStart, PreToolUse, ...)
-  |     |-- ~/.claude/.mcp.json    MCP servers (memory, github, context7, ...)
+  |     |-- ~/.claude/projects/<project>/memory/    native memory (per-machine, file-based)
+  |     |-- MCP servers registered via `claude mcp add --scope user` (github, obsidian, ...)
   |     |
   |     |-- jarvis/CLAUDE.md       project rules + autonomy config
   |     |-- jarvis/.claude/        project-scoped extras (e.g. /sprint-report)
   |     |
   |-- Telegram (via Claude Code Channels, optional)
 
-Supabase DB
-  |-- memories    (vector search, graph links)
-  |-- goals       (strategic context)
+Supabase DB -- reactive core, not memory
+  |-- task_queue  (sandcastle work items)
   |-- events      (CI, alerts, deployments)
 ```
 
@@ -61,13 +61,13 @@ for user-level skills is still [`.claude-userlevel/skills/`](.claude-userlevel/s
 in this repo; see [`docs/setup.md`](docs/setup.md) for how to wire `~/.claude/` up
 manually (MCP registration, plugin list, skills).
 
-**Design principle:** Claude Code native first. The only custom Python is `mcp-memory/server.py` -- everything else uses skills, hooks, and subagents.
+**Design principle:** Claude Code native first -- skills, hooks, subagents, and native auto-memory; custom Python is justified on merit (see [`docs/reference/native-first-substrate.md`](docs/reference/native-first-substrate.md)).
 
 ## What's Working
 
 | Component | Description |
 |-----------|-------------|
-| **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI or local Ollama) + keyword fallback |
+| **Native memory** | File-based, per project, under `~/.claude/projects/<project>/memory/`. No server, no sync. |
 | **Core skills** | `/implement`, `/delegate`, `/research`, `/end` (`--quick` for fast exit). |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
@@ -85,20 +85,15 @@ manually (MCP registration, plugin list, skills).
 
 ## Memory System
 
-The MCP memory server (`mcp-memory/server.py`) provides persistent memory across all devices and projects.
-
-| Tool | Description |
-|------|-------------|
-| `memory_store` | Save/update a memory (upserts by project+name) |
-| `memory_recall` | Semantic + keyword search across memories |
-| `memory_list` | List all memories (name + description) |
-| `memory_get` | Fetch a specific memory by name |
-| `memory_delete` | Remove a memory |
-| `goal_set` / `goal_list` / `goal_update` | Manage strategic goals |
+Memory is native and file-based, per project, under `~/.claude/projects/<project>/memory/`:
+`MEMORY.md` is the always-loaded index (one line per fact, pointing at a topic file), and
+`decisions.md` is the dated decision journal. There is no memory service and no recall tool --
+reading a file is the recall. The old Supabase-backed `mcp-memory` MCP server was retired in
+[#1801](https://github.com/Osasuwu/jarvis/issues/1801) in favor of this (per
+[#1790](https://github.com/Osasuwu/jarvis/issues/1790)); it is per-machine, not synced across
+devices.
 
 Memory types: `user`, `project`, `decision`, `feedback`, `reference`
-
-All devices connect to the same Supabase instance. No manual sync.
 
 ## Capabilities
 
@@ -124,7 +119,6 @@ Full capability detail, migration order, and bootstrap protocol: [docs/design/ja
 ```
 jarvis/
   CLAUDE.md              <- agent rules (auto-loaded by Claude Code)
-  .mcp.json              <- MCP server registry
   config/
     SOUL.md              <- personality definition
     repos.conf           <- repos to scan
@@ -132,9 +126,9 @@ jarvis/
     skills/              <- project-scoped slash commands (sprint-report)
     agents/              <- subagent definitions (coding)
     settings.json        <- project hooks
-  mcp-memory/
-    server.py            <- MCP memory server (Supabase)
-    schema.sql           <- database schema (memories, goals, events)
+  supabase/
+    schema.sql           <- declarative target shape (reactive core: task queue, events)
+    migrations/          <- apply-order DDL history
   src/
     risk_radar.py        <- standalone risk scan (no LLM)
   docs/                  <- vision, architecture, guides

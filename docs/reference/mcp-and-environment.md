@@ -2,16 +2,18 @@
 
 Every fact here is load-bearing while authoring or debugging an MCP bootstrap and dead weight
 otherwise — the definition of situational. Pull this file when an MCP server misbehaves, when
-touching `mcp-memory/`, or when editing anything under `.github/workflows/`.
+touching `supabase/`, or when editing anything under `.github/workflows/`.
 
 ## Metered billing needs explicit consent
 
 No silent tier move or subscription-OAuth fallback; billing vars never reach containers.
 
-## `mcp-memory/server.py`, `.mcp.json`, and the Supabase schema are shared surfaces
+## The Supabase schema is a shared surface
 
 Consumers sit outside this repo (redrobot, other operator instances); breakage is invisible from
-inside it. Verify consumers before pushing a change to any of them.
+inside it. Verify consumers before pushing a change to `supabase/migrations/` or
+`supabase/schema.sql`. (The `mcp-memory`/`mcp-status`/`mcp-morning` MCP servers this note used to
+name were demolished in #1801 — Supabase itself is the surviving shared surface.)
 
 ## An MCP bootstrap's stdout IS the JSON-RPC transport
 
@@ -35,10 +37,10 @@ worktree shares exactly one long-lived `.venv`. **Worktrees are therefore never 
 an MCP failure** — [#1307](https://github.com/Osasuwu/jarvis/issues/1307) was misdiagnosed on that
 assumption before [#1312](https://github.com/Osasuwu/jarvis/issues/1312) corrected it.
 
-## `mcp-memory/schema.sql` is aspirational, not a bootstrap
+## `supabase/schema.sql` is aspirational, not a bootstrap
 
-No migration builds `memories` from zero. Reading the file as a from-scratch provisioning script will
-mislead; treat it as the intended target shape.
+No migration builds the schema from zero. Reading the file as a from-scratch provisioning script will
+mislead; treat it as the intended target shape (#326).
 
 ## App permissions are installation-wide
 

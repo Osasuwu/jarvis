@@ -61,37 +61,30 @@ Installed to `~/.claude/` by `scripts/install/installer.py` (entry points `insta
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| Memory server | `mcp-memory/server.py` | Cross-device Supabase memory via MCP |
 | Installer | `scripts/install/installer.py` | Seeds `~/.claude/` from this repo; idempotent, backup-first |
-| Hook scripts | `scripts/*.py` | SessionStart context, PreCompact backup, secret scanner, protected-file guard, memory recall |
+| Hook scripts | `scripts/*.py` | SessionStart context, PreCompact backup, secret scanner, protected-file guard |
 | Risk scanner | `src/risk_radar.py` | Deterministic pattern scan, no LLM |
 
 Everything else (Telegram, scheduling, background tasks) uses Anthropic-native features — not custom code.
 
 ## 3. Memory architecture
 
-Cross-device memory is the core value-add over vanilla Claude Code.
+Memory is native and file-based, per machine, per project — not a custom service. The
+Supabase-backed `mcp-memory` MCP server (semantic search via VoyageAI, keyword fallback) was
+retired in [#1801](https://github.com/Osasuwu/jarvis/issues/1801) in favor of this, per
+[#1790](https://github.com/Osasuwu/jarvis/issues/1790).
 
 ```
-Device A (home)          Device B (work)          Device C (laptop)
-     │                        │                        │
-     └────────────────────────┼────────────────────────┘
-                              │
-                    mcp-memory/server.py
-                    (runs in .venv, stdio)
-                              │
-                         Supabase DB
-                    (pgvector + VoyageAI)
+~/.claude/projects/<project>/memory/
+  MEMORY.md         ← always-loaded index, one line per fact, points at topic files
+  decisions.md       ← dated decision journal
+  <topic>.md         ← detail files MEMORY.md lines point at
 ```
 
-**How it works:**
-- `memory_store` — upsert by `(project, name)`, overwrites on conflict
-- `memory_recall` — semantic search via VoyageAI embeddings; falls back to ILIKE keyword search if `VOYAGE_API_KEY` not set
-- `memory_list` / `memory_get` / `memory_delete` — standard CRUD
+There is no memory service and no recall tool — reading a file is the recall. Memory is
+per-machine: nothing syncs it across devices.
 
 **Memory types:** `user`, `project`, `decision`, `feedback`, `reference`
-
-**Scoping:** `project=null` for cross-project (owner preferences, agent rules), `project="jarvis"` or `project="redrobot"` for project-specific context.
 
 ## 4. Agent model
 
@@ -186,10 +179,9 @@ jarvis/
 │   ├── protected-files.py   ← PreToolUse: block edits to protected files
 │   ├── pre-compact-backup.py  ← PreCompact: snapshot before summarization
 │   └── device-info.py       ← SessionStart: banner
-├── mcp-memory/
-│   ├── server.py            ← MCP memory server (Supabase)
-│   ├── schema.sql           ← Supabase table + vector index
-│   └── requirements.txt
+├── supabase/
+│   ├── schema.sql           ← declarative target shape (reactive core: task queue, events)
+│   └── migrations/          ← apply-order DDL history
 ├── src/
 │   └── risk_radar.py        ← Standalone risk scanner (no LLM)
 ├── tests/                   ← pytest suite (800+ tests)

@@ -162,7 +162,7 @@ def test_probe_counts_dispatcher_audit_rows() -> None:
     assert eqs["outcome"] == "success"
     # And filtered by window_start in timestamp.
     # (audit_log's timestamp column is the canonical name — see
-    # mcp-memory/schema.sql and docs/agents/e2e-test.md:137. The prior
+    # supabase/schema.sql and docs/agents/e2e-test.md:137. The prior
     # "created_at" assertion matched the code but not the real schema,
     # so unit tests were green while prod probes 400'd and the
     # dispatcher escalated every tick on false-safe near_exhaustion.)

@@ -10,10 +10,9 @@ every test's identity, only the path prefix changed.
 | Subdir | Owns | Source area |
 |---|---|---|
 | `reactive_core/` | Orchestrator, executor, wake_driver, poller, task dispatch/queue, event emission, PID sidecar, escalation, safety, principal | `agents/`, `scripts/` reactive-core |
-| `memory/` | Memory server, recall/store, outcomes, calibration, graph, goals, credentials, events FSM | `mcp-memory/` |
+| `memory/` | Recall-dedup cache used by the record-decision gate's mid-turn recall (#1865 tracks whether this concern survives) | `scripts/lib/recall_dedup.py` |
 | `decisions/` | `record_decision` Tier-2 gate + doubles | `scripts/record-decision-gate.py` |
 | `comms/` | Communication-pattern classifier / reflect surface | `scripts/comm_patterns/` |
-| `status/` | status-MCP digest + deterministic render | `mcp__status`, `scripts/` status |
 | `infrastructure/` | Installer units, hooks, secret scanner/scrubber, protected files, risk radar, session-context — the cross-cutting **catch-all** | `scripts/`, `src/` |
 | `ci/` | Path-filtered CI-guard meta-tests (#326) — one per guarded workflow | `.github/workflows/` |
 
@@ -28,8 +27,8 @@ precedence (first match wins):
 
 1. `ci/` — if it's a meta-test for a `paths:`-filtered workflow guard, it goes
    here regardless of what the guard watches.
-2. `reactive_core/` → `memory/` → `decisions/` → `comms/` → `status/` — the
-   named capability domains, in that order.
+2. `reactive_core/` → `memory/` → `decisions/` → `comms/` — the named
+   capability domains, in that order.
 3. `infrastructure/` — the catch-all. A test lands here only when it matches no
    named domain above.
 
@@ -45,9 +44,11 @@ the memory server directly is a `memory/` test.
   a test's package-qualified node ID (`subdir.test_x`) stays unique across
   same-named files (e.g. two `test_installer.py`).
 - **Shared helpers live in `tests/_support/`**, on `pythonpath` (see
-  `pyproject.toml`). Import them by their module name, not a `test_` prefix:
-  - `from supabase_stubs import FakeClient` (was `test_utils`)
-  - `from record_decision_doubles import make_client` (was `test_record_decision_helpers`)
+  `pyproject.toml`). Import them by their module name, not a `test_` prefix,
+  e.g. `import notify_transport_double` (used by `reactive_core/test_notify.py`
+  both as a direct import and via dotted-path resolution, as the string
+  `"notify_transport_double:fake_transport"`, exercising the same
+  dotted-path-resolution mechanism production code uses to load a transport).
   The `_support` dir is not collected (leading underscore) and its modules are
   never named `test_*`, so they can't be mistaken for test files.
 

@@ -8,14 +8,16 @@ input for scripts/weekly_release_engine.py's assemble_release_body). The pure
 decision core lives in weekly_release_engine.py (#1572); this module only
 does gh/repos.conf I/O.
 
-Deliberately built on the SAME injectable I/O callables as status_gather.py
+Deliberately built on the SAME injectable I/O callables as gather_common.py
 (RunGhFn, QuerySupabaseFn, NowFn) and reuses its default gh/Supabase
-implementations rather than introducing a parallel seam, mirroring
-morning_gather.py's own reuse of status_gather.py (#1586). repos.conf is read
-through a new ReadReposConfEntriesFn seam because none of status_gather.py's
-existing callables expose token data — parse_repos_conf is documented as
-"must never change shape" (#1059) — and repos_conf.py's own docstring names
-the weekly-release skill as the intended consumer of parse_repos_conf_entries.
+implementations rather than introducing a parallel seam — those callables
+were originally defined in status_gather.py and shared via that module
+(#1586) until status_gather.py itself was retired (#1801), at which point
+they moved to gather_common.py. repos.conf is read through a new
+ReadReposConfEntriesFn seam because none of gather_common.py's existing
+callables expose token data — parse_repos_conf is documented as "must never
+change shape" (#1059) — and repos_conf.py's own docstring names the
+weekly-release skill as the intended consumer of parse_repos_conf_entries.
 """
 
 from __future__ import annotations
@@ -29,8 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from scripts.repos_conf import REPOS_CONF_RELPATH, RepoEntry, parse_repos_conf_entries
-from scripts.status_gather import (
+from scripts.gather_common import (
     NowFn,
     Provenance,
     QuerySupabaseFn,
@@ -38,6 +39,7 @@ from scripts.status_gather import (
     _default_run_gh,
     resolve_jarvis_home,
 )
+from scripts.repos_conf import REPOS_CONF_RELPATH, RepoEntry, parse_repos_conf_entries
 from scripts.weekly_release_engine import compute_window
 
 # ============================================================================

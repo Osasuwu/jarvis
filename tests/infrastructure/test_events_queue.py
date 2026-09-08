@@ -2,24 +2,25 @@
 
 Extends the live events table with state FSM, dedup, NOTIFY trigger, and RPCs.
 
-Two sections:
-1. **Migration contract** (static SQL analysis) — asserts the migration file
-   declares the correct columns, constraints, trigger, and RPC functions.
-2. **MCP handler tests** — asserts the Python handler layer calls the correct
-   RPCs and formats responses correctly (mocked Supabase client).
+Migration contract (static SQL analysis) — asserts the migration file
+declares the correct columns, constraints, trigger, and RPC functions.
+
+The MCP handler layer (`handlers.events`) that used to wrap these RPCs for
+the memory MCP server's tool surface was retired along with `mcp-memory/`
+(#1801) — the RPCs' only live caller is `agents/wake_driver.py`, which calls
+them directly via SQL, not through that handler layer.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATION = REPO_ROOT / "supabase" / "migrations" / "20260521130515_extend_events_queue.sql"
-SCHEMA_MIRROR = REPO_ROOT / "mcp-memory" / "schema.sql"
+SCHEMA_MIRROR = REPO_ROOT / "supabase" / "schema.sql"
 
 # Columns this migration adds to the events table
 NEW_COLUMNS = ("state", "dedup_key", "claimed_at", "claimed_by")
@@ -278,202 +279,8 @@ def test_pending_index_exists_in_schema() -> None:
 
 
 # =========================================================================
-# Section 2 — MCP handler tests
-# =========================================================================
-
-
-@pytest.fixture
-def mock_client() -> MagicMock:
-    """Create a mock Supabase client for handler testing."""
-    client = MagicMock()
-    return client
-
-
-def _mock_rpc(mock_client: MagicMock, rpc_name: str, return_data: list | bool | None):
-    """Set up mock_client.rpc(rpc_name) to return execute()->data."""
-    rpc_builder = MagicMock()
-    rpc_builder.execute.return_value = MagicMock(data=return_data)
-    mock_client.rpc.return_value = rpc_builder
-
-
-class TestEventClaimNextHandler:
-    """Tests for _handle_event_claim_next."""
-
-    def test_claims_next_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_claim_next
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        event = {
-            "id": "evt-001",
-            "event_type": "ci_failure",
-            "severity": "high",
-            "title": "Build failed on main",
-            "repo": "Osasuwu/jarvis",
-        }
-        _mock_rpc(client, "claim_next", [event])
-
-        result = await_handler(_handle_event_claim_next({"claimer": "orchestrator"}))
-
-        client.rpc.assert_called_once_with("claim_next", {"claimer": "orchestrator"})
-        assert "evt-001" in result
-        assert "Build failed on main" in result
-        assert "orchestrator" in result
-
-    def test_no_pending_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_claim_next
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        _mock_rpc(client, "claim_next", None)
-
-        result = await_handler(_handle_event_claim_next({"claimer": "orchestrator"}))
-        assert "No pending events" in result
-
-
-class TestEventMarkProcessedHandler:
-    """Tests for _handle_event_mark_processed (FSM variant)."""
-
-    def test_marks_claimed_event_processed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_mark_processed
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        _mock_rpc(client, "mark_processed", True)
-
-        result = await_handler(
-            _handle_event_mark_processed(
-                {
-                    "event_id": "evt-001",
-                    "processor": "orchestrator",
-                    "action_taken": "triaged and dispatched",
-                }
-            )
-        )
-
-        client.rpc.assert_called_once_with(
-            "mark_processed",
-            {
-                "event_id": "evt-001",
-                "processor": "orchestrator",
-                "action_taken": "triaged and dispatched",
-            },
-        )
-        assert "evt-001" in result
-        assert "marked as processed" in result
-
-    def test_rejects_event_not_claimed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_mark_processed
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        _mock_rpc(client, "mark_processed", False)
-
-        result = await_handler(
-            _handle_event_mark_processed(
-                {
-                    "event_id": "evt-001",
-                    "processor": "orchestrator",
-                }
-            )
-        )
-
-        assert "not in 'claimed' state" in result
-
-
-class TestEventParkHandler:
-    """Tests for _handle_event_park."""
-
-    def test_parks_claimed_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_park
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        _mock_rpc(client, "park_event", True)
-
-        result = await_handler(
-            _handle_event_park(
-                {
-                    "event_id": "evt-001",
-                    "reason": "waiting for PR merge",
-                }
-            )
-        )
-
-        client.rpc.assert_called_once_with(
-            "park_event",
-            {"event_id": "evt-001", "reason": "waiting for PR merge"},
-        )
-        assert "evt-001" in result
-        assert "parked" in result
-
-    def test_rejects_event_not_claimed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_park
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        _mock_rpc(client, "park_event", False)
-
-        result = await_handler(_handle_event_park({"event_id": "evt-001"}))
-        assert "not in 'claimed' state" in result
-
-
-class TestEventRequeueHandler:
-    """Tests for _handle_event_requeue."""
-
-    def test_requeues_parked_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_requeue
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        _mock_rpc(client, "requeue_event", True)
-
-        result = await_handler(
-            _handle_event_requeue(
-                {
-                    "event_id": "evt-001",
-                    "reason": "dependency resolved",
-                }
-            )
-        )
-
-        client.rpc.assert_called_once_with(
-            "requeue_event",
-            {"event_id": "evt-001", "reason": "dependency resolved"},
-        )
-        assert "evt-001" in result
-        assert "requeued" in result
-
-    def test_rejects_invalid_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from handlers.events import _handle_event_requeue
-
-        client = MagicMock()
-        monkeypatch.setattr("handlers.events._get_client", lambda: client)
-
-        _mock_rpc(client, "requeue_event", False)
-
-        result = await_handler(_handle_event_requeue({"event_id": "evt-001"}))
-        assert "not in 'claimed' or 'parked' state" in result
-
-
-# =========================================================================
 # Helpers
 # =========================================================================
-
-
-def await_handler(coro) -> str:
-    """Await an async handler and return the text from its TextContent result."""
-    import asyncio
-
-    result = asyncio.run(coro)
-    return result[0].text
 
 
 def _extract_function_body(sql: str, fn_name: str) -> str:

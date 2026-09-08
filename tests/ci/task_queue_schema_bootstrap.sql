@@ -4,13 +4,13 @@
 -- S1-3.
 --
 -- Scope rationale: mirrors tests/ci/global_task_schema_bootstrap.sql's
--- approach — mcp-memory/schema.sql (133KB, Supabase-specific) does not apply
--- cleanly to a stock postgres:16 image. This file bootstraps the `task_queue`
--- table shape as it exists BEFORE #1085 S1-1 (no issue_number column, no
--- partial unique index) so the CI job can apply the REAL migration
+-- approach — supabase/schema.sql (declarative, Supabase-specific) does not
+-- apply cleanly to a stock postgres:16 image. This file bootstraps the
+-- `task_queue` table shape as it exists BEFORE #1085 S1-1 (no issue_number
+-- column, no partial unique index) so the CI job can apply the REAL migration
 -- (supabase/migrations/20260811163000_add_task_queue_issue_number.sql) on top
 -- and exercise production DDL, not a re-implementation. Keep this table shape
--- in sync with mcp-memory/schema.sql's task_queue block if it changes.
+-- in sync with supabase/schema.sql's task_queue block if it changes.
 
 -- ---------------------------------------------------------------------------
 -- Supabase predefined roles. CI connects as the postgres superuser via
@@ -31,7 +31,7 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
--- `task_queue` -- pre-#1085 shape (mcp-memory/schema.sql, minus issue_number
+-- `task_queue` -- pre-#1085 shape (supabase/schema.sql, minus issue_number
 -- and its partial unique index, which the real migration adds on top).
 -- ---------------------------------------------------------------------------
 create table if not exists task_queue (

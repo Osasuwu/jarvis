@@ -313,21 +313,23 @@ def test_heal_returns_locked_when_second_caller_blocked(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Registry meta-test (AC#8): probe_modules must cover every third-party
-# top-level import across the three MCP server files. This is the standing
+# top-level import across the MCP server files. This is the standing
 # guard against the nest_asyncio/telethon class of silent drift recurring.
+#
+# mcp-memory/server.py and mcp-status/server.py were retired along with the
+# rest of the memory stack (#1801) — scripts/telegram-mcp-server.py is now
+# the sole surviving MCP server file this guard covers.
 # ---------------------------------------------------------------------------
 
 _STDLIB_ALLOWLIST = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else set()
 
 _SERVER_FILES = [
-    _REPO_ROOT / "mcp-memory" / "server.py",
-    _REPO_ROOT / "mcp-status" / "server.py",
     _REPO_ROOT / "scripts" / "telegram-mcp-server.py",
 ]
 
 # Local first-party packages that show up as top-level imports but are not
 # pip-installed third-party dependencies (repo-local modules).
-_FIRST_PARTY_ALLOWLIST = {"scripts", "mcp_memory", "mcp_status", "client", "embeddings", "handlers"}
+_FIRST_PARTY_ALLOWLIST = {"scripts", "client", "embeddings", "handlers"}
 
 
 def _is_sibling_module(name: str, source_dir: Path) -> bool:
@@ -478,36 +480,6 @@ def test_heal_uses_uv_sync_when_lockfile_exists(tmp_path, monkeypatch):
     assert result.success is True
     # Should have called uv sync (via Popen), not pip
     assert any("uv" in str(cmd) and "sync" in str(cmd) for _, cmd in calls)
-
-
-def test_mcp_memory_uv_sync_succeeds_against_real_pyproject(tmp_path):
-    """Regression test (#1312 env-sync heal-fails-forever bug).
-
-    heal() shells out to real `uv sync`, but every mocked test above stubs
-    subprocess and so never exercises the actual pyproject.toml. setuptools'
-    flat-layout auto-discovery saw `handlers/` and `migrations/` as two
-    top-level packages with no explicit selection and refused to build
-    jarvis-mcp-memory, which made `uv sync` (and therefore heal()) fail
-    unconditionally — any session whose venv had genuinely drifted could
-    never be healed, only ever re-report "Heal Failed". Fixed via
-    `tool.uv.package = false`: mcp-memory is an application launched through
-    scripts/run-memory-server.py, never installed/imported as a library, so
-    it should never need building at all.
-    """
-    project_dir = _REPO_ROOT / "mcp-memory"
-    sync_env = dict(os.environ)
-    sync_env["UV_PROJECT_ENVIRONMENT"] = str(tmp_path / "venv")
-    result = subprocess.run(
-        ["uv", "sync", "--project", str(project_dir)],
-        cwd=str(project_dir),
-        env=sync_env,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    output = result.stdout + result.stderr
-    assert result.returncode == 0, output
-    assert "Multiple top-level packages" not in output
 
 
 def test_heal_falls_back_to_pip_when_lockfile_missing(tmp_path, monkeypatch):

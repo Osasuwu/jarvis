@@ -10,8 +10,9 @@ Pull-only detail for AGENTS.md → *Substrate rule*.
 
 ## Existing justified custom code
 
-`mcp-memory/server.py`, `src/risk_radar.py` — the native options were awkward or incomplete for
-these, so they stay custom code on merit.
+`src/risk_radar.py` — the native options were awkward or incomplete for this, so it stays custom
+code on merit. (`mcp-memory/server.py` was a prior entry here; it was retired in #1801 in favor of
+native auto-memory, per #1790.)
 
 ## Relaxation history
 

@@ -179,8 +179,8 @@ def default_run_planner(
 
     # ceiling: assumes the CLI's ``--output-format json`` wraps the session's
     # final text output in a top-level ``{"result": "<text>"}`` envelope, and
-    # that MCP tools (``mcp__memory__*``) are discoverable in a headless
-    # ``-p`` invocation the same way they are in an interactive session — the
+    # that MCP tools are discoverable in a headless ``-p`` invocation the
+    # same way they are in an interactive session — the
     # first live drain run against a real ordinal-2 issue is what verifies
     # this; if it's wrong, widen this docstring into a real integration test
     # against a throwaway issue instead of guessing further.
