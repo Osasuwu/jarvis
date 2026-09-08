@@ -64,15 +64,16 @@ def resolve_pr_url(
 
 
 def resolve_is_class_2(issue_number: int | None, *, client: GitHubClient | None) -> bool:
-    """Best-effort ``class:2`` label check for a just-completed task (#1706 review).
+    """Best-effort ``afk:2-plan`` label check for a just-completed task (#1706 review).
 
     Mirrors :func:`resolve_pr_url`'s advisory pattern. Feeds
     :func:`record_completion_outcome`'s payload so a headlessly-dispatched
     completion tags ``pattern_tags`` with ``"class:2"`` the same way the
-    interactive ``/implement`` path does (``implement/SKILL.md``'s "Rule —
-    ``class:2`` pattern_tag") — otherwise ``/verify`` Step 2c's checkpoint
-    query (``WHERE 'class:2' = ANY(pattern_tags)``) silently undercounts every
-    class-2 PR shipped via ``/dispatch`` -> ``/task-implement``. Returns
+    interactive ``/implement`` path does — otherwise a checkpoint query on
+    ``pattern_tags`` silently undercounts every class-2 PR shipped via
+    ``/dispatch`` -> ``/task-implement``. Checks the ``afk:2-plan`` label
+    (schema v2, #1707) — the pattern_tags value itself stays ``"class:2"``
+    for continuity with historical rows and any consumer query. Returns
     ``False`` (never raises) on any resolution failure — the caller ORs this
     straight into a pattern_tags append, so a plain bool is required.
     """
@@ -82,12 +83,12 @@ def resolve_is_class_2(issue_number: int | None, *, client: GitHubClient | None)
         issue = client.get_issue(issue_number)
     except Exception:  # noqa: BLE001 — advisory lookup, never raises to the caller
         logger.exception(
-            "[task_outcomes] class:2 label resolution failed for issue %s", issue_number
+            "[task_outcomes] afk:2-plan label resolution failed for issue %s", issue_number
         )
         return False
     if not issue:
         return False
-    return any(label.get("name") == "class:2" for label in issue.get("labels", []))
+    return any(label.get("name") == "afk:2-plan" for label in issue.get("labels", []))
 
 
 def record_skip_outcome(payload: dict[str, Any]) -> None:
