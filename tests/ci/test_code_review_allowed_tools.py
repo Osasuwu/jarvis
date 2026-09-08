@@ -48,6 +48,13 @@ REQUIRED_TOOLS = (
     "Bash(git blame:*)",
     "Bash(git log:*)",
     "Bash(wc:*)",
+    # #1841: merge-commit second-parent inspection (an autobase-pushed
+    # "Merge branch 'main' into <pr-branch>" commit) needs these to look up
+    # the merge commit and diff its parents. Read-only; dropping any re-opens
+    # the BLINDED-ONLY fail-closed path observed on PR #1839 commit e0040993.
+    "Bash(gh api repos/*/commits/*:*)",
+    "Bash(gh api repos/*/compare/*:*)",
+    "Bash(git fetch:*)",
     # Compound-command guard: headless permission matching splits on ; | && and
     # newlines and checks each sub-command, so an un-allowlisted `echo` prefix
     # (`echo "=== …" ; gh pr view …`) denies the whole compound even though
