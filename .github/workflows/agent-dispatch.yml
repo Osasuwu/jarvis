@@ -100,7 +100,25 @@ jobs:
             # lint/test commands. CI/hook/secret config paths stay a step-5
             # escalation, never an unattended edit (mechanically Edit/Write-
             # denied below).
-            --max-turns 40
+            #
+            # --max-turns 100 (#1846): the trial run (#1806, issue #1844 →
+            # PR #1845) did correct, right-scoped work — 8/8 check-runs
+            # green, auto-merge succeeded — and still burned 51 turns on a
+            # one-line docs fix, tripping the old limit of 40.
+            # `claude-code-action` checks --max-turns *after* a successful
+            # result and fails the step on the overage, so that run's
+            # "Run unattended worker" step read red on work that was
+            # entirely correct: not a timeout (timeout-minutes: 45, actual
+            # runtime ~3 minutes), just a false failure. Raising the limit
+            # (rather than treating "successful result after N turns" as
+            # non-fatal) is the fix: if a *trivial* task already needs 51
+            # turns, 40 was never going to hold for anything harder, and the
+            # next overage would be a real one — this worker's every turn is
+            # a fresh `gh`/lint/test round-trip, not a single completion
+            # call. Non-fatal-overage handling (catching "successful result
+            # after N turns" and not failing the step) is the fallback if a
+            # false red still reproduces above this ceiling.
+            --max-turns 100
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
             # Mechanical backstop for the prompt's "never edit" ask above —
             # this job's own workflow/hooks/settings, plus the real T2 set
