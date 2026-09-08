@@ -39,7 +39,6 @@ INVARIANTS_MD_PATH = REPO_ROOT / "docs" / "context" / "invariants.md"
 CLAUDE_RULES_DIR = REPO_ROOT / ".claude" / "rules"
 GITHUB_AGENTS_MD_PATH = REPO_ROOT / ".github" / "AGENTS.md"
 COPILOT_INSTRUCTIONS_PATH = REPO_ROOT / ".github" / "copilot-instructions.md"
-SESSION_CONTEXT_PATH = REPO_ROOT / "scripts" / "session-context.py"
 
 # Session-mechanism vocabulary that must not leak into the cross-tool-readable
 # AGENTS.md — these terms are jarvis-instance-internal (MCP tool names, this
@@ -110,21 +109,4 @@ class TestDeletionTargetsStayDeleted:
         assert not COPILOT_INSTRUCTIONS_PATH.exists(), (
             f"{COPILOT_INSTRUCTIONS_PATH} was retired by #1791 — Copilot reads "
             "root AGENTS.md directly under the cross-tool AAIF convention now"
-        )
-
-
-class TestRetiredAssemblerPath:
-    def test_load_project_context_removed(self):
-        text = SESSION_CONTEXT_PATH.read_text(encoding="utf-8")
-        assert "_load_project_context" not in text, (
-            "scripts/session-context.py must not define/reference "
-            "_load_project_context — #1417 retired the budget-constrained "
-            "CONTEXT.md push in favor of @import delivery"
-        )
-
-    def test_priority_context_push_removed(self):
-        text = SESSION_CONTEXT_PATH.read_text(encoding="utf-8")
-        assert "_PRIORITY_CONTEXT_PUSH" not in text, (
-            "scripts/session-context.py must not define/reference "
-            "_PRIORITY_CONTEXT_PUSH — its priority slot was removed by #1417"
         )

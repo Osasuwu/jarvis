@@ -13,14 +13,10 @@ Not a tool, not an assistant. A peer-role with asymmetric responsibilities: the 
 ```bash
 git clone https://github.com/Osasuwu/jarvis.git
 cd jarvis
-python scripts/setup-device.py
 ```
 
-The setup script handles everything interactively:
-- Creates Python venv + installs dependencies
-- Prompts for Supabase credentials (free tier sufficient)
-- Tests the database connection
-- Validates all prerequisites and project files
+Then follow [`docs/setup.md`](docs/setup.md) for the full walkthrough — Python env,
+`.env` secrets, Supabase schema, MCP registration, plugin install (~15 minutes).
 
 After setup, open in Claude Code — session context (git, PRs, issues, CI, risks, goals) loads automatically via the SessionStart hook.
 
@@ -57,17 +53,13 @@ Supabase DB
   |-- events      (CI, alerts, deployments)
 ```
 
-User-level Jarvis can still be seeded from `.claude-userlevel/` in this repo by
-`install.ps1` / `install.sh` (idempotent, backup-first) -- this remains how the
-operator's own existing devices stay in sync while the installer migration
-(#1798/#1799/#1800) is in flight. See `scripts/install/installer.py`.
-
-**If you already use Claude Code for other projects:** the installer replaces skills, `CLAUDE.md`/`SOUL.md`, and `.mcp.json` in `~/.claude/`, merges `settings.json` keys (your existing keys survive), and leaves `~/.claude/projects/` untouched. A timestamped backup is created before any write. See [`docs/setup.md`](docs/setup.md) for the full setup guide.
-
-**Setting up `~/.claude/` for the first time?** Skip the legacy installer above --
-make `~/.claude/` your own private dotfiles repo instead, per
-[`docs/setup.md`](docs/setup.md), which also covers manual MCP registration and the
-recommended plugin list.
+The custom installer (`install.ps1` / `install.sh` / `scripts/install/installer.py`)
+that used to sync `.claude-userlevel/` into `~/.claude/` was retired in #1800 —
+Claude Code's own hooks, MCP registrations, and settings live at user level
+directly now, not as a build artifact of a repo-side installer. Source of truth
+for user-level skills is still [`.claude-userlevel/skills/`](.claude-userlevel/skills/)
+in this repo; see [`docs/setup.md`](docs/setup.md) for how to wire `~/.claude/` up
+manually (MCP registration, plugin list, skills).
 
 **Design principle:** Claude Code native first. The only custom Python is `mcp-memory/server.py` -- everything else uses skills, hooks, and subagents.
 
@@ -80,7 +72,7 @@ recommended plugin list.
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
 | **Delegation pipeline** | Issue -> branch -> coding agent -> PR, with verification |
-| **Setup script** | `python scripts/setup-device.py` -- interactive, validates everything |
+| **Setup guide** | [`docs/setup.md`](docs/setup.md) -- manual walkthrough, validates prerequisites |
 
 ## Skills
 
@@ -143,9 +135,6 @@ jarvis/
   mcp-memory/
     server.py            <- MCP memory server (Supabase)
     schema.sql           <- database schema (memories, goals, events)
-  scripts/
-    setup-device.py      <- interactive device setup
-    session-context.py   <- loads context at session start
   src/
     risk_radar.py        <- standalone risk scan (no LLM)
   docs/                  <- vision, architecture, guides
@@ -154,7 +143,7 @@ jarvis/
 ## Using on Multiple Devices
 
 1. Clone the repo
-2. Run `python scripts/setup-device.py`
+2. Follow [`docs/setup.md`](docs/setup.md)
 3. Open in Claude Code
 4. (Optional) Register scheduled automation (daily briefs, risk radar, etc.) via the scheduled-tasks MCP tools
 

@@ -16,7 +16,6 @@ every test's identity, only the path prefix changed.
 | `status/` | status-MCP digest + deterministic render | `mcp__status`, `scripts/` status |
 | `infrastructure/` | Installer units, hooks, secret scanner/scrubber, protected files, risk radar, session-context — the cross-cutting **catch-all** | `scripts/`, `src/` |
 | `ci/` | Path-filtered CI-guard meta-tests (#326) — one per guarded workflow | `.github/workflows/` |
-| `install/` | Installer end-to-end integration | `install.ps1` |
 
 Two files stay at the **root** by design (no domain home, cross-cutting entry
 points): `test_go_gate.py`, `test_menu_renderer.py`. `conftest.py` also stays at
@@ -29,10 +28,9 @@ precedence (first match wins):
 
 1. `ci/` — if it's a meta-test for a `paths:`-filtered workflow guard, it goes
    here regardless of what the guard watches.
-2. `install/` — if it drives the installer end-to-end.
-3. `reactive_core/` → `memory/` → `decisions/` → `comms/` → `status/` — the
+2. `reactive_core/` → `memory/` → `decisions/` → `comms/` → `status/` — the
    named capability domains, in that order.
-4. `infrastructure/` — the catch-all. A test lands here only when it matches no
+3. `infrastructure/` — the catch-all. A test lands here only when it matches no
    named domain above.
 
 Rule of thumb: a test that touches memory *through* the orchestrator is a

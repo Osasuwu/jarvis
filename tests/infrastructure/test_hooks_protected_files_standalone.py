@@ -34,7 +34,7 @@ def test_hook_file_exists():
 
 
 def test_blocks_canonical_path():
-    payload = {"tool_input": {"file_path": "scripts/secret-scanner.py"}}
+    payload = {"tool_input": {"file_path": ".gitleaks.toml"}}
     result = _run_hook(payload)
     assert result.returncode == 2, result.stdout + result.stderr
     assert "hookSpecificOutput" in result.stdout

@@ -309,17 +309,3 @@ def test_evaluate_escalation_healthy_pull_rate_takes_no_action() -> None:
 
     assert result["action"] == "none"
     assert result["reason"] == "healthy"
-
-
-# --- reader stays off the SessionStart hot path -----------------------------
-
-
-def test_session_context_does_not_import_pull_rate_report() -> None:
-    """AC: reader runs on demand only, never on the SessionStart hot path."""
-    session_context_path = (
-        Path(__file__).resolve().parent.parent.parent / "scripts" / "session-context.py"
-    )
-    text = session_context_path.read_text(encoding="utf-8")
-
-    assert "pull-rate-report" not in text
-    assert "pull_rate_report" not in text

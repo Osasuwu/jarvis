@@ -11,7 +11,6 @@ The roster is the model-visible listing assembled at session start: one
    (~7,884 chars / 27 skills), guarding against regression back toward it.
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -20,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"
 from measure_skill_roster import load_skills, total_roster_chars  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-SETTINGS_PATH = REPO_ROOT / ".claude-userlevel" / "settings.json"
 
 # Pre-#1268 baseline was ~7,884 chars across 27 visible skills. "Meaningfully
 # below" is interpreted as a hard ceiling with headroom for new skills to add
@@ -34,13 +32,4 @@ def test_roster_stays_under_budget():
         f"Roster grew to {total} chars, at/above the {ROSTER_CHAR_BUDGET}-char "
         "regression budget set by #1268. Trim a description or suppress a "
         "skill that shouldn't be model-invocable."
-    )
-
-
-def test_settings_json_has_no_skill_overrides_duplicate():
-    settings = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-    assert "skillOverrides" not in settings, (
-        "skillOverrides must be removed from the canonical user-level "
-        "settings.json — suppression now lives solely in SKILL.md "
-        "frontmatter (disable-model-invocation)."
     )

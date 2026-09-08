@@ -28,17 +28,27 @@ raises) so the hooks' fail-soft guarantees hold. State writes are atomic
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-
-from lib.harness import home as _harness_home
 
 MODE_BRIEF = "brief"
 MODE_FULL = "full"
 MODE_PRETOOLUSE = "pretooluse"
 
-# Agent home resolved through the harness seam (#1741); honours
-# ``$JARVIS_CLAUDE_HOME`` under claude-code exactly as the former inline copy.
-_CLAUDE_HOME = _harness_home()
+
+def _claude_home() -> Path:
+    """Agent home directory: ``~/.claude`` unless ``$JARVIS_CLAUDE_HOME`` overrides it.
+
+    Standalone inline lookup (no harness seam — ``scripts/lib/harness`` was
+    deleted per #1800): honours the same override the former harness adapter did.
+    """
+    override = os.environ.get("JARVIS_CLAUDE_HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".claude"
+
+
+_CLAUDE_HOME = _claude_home()
 COMPACTION_DIR = _CLAUDE_HOME / "compaction-counts"
 DEDUP_DIR = _CLAUDE_HOME / "cache" / "recall-dedup"
 

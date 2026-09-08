@@ -1,14 +1,16 @@
 """Unit tests for issue #1252 AC3: always_load admission cap.
 
-Cap: 4 entries / 6000 bytes combined, enforced at read time in both
-scripts/session-context.py (_query_always_load) and scripts/eval-recall.py
-(_load_session_context), per decision 3e6594f6-27da-45d9-96d8-516a46716425.
+Cap: 4 entries / 6000 bytes combined, enforced at read time in
+scripts/eval-recall.py (_load_session_context), per decision
+3e6594f6-27da-45d9-96d8-516a46716425.
+
+scripts/session-context.py was deleted (#1800); its half of this cap's
+coverage went with it. eval-recall.py's own cap enforcement survives here.
 
 Tests that:
-1. Both loaders truncate to ALWAYS_LOAD_MAX_ENTRIES when more rows are tagged.
-2. Both loaders truncate on ALWAYS_LOAD_MAX_BYTES even under the entry cap.
+1. The loader truncates to ALWAYS_LOAD_MAX_ENTRIES when more rows are tagged.
+2. The loader truncates on ALWAYS_LOAD_MAX_BYTES even under the entry cap.
 3. Truncation prints a warning to stderr rather than raising.
-4. Under-cap input passes through untouched.
 """
 
 from __future__ import annotations
@@ -42,7 +44,6 @@ def _load_module(filename, modname):
     return mod
 
 
-sc = _load_module("session-context.py", "session_context_1252")
 erc = _load_module("eval-recall.py", "eval_recall_1252")
 
 
@@ -70,38 +71,6 @@ def _row(i, content=""):
     }
 
 
-def test_session_context_caps_entries(capsys):
-    rows = [_row(i) for i in range(7)]
-    client = _mock_client(rows)
-
-    text, ids = sc._query_always_load(client, compact=True)
-
-    assert len(ids) == sc.ALWAYS_LOAD_MAX_ENTRIES
-    assert ids == [f"mem_{i}" for i in range(sc.ALWAYS_LOAD_MAX_ENTRIES)]
-    assert "cap is" in capsys.readouterr().err
-
-
-def test_session_context_caps_bytes(capsys):
-    big = "x" * (sc.ALWAYS_LOAD_MAX_BYTES // 2 + 1)
-    rows = [_row(0, big), _row(1, big), _row(2, big)]
-    client = _mock_client(rows)
-
-    text, ids = sc._query_always_load(client, compact=False)
-
-    assert len(ids) == 1
-    assert "byte budget" in capsys.readouterr().err
-
-
-def test_session_context_under_cap_passes_through(capsys):
-    rows = [_row(i) for i in range(2)]
-    client = _mock_client(rows)
-
-    text, ids = sc._query_always_load(client, compact=True)
-
-    assert len(ids) == 2
-    assert capsys.readouterr().err == ""
-
-
 def test_eval_recall_caps_entries(capsys):
     rows = [_row(i) for i in range(7)]
     client = _mock_client(rows)
@@ -121,11 +90,6 @@ def test_eval_recall_caps_bytes(capsys):
 
     assert counts["always_load"] == 1
     assert "byte budget" in capsys.readouterr().err
-
-
-def test_caps_match_across_loaders():
-    assert sc.ALWAYS_LOAD_MAX_ENTRIES == erc.ALWAYS_LOAD_MAX_ENTRIES
-    assert sc.ALWAYS_LOAD_MAX_BYTES == erc.ALWAYS_LOAD_MAX_BYTES
 
 
 if __name__ == "__main__":

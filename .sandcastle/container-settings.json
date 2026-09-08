@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/protected-files.py"
+            "command": "python .claude/hooks/protected-files.py"
           }
         ]
       }

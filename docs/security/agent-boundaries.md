@@ -5,7 +5,7 @@ Scope: Permission rules for **all principals** running Claude — interactive pr
 
 ## Principal model (#426, #429)
 
-Permissions depend on **who is running Claude**. Four principals — detection lives in [`scripts/principal.py`](../../scripts/principal.py):
+Permissions depend on **who is running Claude**. Four principals — detection formerly lived in `scripts/principal.py`, retired in #1800 along with the rest of the custom install/harness scaffolding; the principal model below stays as documented intent, not a currently-enforced code path:
 
 | Principal | Signal | Trust |
 |---|---|---|
@@ -35,7 +35,7 @@ Action tier model is shared with `agents/safety.py` (T0 = AUTO, T1 = OWNER_QUEUE
 | **T2-mirror** `~/.claude/*` files installed by `install.ps1` — see "User-level" table below | ❌ block (use installer) | ❌ block | ❌ block | ❌ block |
 | **T2-secret** `.env*` values; force push to main/master; impersonation; outbound to other humans (PR comments to others, Telegram, email) | ❌ always block | ❌ block | ❌ block | ❌ block |
 
-Currently enforced in code: only **T2** rows, via [`scripts/protected-files.py`](../../scripts/protected-files.py). T1 routing (autonomous-enqueue, supervised-grant) lands when the dispatcher ships; until then T1 work is principal-driven through `/implement` and `/delegate`.
+Currently enforced in code: only **T2** rows, via `.claude/hooks/protected-files.py` — a standalone, non-principal-aware, fail-closed successor to the retired `scripts/protected-files.py` (#1800). T1 routing (autonomous-enqueue, supervised-grant) lands when the dispatcher ships; until then T1 work is principal-driven through `/implement` and `/delegate`.
 
 ## Protected Files
 
@@ -68,7 +68,7 @@ Editing these changes behaviour for **every Claude Code session on the device**,
 
 The source of truth for these files lives in the jarvis repo (`config/SOUL.md`, `.claude-userlevel/settings.json`, `.claude-userlevel/.mcp.json`, `.claude-userlevel/skills/*/SKILL.md`). The installer copies or templates them into `~/.claude/`. Direct edits to `~/.claude/` drift from source and are lost on the next `install.ps1 --apply`.
 
-Enforced via PreToolUse hook: `scripts/protected-files.py` (covers both surfaces; user-level paths anchored to `Path.home() / ".claude"` or `$JARVIS_CLAUDE_HOME` override). The hook is principal-aware (#426): `live` principal can edit canonical sources directly (the harness asks for one-off approval), but mirror files always block — the canonical source + installer flow is the only sanctioned path to update them.
+Enforced via PreToolUse hook: `.claude/hooks/protected-files.py` (covers both surfaces; user-level paths anchored to `Path.home() / ".claude"` or `$JARVIS_CLAUDE_HOME` override). Unlike the retired `scripts/protected-files.py` (#426's principal-aware bypass for the `live` principal), this standalone successor always blocks — it carries no principal-detection seam, so both canonical and mirror files block for every principal (#1800).
 
 ## Branch Rules
 

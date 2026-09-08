@@ -218,7 +218,9 @@ def test_load_protected_paths_real_config_has_both_repos():
     config = load_protected_paths(repo_root / "config" / "protected-paths.json")
     assert "Osasuwu/jarvis" in config
     assert "SergazyNarynov/redrobot" in config
-    assert ".mcp.json" in config["Osasuwu/jarvis"]["guarded"]
+    # .mcp.json dropped in #1800 — hasn't existed at repo root since
+    # commit b807d3d (MCP registration moved to user level).
+    assert "mcp-memory/**" in config["Osasuwu/jarvis"]["guarded"]
     assert "CLAUDE.md" in config["Osasuwu/jarvis"]["hitl"]
     assert any(
         p.startswith("redrobot/driver/") for p in config["SergazyNarynov/redrobot"]["guarded"]
