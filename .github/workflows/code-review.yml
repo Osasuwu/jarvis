@@ -218,8 +218,7 @@ jobs:
           claude_args: |
             # The reviewer runs headless — any tool it invokes that is absent
             # here is DENIED (no human to approve). Read/Grep/Glob cover file
-            # discovery and reading (including the narrow git-blame reasoning
-            # this prompt asks for). read-utils (head/tail/cat/sort/uniq/cut/
+            # discovery and reading. read-utils (head/tail/cat/sort/uniq/cut/
             # nl/tr/echo) cover compound commands the agent composes (e.g.
             # `echo … ; gh pr view …`, `git show <sha>:<f> | wc -l`): headless
             # permission matching splits on ; | && and newlines and checks EACH
@@ -228,20 +227,60 @@ jobs:
             # tools produce repeated permission_denials → the agent flails at
             # the comment-post step (probe/fragment comments, or no post) →
             # verdict gate fails closed → admin-merge. sed/awk/python3(-c)/jq
-            # are deliberately EXCLUDED (write-capable).
+            # are deliberately EXCLUDED (write-capable interpreters — a
+            # different axis than the model below, kept as a flat ban).
             #
-            # #1841: inspecting a merge commit's second parent (e.g. an
-            # autobase-pushed "Merge branch 'main' into <pr-branch>" commit)
-            # needs `gh api repos/<o>/<r>/commits/<sha>`, `gh api
-            # repos/<o>/<r>/compare/<a>...<b>`, and `git fetch origin <sha>
-            # <sha> main` — none of which were allowlisted, so every one was
-            # denied, the reviewer never posted a fresh verdict for that head,
-            # and code-gate's BLINDED-ONLY policy failed closed (observed on
-            # PR #1839, commit e0040993). Widened narrowly and read-only, per
-            # this step's own denial-handling guidance below ("add read-only
-            # ones if they recur; NEVER allowlist python3/jq/awk/sed").
-            # (tests/ci/test_code_review_allowed_tools.py pins this list.)
-            --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(gh api repos/*/commits/*:*),Bash(gh api repos/*/compare/*:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git grep:*),Bash(git ls-tree:*),Bash(git fetch:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write"
+            # #1850 DENYLIST REBUILD. Every prior incident here (#1042, #1198,
+            # #1210, #1218, #1223, #1841 — five rounds since the plugin was
+            # first stood up) was the SAME shape: the reviewer needed a git/gh
+            # READ verb nobody had enumerated yet (a new `gh api` path, a new
+            # git plumbing command, a merge-commit's second parent), it got
+            # denied, the reviewer went blind, and someone patched in the one
+            # missing prefix — until the next unenumerated verb. Enumerating
+            # every read command an LLM might compose is open-ended; it will
+            # never converge. Enumerating the MUTATING subset of git/gh is
+            # bounded and small, so that's the axis the allowlist now keys on:
+            # `Bash(git:*)` and the `gh` noun-groups the reviewer actually
+            # touches (pr/issue/search/label) are granted WHOLESALE, and
+            # `--disallowed-tools` below carves the mutating verbs back out.
+            # `gh api` stays on its OWN narrow two-pattern grant, not folded
+            # into a wholesale `gh:*` — its `-X <method>`/`--input` mutation
+            # flags can appear in any position in the command line, so a
+            # prefix-matched disallow entry can't reliably catch every
+            # spelling of "this call mutates" the way a bounded verb list can
+            # for `gh pr`/`gh issue`/`gh label`. Per the deny>allow precedence
+            # documented for this action (disallowed-tools is applied first,
+            # then allowed-tools resolved against what's left), a disallow
+            # entry always wins over a broader allow, so the wholesale grants
+            # below are safe as long as the disallow list stays complete.
+            # (tests/ci/test_code_review_allowed_tools.py pins both lists.)
+            --allowed-tools "Read,Grep,Glob,Write,Bash(git:*),Bash(gh pr:*),Bash(gh issue:*),Bash(gh search:*),Bash(gh label:*),Bash(gh api repos/*/commits/*:*),Bash(gh api repos/*/compare/*:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
+            # Mirrors the `--disallowed-tools` idiom already used by
+            # agent-dispatch.yml for the same headless-action pattern. Same
+            # honest caveat applies here too: `Bash(...:*)` is a literal
+            # PREFIX match, not a parse of the actual command, so a
+            # differently-ordered or differently-flagged spelling can slip a
+            # finite list. This is defense-in-depth, not the sole hard
+            # boundary:
+            #   - `gh pr merge` is additionally stopped by branch protection
+            #     server-side (required status checks, including THIS gate,
+            #     block the merge even if the API call is attempted) — a real
+            #     hard backstop, not just this prefix list.
+            #   - `git push`/`gh issue *` have no such backstop: this job's
+            #     token (`contents: read`, `pull-requests: write`) genuinely
+            #     could push nothing (read-only contents) but a `gh pr
+            #     close`/`edit`/`review` call would actually succeed against
+            #     the API if it slipped past this list. That residual risk is
+            #     accepted the same way agent-dispatch.yml accepts it for
+            #     force-push spellings — the review prompt scopes the
+            #     reviewer to "post exactly one PR comment", and this list
+            #     covers every straightforward spelling of the mutating verbs
+            #     in the noun-groups granted above.
+            # git: only the mutating/state-altering subset is denied; plain
+            # reads (show/blame/log/diff/grep/ls-tree/fetch/rev-parse/…) stay
+            # open under the wholesale `Bash(git:*)` grant above — that
+            # openness is the entire point of this rebuild (#1850).
+            --disallowed-tools "Bash(gh pr merge:*)" "Bash(gh pr close:*)" "Bash(gh pr edit:*)" "Bash(gh pr reopen:*)" "Bash(gh pr review:*)" "Bash(gh pr ready:*)" "Bash(gh pr create:*)" "Bash(gh pr lock:*)" "Bash(gh pr unlock:*)" "Bash(gh issue create:*)" "Bash(gh issue edit:*)" "Bash(gh issue close:*)" "Bash(gh issue reopen:*)" "Bash(gh issue delete:*)" "Bash(gh issue lock:*)" "Bash(gh issue unlock:*)" "Bash(gh issue pin:*)" "Bash(gh issue unpin:*)" "Bash(gh issue transfer:*)" "Bash(gh issue comment:*)" "Bash(gh label create:*)" "Bash(gh label edit:*)" "Bash(gh label delete:*)" "Bash(git push:*)" "Bash(git commit:*)" "Bash(git merge:*)" "Bash(git reset:*)" "Bash(git rebase:*)" "Bash(git cherry-pick:*)" "Bash(git stash:*)" "Bash(git clean:*)" "Bash(git rm:*)" "Bash(git mv:*)" "Bash(git apply:*)" "Bash(git am:*)" "Bash(git checkout:*)" "Bash(git switch:*)" "Bash(git restore:*)"
 
       # Diagnostic escape hatch for silent no-review runs (#1239). The action
       # runs with `show_full_output` unset, so the orchestrator's turns are
