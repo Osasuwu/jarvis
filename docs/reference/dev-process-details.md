@@ -57,9 +57,12 @@ current status"). If a field would be wrong in two weeks, it belongs in GitHub, 
 ## Skills live in `.claude-userlevel/skills/`
 
 That directory is the canonical location (rare project overrides aside); `~/.claude/skills/` is
-just the installed mirror. Editing a skill under `~/.claude/skills/` directly is silently
-reverted by the next `install.ps1 -Apply` — always edit the `.claude-userlevel/` source and
-re-run the installer to propagate.
+a manually-wired mirror. The scripted installer that used to sync `.claude-userlevel/` into
+`~/.claude/` was retired in #1800, so there's nothing left to revert a direct edit — but
+`~/.claude/skills/` is still not the source of truth: edit
+`.claude-userlevel/skills/<name>/SKILL.md`, get it reviewed and merged, then manually copy/link
+the updated file into `~/.claude/skills/<name>/SKILL.md` on each device (see
+[`docs/setup.md`](../setup.md)).
 
 ## Other pointers
 
