@@ -12,7 +12,9 @@ minutes. Supersedes the old `SETUP.md` / `config/SETUP.md` / `docs/telegram-setu
 - [Claude Code](https://claude.ai/code) installed and authenticated (`claude --version`)
 - [GitHub CLI](https://cli.github.com) installed and authenticated (`gh auth status`)
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) (`pip install uv`)
-- [Supabase](https://supabase.com) account (free tier is enough) — powers jarvis's memory
+- [Supabase](https://supabase.com) account (free tier is enough) — powers jarvis's reactive
+  core (task queue, event stream, sandcastle provenance); memory itself is native, file-based
+  (`~/.claude/projects/<project>/memory/`), not Supabase-backed
 - Node.js 18+ (some MCP servers run via `npx`)
 - Windows 11 (primary), Linux/macOS also supported
 
@@ -51,7 +53,7 @@ cp .env.example .env
 
 `uv sync` is idempotent — safe to re-run anytime — and creates `.venv/`, installing the
 locked dependencies from `uv.lock`. Fill in the copied `.env` per [§3](#3-fill-in-secrets-env)
-below. Install the Claude Code plugins listed in [§7](#7-plugins) separately — the
+below. Install the Claude Code plugins listed in [§6](#6-plugins) separately — the
 vendored fork from `.claude/marketplace`, the rest from the official Anthropic
 marketplace.
 
@@ -68,39 +70,15 @@ SUPABASE_KEY=your-anon-key-here
 > **Where to get Supabase credentials:** Supabase dashboard → your project → Settings →
 > API → Project URL + anon public key.
 
-Then run `mcp-memory/schema.sql` in the Supabase SQL Editor (SQL Editor → paste the file
-contents → Run) to create the `memories` table and vector search function.
+Apply the migrations under `supabase/migrations/` (in filename order) to your project via the
+Supabase SQL Editor or CLI to create the reactive-core tables (task queue, events, sandcastle).
+`supabase/schema.sql` is the declarative target shape those migrations converge on, not a
+from-scratch bootstrap script — see [MCP & environment](reference/mcp-and-environment.md).
 
 Optional, depending on what you use:
 
-- `GITHUB_TOKEN` — for the `github` MCP server (see [§6](#6-manual-mcp-registration-checklist))
+- `GITHUB_TOKEN` — for the `github` MCP server (see [§5](#5-manual-mcp-registration-checklist))
 - `FIRECRAWL_API_KEY` — for web research
-
-### Semantic search — Voyage AI or Ollama (choose one)
-
-Memory recall degrades to keyword-only without a vector embedding provider.
-
-**Option A — Voyage AI** (cloud, free tier available):
-
-```env
-VOYAGE_API_KEY=pa-...
-```
-
-Get a key at [voyageai.com](https://www.voyageai.com). Free tier covers typical personal
-use.
-
-**Option B — Ollama** (local, GPU recommended, no external API needed):
-
-```env
-OLLAMA_EMBED_URL=http://localhost:11434
-OLLAMA_EMBED_MODEL=mxbai-embed-large
-EMBEDDING_MODEL_PRIMARY=mxbai-embed-large
-```
-
-Pull the model: `ollama pull mxbai-embed-large`. Requires [Ollama](https://ollama.com)
-running locally. The `mxbai-embed-large` model uses 1024-dim vectors stored in the
-`embedding_v2` Supabase column (created by the schema above). **Do not mix providers in
-the same database instance** — vectors are model-specific.
 
 ## 4. `~/.claude/` — make it your own private dotfiles repo
 
@@ -120,19 +98,13 @@ as the template for your own `~/.claude/SOUL.md`. Put `~/.claude/` under `git` a
 it to your own setup. The manual MCP registration checklist below is exactly what
 replaces what the legacy installer would otherwise have auto-seeded.
 
-## 5. Verify the memory server
+## 5. Manual MCP registration checklist
 
-```bash
-python mcp-memory/server.py
-```
-
-Expected: it starts and waits (no error). Press Ctrl+C to stop. If you see
-`SUPABASE_URL and SUPABASE_KEY must be set`, check `.env`.
-
-## 6. Manual MCP registration checklist
-
-Jarvis's user-scope MCP servers are `memory`, `status` (both project-local — see
-`scripts/run-memory-server.py` / `run-status-server.py`), plus two you register by hand:
+Memory is native and file-based (`~/.claude/projects/<project>/memory/`) — no server to run
+or verify. The `mcp-memory`/`mcp-status`/`mcp-morning` project-local MCP servers this section
+used to describe were retired in [#1801](https://github.com/Osasuwu/jarvis/issues/1801); the
+`telegram` plugin ([§7](#7-telegram-optional)) is the one remaining MCP-adjacent surface, and
+it's a Claude Code Channels plugin, not a script you launch. Register the following by hand:
 
 - [ ] **`github`** — HTTP transport, GitHub's own remote MCP endpoint:
 
@@ -154,7 +126,7 @@ Jarvis's user-scope MCP servers are `memory`, `status` (both project-local — s
 - [ ] Verify both: `claude mcp list` should show `github` and (if registered) `obsidian`
   as connected.
 
-## 7. Plugins
+## 6. Plugins
 
 Install commands below for each plugin:
 
@@ -173,9 +145,9 @@ error, the official marketplace isn't registered on your device yet — check wi
 `claude plugins marketplace add anthropics/claude-plugins-official` first.
 
 `telegram` is also an official-marketplace plugin, but it isn't part of the classified
-list above (it's not in `.claude/marketplace/`) — see [§8](#8-telegram-optional).
+list above (it's not in `.claude/marketplace/`) — see [§7](#7-telegram-optional).
 
-## 8. Telegram (optional)
+## 7. Telegram (optional)
 
 Jarvis uses [Claude Code Channels](https://code.claude.com/docs/en/channels) — the
 official Anthropic plugin — to connect to Telegram. No custom relay needed.
@@ -198,8 +170,8 @@ official Anthropic plugin — to connect to Telegram. No custom relay needed.
 6. Test: message your bot from Telegram — Claude should respond.
 
 For 24/7 availability, run step 4 on one always-on machine (home PC, server, or VPS) —
-Channels runs on whichever machine has an active session, and memory (Supabase) is
-shared across devices regardless of which one is hosting it.
+Channels runs on whichever machine has an active session; native memory files are
+per-machine, not shared across devices by this mechanism.
 
 **Troubleshooting:** bot silent → confirm the session is running with `--channels` and
 the token has no extra whitespace. "Plugin not found" → run `/reload-plugins` after
@@ -213,7 +185,7 @@ install. Unauthorized senders getting through → re-run
 > session. Set it in `.env` if you want that notifier to reach you on Telegram; it's
 > unrelated to whether Channels pairing succeeded.
 
-## 9. GitHub Actions secrets (if you run this repo's CI)
+## 8. GitHub Actions secrets (if you run this repo's CI)
 
 Required secrets in GitHub repo settings (Settings → Secrets and variables → Actions):
 
@@ -224,12 +196,11 @@ Required secrets in GitHub repo settings (Settings → Secrets and variables →
 `GITHUB_TOKEN` is auto-provisioned by GitHub Actions — no setup needed. `PROJECT_SYNC` is
 optional — falls back to `github.token` if not set.
 
-## 10. Cloud scheduled tasks
+## 9. Cloud scheduled tasks
 
-Scheduled tasks on claude.ai don't load `.mcp.json` — they use connectors only. Skills
-are designed to work in both environments: locally via `memory_store`/`memory_recall`
-through the custom MCP server, in the cloud via the Supabase connector's `execute_sql`
-and the `gh` CLI.
+Scheduled tasks on claude.ai use connectors only, not project-local MCP config. Skills
+are designed to work in both environments: locally via native memory files, in the cloud
+via the Supabase connector's `execute_sql` and the `gh` CLI.
 
 Task prompts should invoke skills via slash command — this resolves against whichever
 Claude Code home (`~/.claude/`) is loaded:
@@ -241,16 +212,15 @@ Run /research
 `/research` selects discovery mode automatically when no topic argument is supplied.
 Updating a skill in your own `~/.claude/` automatically updates scheduled-task behavior.
 
-## 11. Lockfile regeneration
+## 10. Lockfile regeneration
 
 CI installs from `uv.lock` to guarantee reproducible dependency resolution.
 `.github/workflows/dependabot-lockfile.yml` regenerates it automatically when Dependabot
-bumps a range in `pyproject.toml` or `mcp-memory/requirements.txt`. For manual
-regeneration (e.g. adding a dependency locally):
+bumps a range in `pyproject.toml`. For manual regeneration (e.g. adding a dependency
+locally):
 
 ```bash
 uv lock --project .
-uv lock --project mcp-memory
 ```
 
 Commit the regenerated `uv.lock` files — this ensures CI and local environments resolve
@@ -267,7 +237,7 @@ python -c "
 from dotenv import load_dotenv; load_dotenv()
 import os; from supabase import create_client
 c = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
-print('Supabase OK:', c.table('memories').select('id').limit(1).execute())
+print('Supabase OK:', c.table('task_queue').select('id').limit(1).execute())
 "
 
 # Claude Code + GitHub CLI
@@ -287,9 +257,8 @@ Then open the project in Claude Code and run `/triage`.
 | Secrets | `.env` (not committed) |
 | Secrets template | `.env.example` |
 | Personality | `config/SOUL.md` |
-| MCP config (project-scope) | `.mcp.json` (repo root) |
-| Memory server | `mcp-memory/server.py` |
-| Memory schema | `mcp-memory/schema.sql` |
+| Native memory | `~/.claude/projects/<project>/memory/` |
+| Supabase schema (declarative target) | `supabase/schema.sql` |
 | Vendored plugin fork + its pin | `.claude/marketplace/`, [`docs/reference/vendored-plugin-pins.md`](reference/vendored-plugin-pins.md) |
 | Project-scoped skills (jarvis-only) | `.claude/skills/` |
 | User-level skills source of truth | `.claude-userlevel/skills/` (copy into your own `~/.claude/skills/`, see [§4](#4-claude--make-it-your-own-private-dotfiles-repo)) |

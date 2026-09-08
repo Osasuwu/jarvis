@@ -173,8 +173,9 @@ def format_goal_section(goals: list[dict]) -> str:
 
 # -- Goal-movement derivation (#1669) ------------------------------------------
 
-# `goal_list()` (mcp__memory__goal_list) returns rendered markdown, not
-# structured data - one `## <title>` block per goal, a `Slug: `<slug>`` line,
+# `goal_list()` (formerly backed by the `mcp__memory__goal_list` tool,
+# retired in #1801) returns rendered markdown, not structured data - one
+# `## <title>` block per goal, a `Slug: `<slug>`` line,
 # and a `**Progress (N%):**` checklist whose done items end in a
 # `(YYYY-MM-DD)` completion date. This module has no MCP access (pure core,
 # no I/O per the module docstring), so the caller passes the raw markdown
@@ -186,7 +187,9 @@ _GOAL_PROGRESS_BULLET_RE = re.compile(
 )
 
 
-def extract_goal_movements(goal_list_markdown: str, window_start: str, window_end: str) -> list[dict]:
+def extract_goal_movements(
+    goal_list_markdown: str, window_start: str, window_end: str
+) -> list[dict]:
     """Parse `goal_list()`'s raw markdown into format_goal_section()'s input:
     one dict per goal, `{"slug", "title", "progress_note"}` when at least one
     checked Progress bullet carries a completion date inside
@@ -260,7 +263,7 @@ def format_retraction_section(retractions: list[dict]) -> str:
 
 
 def format_window_disclosure(window_start: str, window_end: str, truncated: bool) -> str:
-    """"" when `truncated` is False (AC: disclosure only when the window was
+    """ "" when `truncated` is False (AC: disclosure only when the window was
     actually capped). Otherwise a one-line disclosure of the covered period,
     structural like format_retraction_section's heading — never passed
     through lint_release_notes (it cites no PR/issue, it states the window

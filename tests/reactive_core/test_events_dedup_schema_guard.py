@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent.parent
-SCHEMA = (REPO_ROOT / "mcp-memory" / "schema.sql").read_text(encoding="utf-8")
+SCHEMA = (REPO_ROOT / "supabase" / "schema.sql").read_text(encoding="utf-8")
 CI_BOOTSTRAP = (REPO_ROOT / "tests" / "ci" / "global_task_schema_bootstrap.sql").read_text(
     encoding="utf-8"
 )
@@ -101,7 +101,7 @@ def test_schema_sql_scrubber_rpcs_have_no_stale_onconflict_where() -> None:
     not the WHERE-qualified target that only matches a partial index and
     42P10s against a full one (#1498)."""
     assert not STALE_ONCONFLICT_WHERE_PATTERN.search(SCHEMA), (
-        "mcp-memory/schema.sql still declares a WHERE-qualified "
+        "supabase/schema.sql still declares a WHERE-qualified "
         "`on conflict (dedup_key) where dedup_key is not null` — this cannot "
         "match events.dedup_key's FULL unique constraint (events_dedup_key_key, "
         "#1491) and 42P10s on every call (#1498)"

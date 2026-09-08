@@ -48,9 +48,7 @@ schema_version: "v2"
 
 class_2:
   shared_surface_globs:
-    - "mcp-memory/**"
     - "supabase/**"
-    - ".mcp.json"
     - "config/repos.conf"
   churn_threshold: 400
   min_prod_areas: 2

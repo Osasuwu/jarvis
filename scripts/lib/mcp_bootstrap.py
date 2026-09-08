@@ -1,13 +1,14 @@
-"""Shared stdlib-only helper for the three MCP bootstrap scripts (#1312 AC#4).
+"""Shared stdlib-only helper for MCP bootstrap scripts (#1312 AC#4).
 
-Each launcher (run-memory-server.py, run-status-server.py,
-run-telegram-mcp.py) finds the venv python then hands off to
-run_server_tracked() here: the child's stdout is left connected to the
-parent's (it IS the JSON-RPC transport and must never be touched or
-captured), the child's stderr is redirected to a per-server log file instead
-of inheriting the parent's, and a non-zero exit appends one breadcrumb line
-(timestamp, server name, rc, stderr tail) to .claude/mcp-failures.jsonl for
-scripts/session-context.py's _check_mcp_failures to surface.
+A launcher (currently run-telegram-mcp.py; run-memory-server.py and
+run-status-server.py were retired with the mcp-memory/mcp-status servers in
+#1801) finds the venv python then hands off to run_server_tracked() here: the
+child's stdout is left connected to the parent's (it IS the JSON-RPC
+transport and must never be touched or captured), the child's stderr is
+redirected to a per-server log file instead of inheriting the parent's, and a
+non-zero exit appends one breadcrumb line (timestamp, server name, rc,
+stderr tail) to .claude/mcp-failures.jsonl for scripts/session-context.py's
+_check_mcp_failures to surface.
 """
 
 from __future__ import annotations

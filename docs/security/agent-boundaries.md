@@ -43,7 +43,7 @@ This table is the **single source of truth** — skills reference it rather than
 
 ### Policy
 
-All code changes go through PRs with CI + code review — that is the primary safety gate. File-level blocking is reserved for the narrow surface where a subagent edit could leak secrets into git history *before* review sees it (i.e. weakening the scanners themselves), plus the enforcement scripts themselves (a non-live principal that can modify them can bypass the rest). Repo-level copies of everything else — `config/SOUL.md`, `CLAUDE.md`, `.mcp.json`, `mcp-memory/*` — may be edited in feature branches; the review process rejects anything wrong. Note: user-level mirrors under `~/.claude/` are still blocked for all principals (no PR process there; see "User-level" table below).
+All code changes go through PRs with CI + code review — that is the primary safety gate. File-level blocking is reserved for the narrow surface where a subagent edit could leak secrets into git history *before* review sees it (i.e. weakening the scanners themselves), plus the enforcement scripts themselves (a non-live principal that can modify them can bypass the rest). Repo-level copies of everything else — `config/SOUL.md`, `CLAUDE.md` — may be edited in feature branches; the review process rejects anything wrong. Note: user-level mirrors under `~/.claude/` are still blocked for all principals (no PR process there; see "User-level" table below).
 
 Redrobot follows the same policy: no file-level protection; CI + PR review is sufficient.
 
@@ -63,7 +63,6 @@ Editing these changes behaviour for **every Claude Code session on the device**,
 |------|-----|
 | `~/.claude/settings.json` | User-level hooks — run in every session on this device |
 | `~/.claude/SOUL.md` | User-level identity — loaded via a **bare, line-start** `@SOUL.md` import in `~/.claude/CLAUDE.md` (#1328; the import only actually resolved from #1426 — before that it sat mid-prose and delivered nothing) |
-| `~/.claude/.mcp.json` | User-level MCP config — mounts servers for every project |
 | `~/.claude/skills/*/SKILL.md` | User-level skill definitions — available in every project |
 
 The source of truth for these files lives in the jarvis repo (`config/SOUL.md`, `.claude-userlevel/settings.json`, `.claude-userlevel/.mcp.json`, `.claude-userlevel/skills/*/SKILL.md`). The installer copies or templates them into `~/.claude/`. Direct edits to `~/.claude/` drift from source and are lost on the next `install.ps1 --apply`.

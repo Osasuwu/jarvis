@@ -38,9 +38,7 @@ never merging**.
 ## Workflow per iteration
 
 The "!" shell blocks at the top of this prompt (issue list + git log) run before
-the agent's first turn — they are context, not the agent's tool calls. The
-"recall first" rule below applies to **the first MCP tool call the agent
-issues**, not to the prompt-level context blocks.
+the agent's first turn — they are context, not the agent's tool calls.
 
 1. **Pick** the highest-priority open issue from either search result above,
    not already labelled `status:in-progress`. (You can pull the title from the
@@ -48,17 +46,7 @@ issues**, not to the prompt-level context blocks.
    issue without `plan:locked` never appears in either list — do not pick it
    even if you spot it some other way (e.g. via a stray MCP call); it is
    awaiting a plan from the drain lane, not yours to start.
-2. **Recall first** (mandatory — first MCP tool call). Before any other MCP
-   tool call, invoke the memory bridge:
-   ```
-   memory_recall(query="<issue title + area keywords>", project="jarvis", brief=true, limit=10)
-   ```
-   This surfaces always-load gates, prior decisions, and outcomes from past
-   work in the same area. If recall returns hits, read the relevant ones with
-   `memory_get` before deciding the approach. **Skipping this step is a
-   protocol violation** — the live `/implement` session always recalls; the
-   sandcastle agent must match. Empty result is fine; refusing to call is not.
-3. **Verify (afk:2-plan picks only)** — if the issue you picked in step 1 carries
+2. **Verify (afk:2-plan picks only)** — if the issue you picked in step 1 carries
    the `afk:2-plan` label (i.e. it came from the second search query, the
    `plan:locked` list), re-verify the lock before claiming it (#1691 AC7) —
    the label alone is never trusted; a `plan:locked` issue rendered into the
@@ -77,36 +65,31 @@ issues**, not to the prompt-level context blocks.
    age-based lock release is serviced separately by the periodic
    `plan:locked` sweep. Issues without `afk:2-plan` skip this step entirely;
    they never needed a plan.
-4. **Claim** — `gh issue edit <N> --add-label status:in-progress` and comment
+3. **Claim** — `gh issue edit <N> --add-label status:in-progress` and comment
    `Claimed by sandcastle agent.` The branch is already pinned and checked out
    for you before this container started (`.sandcastle/main.mts` — issue
    #1118) — do NOT create or check out a different branch. Just commit and
    push to the current branch; the supervisor pushes it and opens the PR
    after this run finishes.
-5. **Explore** — read the issue body fully. Check acceptance criteria. Read
-   referenced files. Run a second `memory_recall` keyed off any new entities
-   the issue body introduces.
-6. **Implement** — follow the project /implement skill rules:
+4. **Explore** — read the issue body fully. Check acceptance criteria. Read
+   referenced files.
+5. **Implement** — follow the project /implement skill rules:
    - TDD when tests are non-trivial: red → green → refactor
    - Preserve existing values, defaults, seeds, magic numbers unless the issue
      explicitly says to change them
    - Lint + tests must pass before commit
-7. **Commit** — single rich commit. Do NOT open the PR yourself; the
+6. **Commit** — single rich commit. Do NOT open the PR yourself; the
    supervisor pushes the pinned branch and opens (or updates) the PR after
    this run finishes (AC1, #1118). Just leave the commit(s) on the current
    branch. **The commit message body MUST contain `Closes #<N>` on its own
-   line** (N = the issue you claimed in step 4). The supervisor opens the PR
+   line** (N = the issue you claimed in step 3). The supervisor opens the PR
    with `gh pr create --fill`, which derives the PR body from this commit
    message — if `Closes #<N>` is not in the commit, the merged PR will NOT
    auto-close the issue, silently leaving it open with stale labels (the
    #948 failure mode documented in CLAUDE.md). This is the only place the
    closing keyword can enter a fresh-run PR now that the agent no longer
    opens the PR itself.
-8. **Record outcome** — emit one `outcome_record` describing the iteration
-   (success / partial / failure) with the provenance tags from §"Memory
-   provenance" below. Always record, even on failure — failed outcomes are
-   the most valuable signal for the orchestrator review.
-9. **Stop on this issue** — do NOT merge, push, or open the PR yourself. The
+7. **Stop on this issue** — do NOT merge, push, or open the PR yourself. The
    supervisor pushes the pinned branch and opens the PR; the orchestrator
    (live Claude Code session) reviews and merges separately.
 
@@ -117,12 +100,10 @@ at the top). **Do NOT** follow the standard "Workflow per iteration" above —
 this section replaces it entirely.
 
 1. **Fetch PR info** — `gh pr view $SANDCASTLE_TARGET_PR --json headRefName,state,headRepository,baseRefName`
-   - If this fails (PR closed / branch deleted / response is empty) → call
-     `outcome_record` with `outcome_status="unknown"`,
-     `pattern_tags=['pr-$SANDCASTLE_TARGET_PR', 'rework', 'skipped']`,
-     `task_description="Rework skipped — unable to fetch PR #$SANDCASTLE_TARGET_PR"`.
-     Then **stop** (exit cleanly — no lock, no label, no rework attempt). Do NOT
-     delete any existing lock — a stale lock is a deliberate anomaly signal.
+   - If this fails (PR closed / branch deleted / response is empty) →
+     comment on the PR (if it's even reachable) that rework was skipped
+     because the PR could not be fetched, then **stop** (exit cleanly — no
+     label, no rework attempt).
 2. **Confirm the PR branch** — the supervisor already checked out `<headRefName>`
    for you before this container started (`.sandcastle/main.mts` — issue
    #1118); `git branch --show-current` should already match. The
@@ -130,30 +111,21 @@ this section replaces it entirely.
    a harmless defensive fallback if it somehow doesn't. Either way: commit
    fix commits to this branch. Do NOT create a new branch or PR — the
    supervisor pushes after this run finishes.
-3. **Write per-PR lock** — call `outcome_record` with:
-   - `task_type="fix"`
-   - `task_description="Rework sandcastle agent processing PR #$SANDCASTLE_TARGET_PR"`
-   - `outcome_status="pending"`
-   - `pattern_tags=['pr-$SANDCASTLE_TARGET_PR', 'rework', 'in_flight']`
-   - `project="jarvis"`
-   - provenance per §Memory provenance below
-   Capture the returned outcome UUID — you need it for the terminal update.
-   If you encounter a stale lock (>2h with `in_flight` pattern tag for this PR),
-   flag it in a PR comment but proceed with rework (do NOT auto-release).
-4. **Label the PR** — `gh issue edit $SANDCASTLE_TARGET_PR --add-label status:rework-in-progress`
-5. **Invoke rework skill** — run `/rework $SANDCASTLE_TARGET_PR`. This executes
+3. **Label the PR** — `gh issue edit $SANDCASTLE_TARGET_PR --add-label status:rework-in-progress`.
+   This label **is** the per-PR lock: its presence on entry means a prior
+   rework attempt on this PR did not reach a terminal state (crashed, timed
+   out, or was killed before step 6 could remove it). Adding it again is a
+   harmless no-op via `gh`; if you find it already set, flag that in a PR
+   comment (stale in-flight marker) but proceed with rework anyway — do not
+   treat it as a reason to skip.
+4. **Invoke rework skill** — run `/rework $SANDCASTLE_TARGET_PR`. This executes
    the rework loop (apply review fixes per CRITICAL/MAJOR findings, push, verify
    CI). Wait for its completion or terminal verdict.
-6. **On terminal state**:
-   - **Converged** (all findings resolved): push any remaining commits. Update the
-     lock outcome record via `outcome_update` with `outcome_status="success"`,
-     `outcome_summary="Rework converged — all findings resolved"`.
+5. **On terminal state**:
+   - **Converged** (all findings resolved): push any remaining commits.
      Remove `status:rework-in-progress` label via
      `gh issue edit $SANDCASTLE_TARGET_PR --remove-label status:rework-in-progress`.
-   - **Stuck** (unresolvable findings): update the lock via `outcome_update` with
-     `outcome_status="failure"`,
-     `outcome_summary="Rework stuck — <brief reason>"`.
-     Add `status:needs-human` label via
+   - **Stuck** (unresolvable findings): add `status:needs-human` label via
      `gh issue edit $SANDCASTLE_TARGET_PR --add-label status:needs-human`.
      Remove `status:rework-in-progress` label.
    - **Both paths — final action before exit**: append a rework history entry to
@@ -174,32 +146,13 @@ this section replaces it entirely.
         the body separated by `\n\n---\n\n`.
      d. Update PR body — `gh pr edit $SANDCASTLE_TARGET_PR --body "$(cat <tempfile>)"`
      e. Container exits after this step (no further actions).
-7. **Do NOT touch**: PR title, `Closes` line in body, or any label other than
+6. **Do NOT touch**: PR title, `Closes` line in body, or any label other than
    `status:rework-in-progress` and `status:needs-human`.
-8. **Record iteration outcome** — one `outcome_record` (separate from the lock)
-   with `task_type="fix"`, `outcome_status` matching the rework result
-   (success/partial/failure), `pattern_tags=['pr-$SANDCASTLE_TARGET_PR', 'rework',
-   'iteration']`. This is the sandcastle iteration record for orchestrator
-   tracking — distinct from the per-PR lock.
-9. **Stop** — do NOT merge. The orchestrator reviews and merges separately.
-
-## Memory provenance (mandatory on every memory write)
-
-Every `record_decision`, `memory_store`, `outcome_record`, or any other memory
-MCP write you make in this iteration MUST carry both:
-
-- `source_provenance="sandcastle:agent:<run_id>"` — `<run_id>` is the value
-  of the `SANDCASTLE_RUN_ID` env var injected into the container by
-  `.sandcastle/main.mts` (defaults to the sandcastle run name + UTC timestamp).
-  If for any reason the var is empty, fall back to the current branch name
-  (e.g. `sandcastle:agent:feat/540-foo`).
-- `actor="sandcastle:agent"` — distinguishes agent-attributed writes from
-  orchestrator/session writes during review.
-
-The orchestrator filters and audits sandcastle-attributed rows on these tags;
-omitting them silently merges agent decisions into the un-audited memory
-stream. This is non-negotiable. If the memory tool rejects the write because
-of a missing field, fix the call and retry — do not skip the write.
+7. **Stop** — do NOT merge. The orchestrator reviews and merges separately.
+   The completion supervisor (`.sandcastle/completion.mts`) infers the
+   iteration's outcome automatically from exit code, commit count, and log
+   content once this container exits — there is nothing further to record
+   here.
 
 ## Hard rules (subagent boundaries)
 
@@ -209,27 +162,15 @@ of a missing field, fix the call and retry — do not skip the write.
 - **NEVER edit protected files.** If the issue scope requires touching any of
   these, refuse the issue: comment on it explaining the blocker, add label
   `status:owner-queue`, drop `status:in-progress`, and continue to the next issue.
-  - `.mcp.json`
   - `CLAUDE.md`, `config/SOUL.md`, `CONTEXT.md`
-  - `mcp-memory/server.py`
   - anything under `.github/workflows/`
   - any `.env*` file, `.env.example` included — the `Edit(**/.env.*)` deny
     globs the whole family and cannot carry an exception (#1452)
-
-  Note: at sandbox-ready time the runtime overwrites the worktree's `.mcp.json`
-  with the container-scoped MCP config (`/opt/sandcastle/container-mcp.json`).
-  That is **infrastructure setup**, not an agent edit, and the entry is
-  excluded from staging via `.git/info/exclude` so it cannot be accidentally
-  committed by `git add -A`. The protected-file rule above governs **agent
-  edits** to the file — those are still forbidden.
 - **NEVER output secret values** — not in PR bodies, comments, commit messages,
-  logs, or memory. Describe an error without quoting the value. Supabase keys
-  and `GH_TOKEN` are the most likely accidental leaks; if either appears in
-  any output, redact before continuing.
-- **NEVER use a Supabase service-role key** — the container is configured with
-  the anon key only (decision 228a2d9b). If memory writes start failing with
-  RLS errors after slice 3 lands (#542), that is the policy doing its job, not
-  a bug to bypass.
+  or logs. Describe an error without quoting the value. `GH_TOKEN` is the
+  most likely accidental leak; if it appears in any output, redact before
+  continuing. (The container receives no Supabase credentials at all —
+  those are host-side only now, per #1801.)
 - **If blocked** (missing context, ambiguous AC, failing tests you cannot
   resolve), comment on the issue with what's missing, drop `status:in-progress`,
   and continue. Do not force a half-fix.

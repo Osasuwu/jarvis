@@ -39,7 +39,6 @@ T2_CANONICAL = {
 _USER_LEVEL_PROTECTED_FILES = {
     "settings.json",
     "SOUL.md",
-    ".mcp.json",
 }
 
 

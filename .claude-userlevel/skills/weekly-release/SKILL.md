@@ -35,7 +35,7 @@ Same refusal pattern used elsewhere for routine-gated skills — decision `1b7ff
 
 ## Step 1 — Gather
 
-No MCP tool is registered for this yet (same registration-ceiling situation as `mcp-morning`) — call `gather()` in-process:
+No MCP tool is registered for this yet (same registration-ceiling situation the now-retired `mcp-morning` server used to hit) — call `gather()` in-process:
 
 ```bash
 python -c "

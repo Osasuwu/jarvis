@@ -231,17 +231,17 @@ if (!ghToken) {
   );
 }
 
-// Memory MCP bridge env (slice 2, issue #540). Forwarded into the container so
-// the in-container memory MCP server (/opt/mcp-memory/server.py) can reach
-// Supabase. SUPABASE_KEY MUST be the anon key — service-role is banned per
-// decision 228a2d9b, enforced by role (not mere non-emptiness) per decision
-// 94c55c7b (#1121). VOYAGE_API_KEY is optional (recall degrades to keyword).
+// Supabase creds — host-side only, used solely to emit the completion event
+// (emitCompletionEvent below) once a run finishes. Never injected into the
+// container env (the in-container memory MCP bridge that used to consume
+// these was retired along with the memory stack, #1801). SUPABASE_KEY MUST
+// still be the anon key — service-role is banned per decision 228a2d9b,
+// enforced by role (not mere non-emptiness) per decision 94c55c7b (#1121).
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
-const voyageKey = process.env.VOYAGE_API_KEY ?? "";
 if (!supabaseUrl || !supabaseKey) {
   throw new Error(
-    "SUPABASE_URL and SUPABASE_KEY are required for the memory MCP bridge. " +
+    "SUPABASE_URL and SUPABASE_KEY are required to emit the completion event. " +
       "Set them in .sandcastle/.env — anon key only, never service-role. " +
       "See .sandcastle/.env.example for details.",
   );
@@ -255,10 +255,10 @@ try {
   );
 }
 
-// Stable per-run identifier consumed by the agent's source_provenance tags
-// (prompt.md §"Memory provenance") AND, as of #1118, the fresh-path branch
-// pin below. Format: <run-name>-<UTC-yyyymmdd-hhmmss>. Stays opaque (no
-// secrets) so it's safe to embed in memory rows, PR bodies, and branch names.
+// Stable per-run identifier consumed by the completion event's dedup key
+// AND, as of #1118, the fresh-path branch pin below. Format:
+// <run-name>-<UTC-yyyymmdd-hhmmss>. Stays opaque (no secrets) so it's safe
+// to embed in PR bodies and branch names.
 //
 // AC4 (#1118) — a malformed pin must never reach the supervisor's run() call.
 // Validated here, BEFORE it's used to build a branch name, because an
@@ -346,7 +346,7 @@ const repo = process.env.SANDCASTLE_REPO ?? "Osasuwu/jarvis";
 // Secrets the fail-loud scrubber must strip from failure text before anything
 // is persisted. The agent is instructed never to print them, but a crash tail
 // is untrusted input (Protect-LogTail precedent, Run-Sandcastle.ps1).
-const knownSecrets = [supabaseUrl, supabaseKey, ghToken, voyageKey, oauthTokenStr].filter(
+const knownSecrets = [supabaseUrl, supabaseKey, ghToken, oauthTokenStr].filter(
   Boolean,
 ) as string[];
 // AC3 — pinned runs are single-iteration. Branch placement is now pinned on
@@ -430,12 +430,6 @@ try {
         ...authEnv,
         // Forward host-side gh credentials so the agent can claim issues + open PRs.
         GH_TOKEN: ghToken,
-        // Memory MCP bridge — Claude Code expands ${...} in the project-scope
-        // .mcp.json (copied from /opt/sandcastle/container-mcp.json by the
-        // onSandboxReady hook below) from these container env vars.
-        SUPABASE_URL: supabaseUrl,
-        SUPABASE_KEY: supabaseKey,
-        VOYAGE_API_KEY: voyageKey,
         // Per-run id for the agent's source_provenance tags. See prompt.md.
         SANDCASTLE_RUN_ID: runId,
         // Sweeper correlation key (#1122 AC2) — the sweeper's docker inspect
@@ -461,41 +455,12 @@ try {
     // rework this is the PR's existing branch (`gh pr view`-fetched above), so
     // no new branch is ever created for that path.
     branchStrategy: { type: "branch", branch: pinnedBranch },
-    hooks: {
-      sandbox: {
-        onSandboxReady: [
-          // AC7 — sandcastle runs all onSandboxReady hooks CONCURRENTLY
-          // (Effect.all, concurrency "unbounded" — verified in package source;
-          // see CONTEXT.md "AFK spawn substrate"), so order-dependent setup
-          // must be a single chained command, never separate hook objects —
-          // three sibling hooks here previously raced on which ran first.
-          //
-          // Sandcastle's own SandboxLifecycle already propagates host git
-          // user.name/user.email via `git config --global` before user hooks
-          // run, so explicit overrides here are redundant. Repo-local
-          // `git config` (without --global) would write to the worktree's
-          // parent .git/config which on Windows bind-mounts races on the
-          // .lock file (#607 v2 / Workshop PC4 repro 2026-05-13).
-          // Override the worktree's .mcp.json with the container-scoped version
-          // (memory MCP only). The host .mcp.json registers many host-only
-          // servers that would fail inside the sterile container. Sandcastle
-          // uses copy-on-write worktrees so this never touches the host repo.
-          // Adding the path to info/exclude first ensures `git add -A` inside
-          // the agent loop cannot accidentally stage the override.
-          //
-          // `.git` in a worktree is a *file* (gitdir pointer), not a directory,
-          // so `>> .git/info/exclude` opens via the shell and fails with ENOTDIR.
-          // `git rev-parse --git-path info/exclude` resolves the actual shared
-          // info/exclude path inside the parent .git directory (#607).
-          {
-            command:
-              "mkdir -p $(git rev-parse --git-path info) && " +
-              "echo /.mcp.json >> $(git rev-parse --git-path info/exclude) && " +
-              "cp /opt/sandcastle/container-mcp.json .mcp.json",
-          },
-        ],
-      },
-    },
+    // No onSandboxReady hooks needed: the .mcp.json override that used to run
+    // here (worktree .mcp.json -> container-scoped memory-MCP-only version)
+    // was retired along with the memory stack (#1801); the root .mcp.json it
+    // overrode was itself dropped in #1800. Sandcastle's own SandboxLifecycle
+    // already propagates host git user.name/user.email via
+    // `git config --global` before any user hooks would run.
   });
 
   // AC1 — supervisor is the enforcement authority, not the library or the

@@ -304,7 +304,7 @@ When writing `agents/perception_<source>.py`, hit every one:
 - [`agents/task_dispatch.py`](../../agents/task_dispatch.py) — what consumes the rows perception produces (reactive-core successor to the retired dispatcher)
 - [`safety.md`](safety.md) — `safety.Tier` (the *other* tier vocabulary) and the gate model
 - [`escalation.md`](escalation.md) — what fires after perception INSERTs and dispatcher picks up
-- [`mcp-memory/schema.sql`](../../mcp-memory/schema.sql) + [`supabase/migrations/20260422134442_create_task_queue.sql`](../../supabase/migrations/20260422134442_create_task_queue.sql) — `task_queue` columns and FSM check constraint
+- [`supabase/schema.sql`](../../supabase/schema.sql) + [`supabase/migrations/20260422134442_create_task_queue.sql`](../../supabase/migrations/20260422134442_create_task_queue.sql) — `task_queue` columns and FSM check constraint
 - [`agents/README.md`](../../agents/README.md) — agent module index
 
 ## Smoke test trace

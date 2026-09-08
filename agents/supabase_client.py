@@ -2,17 +2,12 @@
 
 Reactive-core agents call Supabase directly via ``supabase-py`` — MCP is
 Claude Code's protocol and isn't available outside a Claude session. The
-read/write helpers here mirror a subset of ``mcp-memory/server.py`` so
-data written by an agent shows up in Claude Code's ``memory_recall`` /
-``events_list`` / ``goal_list`` and vice versa.
+read/write helpers here give agents access to the shared ``events`` /
+``goals`` tables that Claude Code also reads and writes.
 
 Scope (Sprint 1, issue #173):
-  * Reads — ``list_memories``, ``list_events``, ``list_goals``
+  * Reads — ``list_events``, ``list_goals``
   * Writes — ``store_event``, ``update_goal_progress``, ``audit``
-
-Anything more (memory_store, task_outcomes, consolidation, …) stays in
-Claude Code for now. Agents are consumers of the event inbox, not full
-owners of the knowledge base.
 """
 
 from __future__ import annotations
@@ -43,41 +38,6 @@ def get_client(config: AgentConfig | None = None) -> Client:
 
 
 # -- Read helpers -----------------------------------------------------------
-
-
-def list_memories(
-    *,
-    project: str | None = None,
-    type: str | None = None,
-    limit: int = 10,
-    client: Client | None = None,
-    config: AgentConfig | None = None,
-) -> list[dict[str, Any]]:
-    """Return memory rows — same table Claude Code reads via ``memory_recall``.
-
-    Semantics mirror the MCP server (``mcp-memory/server.py``):
-
-    * Soft-deleted rows (``deleted_at IS NOT NULL``) are excluded — agents
-      must never see memories the user has removed.
-    * When ``project`` is specified, global (NULL-project) memories are
-      included alongside the project-scoped rows. Global memories carry
-      cross-project rules/feedback that the agent still needs.
-
-    Ordering matches the MCP server's default: most recently updated first.
-    """
-    cli = client or get_client(config)
-    q = (
-        cli.table("memories")
-        .select("id, name, type, project, description, content, tags, updated_at")
-        .is_("deleted_at", "null")
-        .order("updated_at", desc=True)
-        .limit(limit)
-    )
-    if project is not None:
-        q = q.or_(f"project.eq.{project},project.is.null")
-    if type is not None:
-        q = q.eq("type", type)
-    return q.execute().data or []
 
 
 def list_events(

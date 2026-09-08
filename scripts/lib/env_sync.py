@@ -101,19 +101,20 @@ REGISTRY: list[ManagedEnv] = [
     ManagedEnv(
         name="main",
         venv_python=_VENV_PYTHON,
-        manifest=_REPO_ROOT / "mcp-memory" / "requirements.txt",
+        # mcp-memory/{requirements.txt,uv.lock} were retired along with the
+        # rest of the memory stack (#1801); the root project now carries every
+        # extra (including the `telegram` extra scripts/telegram-mcp-server.py
+        # needs) directly, so this env tracks the root pyproject.toml/uv.lock.
+        manifest=_REPO_ROOT / "pyproject.toml",
         stamp_path=_REPO_ROOT / ".venv" / ".deps-stamp",
-        lockfile=_REPO_ROOT / "mcp-memory" / "uv.lock",  # (#1313)
-        # Third-party top-level imports across mcp-memory/server.py,
-        # mcp-status/server.py, scripts/telegram-mcp-server.py. Keep this in
-        # sync with the meta-test in tests/infrastructure/test_env_sync.py —
-        # that test fails closed if a server file gains an import this
-        # registry doesn't know about.
+        lockfile=_REPO_ROOT / "uv.lock",  # (#1313)
+        # Third-party top-level imports across scripts/telegram-mcp-server.py,
+        # the sole surviving MCP server file post-#1801. Keep this in sync
+        # with the meta-test in tests/infrastructure/test_env_sync.py — that
+        # test fails closed if a server file gains an import this registry
+        # doesn't know about.
         probe_modules=(
             "mcp",
-            "supabase",
-            "voyageai",
-            "httpx",
             "dotenv",
             "nest_asyncio",
             "pythonjsonlogger",
@@ -278,16 +279,24 @@ def _run_uv_sync(env_dir: Path, venv_python: Path, log_path: Path, timeout: int)
     is the UV_PROJECT_ENVIRONMENT env var (astral-sh/uv#20060 confirms there's
     still no equivalent CLI flag), pointed at venv_python's venv root.
 
-    `--inexact` is required: the shared venv also carries the root
-    jarvis-agent project's own extras (e.g. `agents` — psycopg, ollama,
-    psutil, apprise — used by wake_driver/sandcastle_supervisor, not by
-    mcp-memory). Without `--inexact`, `uv sync` treats mcp-memory's own
-    dependency set as the venv's complete target and removes everything
-    outside it — silently uninstalling psycopg from underneath a live
-    wake_driver every time an MCP server self-heals. Hit live 2026-09-01:
-    a manual `uv sync --all-extras` restored psycopg, then the next
-    mcp-memory heal (triggered by a routine MCP server restart) pruned it
-    straight back out.
+    `--all-extras` is required post-#1801: the packages this env actually
+    probes for (mcp, nest_asyncio, pythonjsonlogger, telethon) now live behind
+    the root project's `telegram` extra rather than as plain base
+    dependencies (unlike the old, now-retired mcp-memory sub-project, which
+    declared them unconditionally) — a plain `uv sync --project .` installs
+    only the base `dependencies` list and would leave them missing.
+
+    `--inexact` is required alongside it: the shared venv also carries extras
+    this specific heal has no business touching if something upstream (e.g.
+    a `pip install` outside uv's view) put an unrelated package there.
+    Without `--inexact`, `uv sync` treats its own resolved set as the venv's
+    *complete* target and removes everything outside it — this bit the
+    project live on 2026-09-01, when a routine MCP server restart's self-heal
+    (at the time scoped to the mcp-memory sub-project only, before the
+    `--all-extras` root-project switch) silently uninstalled psycopg from
+    underneath a live wake_driver. `--all-extras` closes the original gap
+    (every extra, including `agents`, is now part of this env's own sync
+    target) and `--inexact` remains as defense in depth.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     sync_env = dict(os.environ)
@@ -295,7 +304,7 @@ def _run_uv_sync(env_dir: Path, venv_python: Path, log_path: Path, timeout: int)
     with open(log_path, "ab") as logf:
         logf.write(f"\n--- env-sync heal (uv sync) {time.time()} ---\n".encode("utf-8"))
         proc = subprocess.Popen(
-            ["uv", "sync", "--project", str(env_dir), "--inexact"],
+            ["uv", "sync", "--project", str(env_dir), "--all-extras", "--inexact"],
             cwd=str(env_dir),
             env=sync_env,
             stdout=logf,

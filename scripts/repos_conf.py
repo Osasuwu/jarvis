@@ -9,7 +9,7 @@ Two entry points, deliberately different strictness:
 - ``parse_repos_conf`` — legacy, permissive, name-only. Only the first
   whitespace-delimited token (the ``owner/repo``) is extracted; every
   trailing token is silently discarded regardless of recognition. This
-  is depended on by status_gather.py / morning_gather.py and their tests
+  is depended on by weekly_release_gather.py and its tests
   (#1059) — it must never raise and must never change shape.
 - ``parse_repos_conf_entries`` — structured parser with per-token
   validation, for consumers that need repos.conf metadata (the

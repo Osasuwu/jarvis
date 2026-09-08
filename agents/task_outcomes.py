@@ -94,7 +94,7 @@ def record_skip_outcome(payload: dict[str, Any]) -> None:
     """Best-effort ``task_outcomes`` write for a skipped-duplicate (#931).
 
     Sandcastle-anon insert, so ``source_provenance`` carries the required
-    ``sandcastle:`` prefix (mcp-memory/schema.sql RLS, #542). Any failure is the
+    ``sandcastle:`` prefix (supabase/schema.sql RLS, #542). Any failure is the
     caller's to swallow — this never raises on the happy path but the caller
     still guards it. ``GITHUB_REPO`` builds the issue URL for the ``issue_url``
     link column.

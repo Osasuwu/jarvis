@@ -161,7 +161,6 @@ def test_supabase_client_surface() -> None:
     from agents import supabase_client as sb
 
     # Reads
-    assert callable(sb.list_memories)
     assert callable(sb.list_events)
     assert callable(sb.list_goals)
     # Writes
