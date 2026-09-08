@@ -179,11 +179,10 @@ install. Unauthorized senders getting through → re-run
 `/telegram:access policy allowlist`.
 
 > **`TELEGRAM_ALLOW_USER_ID` is a different thing** — it is *not* part of Channels
-> pairing above. It's the target chat id read by the orchestrator-escalation notifier in
-> [`agents/notify.py`](../agents/notify.py) (currently the env lookups at lines 148 and
-> 297, doc comment at line 10) — used when jarvis needs to page you outside of an active
-> session. Set it in `.env` if you want that notifier to reach you on Telegram; it's
-> unrelated to whether Channels pairing succeeded.
+> pairing above. It was the target chat id read by the orchestrator-escalation notifier,
+> `agents/notify.py`, demolished along with the rest of reactive-core in #1802 with no
+> replacement yet — used when jarvis needed to page you outside of an active session.
+> Currently unused; unrelated to whether Channels pairing succeeded.
 
 ## 8. GitHub Actions secrets (if you run this repo's CI)
 

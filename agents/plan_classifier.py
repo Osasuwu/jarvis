@@ -151,9 +151,10 @@ def classify_task_row(config: PlanReviewConfig, row: dict[str, Any]) -> int:
 
     The single entry point every consumer (interactive lane, drain,
     container pick, CI diff-gate) calls against a ``task_queue``-shaped
-    dict — same ``scope_files`` key convention as :mod:`agents.scope_hash`
-    and :mod:`agents.escalation`. Callers never re-derive the threshold
-    conditions themselves; they read a task row and call this function.
+    dict — same ``scope_files`` key convention as the reactive-core modules
+    this classified for before they were demolished in #1802. Callers never
+    re-derive the threshold conditions themselves; they read a task row and
+    call this function.
     Missing fields default to the least-alarming values rather than
     raising, matching the ``row.get(...)`` convention used elsewhere in
     ``agents/``.

@@ -5,7 +5,7 @@ Modules: `agents/perception_*.py` (one per source). Federation & Delegation Spri
 #388 (GitHub), #389 (self-perception via morning_check). Telegram (#387)
 deferred — see "Future sources" below.
 
-The task-dispatch path (S2-3, [`agents/task_dispatch.py`](../../agents/task_dispatch.py) — the reactive-core successor to the retired dispatcher) consumes
+The task-dispatch path (S2-3, `agents/task_dispatch.py` — the reactive-core successor to the retired dispatcher, itself demolished with reactive-core in #1802) consumes
 `task_queue` rows. Sprint 1–3 wired the **consume** side. Sprint 4 wires
 the **produce** side: external signals → rows → dispatcher's existing FSM.
 
@@ -108,8 +108,8 @@ prefix=`github:issue:`.)
 
 Caveat: as of Sprint 4, dispatch is fire-and-forget — it sets
 `dispatched_at` and never flips status to `done` itself (the fire-and-forget
-spawn now lives in [`agents/executor.py`](../../agents/executor.py), salvaged
-from the retired dispatcher). The done-watcher in #388
+spawn now lives in `agents/executor.py`, salvaged
+from the retired dispatcher — itself demolished with reactive-core in #1802). The done-watcher in #388
 will idle until a result-collection path lands (future sprint) or until
 the principal flips status manually via `/verify`. Implementers: write the
 watcher, but expect zero firings until that upstream change.
@@ -263,7 +263,7 @@ gate_strictness = f(source, source_tier, executor_model)
 
 This is not a binary "on/off" — it's a parameterisation of the existing
 `safety.gate()` rules. Sprint 4 does not extend the gate's call
-signature ([`safety.py`](../../agents/safety.py)). What changes is
+signature (`agents/safety.py`, demolished with reactive-core in #1802). What changes is
 *which actions* a perception-spawned dispatch is allowed to attempt:
 
 | Axis | Effect on strictness | Example |
@@ -301,9 +301,9 @@ When writing `agents/perception_<source>.py`, hit every one:
 
 ## Cross-references
 
-- [`agents/task_dispatch.py`](../../agents/task_dispatch.py) — what consumes the rows perception produces (reactive-core successor to the retired dispatcher)
-- [`safety.md`](safety.md) — `safety.Tier` (the *other* tier vocabulary) and the gate model
-- [`escalation.md`](escalation.md) — what fires after perception INSERTs and dispatcher picks up
+- `agents/task_dispatch.py` — what consumes the rows perception produces (reactive-core successor to the retired dispatcher; demolished with reactive-core in #1802)
+- `safety.py` — `safety.Tier` (the *other* tier vocabulary) and the gate model (demolished with reactive-core in #1802)
+- escalation — what fires after perception INSERTs and dispatcher picks up (demolished with reactive-core in #1802)
 - [`supabase/schema.sql`](../../supabase/schema.sql) + [`supabase/migrations/20260422134442_create_task_queue.sql`](../../supabase/migrations/20260422134442_create_task_queue.sql) — `task_queue` columns and FSM check constraint
 - [`agents/README.md`](../../agents/README.md) — agent module index
 

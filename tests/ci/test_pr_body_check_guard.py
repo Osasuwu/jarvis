@@ -30,7 +30,9 @@ def evaluate(body: str, labels: list[str], title: str = "") -> tuple[bool, str]:
     if "priority:critical" in labels:
         return True, "hotfix"
 
-    if re.search(r"\[no-issue\]", body, re.IGNORECASE) or re.search(r"\[no-issue\]", title, re.IGNORECASE):
+    if re.search(r"\[no-issue\]", body, re.IGNORECASE) or re.search(
+        r"\[no-issue\]", title, re.IGNORECASE
+    ):
         return True, "no-issue"
 
     if re.match(r"^refactor(\([^)]*\))?:", title, re.IGNORECASE):

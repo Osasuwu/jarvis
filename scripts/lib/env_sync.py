@@ -102,24 +102,14 @@ REGISTRY: list[ManagedEnv] = [
         name="main",
         venv_python=_VENV_PYTHON,
         # mcp-memory/{requirements.txt,uv.lock} were retired along with the
-        # rest of the memory stack (#1801); the root project now carries every
-        # extra (including the `telegram` extra scripts/telegram-mcp-server.py
-        # needs) directly, so this env tracks the root pyproject.toml/uv.lock.
+        # rest of the memory stack (#1801); the vendored Telegram MCP server
+        # (the only other consumer of this env) was retired in #1802. The
+        # root project still carries every extra directly, so this env
+        # tracks the root pyproject.toml/uv.lock.
         manifest=_REPO_ROOT / "pyproject.toml",
         stamp_path=_REPO_ROOT / ".venv" / ".deps-stamp",
         lockfile=_REPO_ROOT / "uv.lock",  # (#1313)
-        # Third-party top-level imports across scripts/telegram-mcp-server.py,
-        # the sole surviving MCP server file post-#1801. Keep this in sync
-        # with the meta-test in tests/infrastructure/test_env_sync.py — that
-        # test fails closed if a server file gains an import this registry
-        # doesn't know about.
-        probe_modules=(
-            "mcp",
-            "dotenv",
-            "nest_asyncio",
-            "pythonjsonlogger",
-            "telethon",
-        ),
+        probe_modules=("dotenv",),
     ),
 ]
 

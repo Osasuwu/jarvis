@@ -88,8 +88,7 @@ class TestClaudeMdIsBareImport:
 class TestDeletionTargetsStayDeleted:
     def test_old_invariants_md_removed(self):
         assert not INVARIANTS_MD_PATH.exists(), (
-            f"{INVARIANTS_MD_PATH} was folded into AGENTS.md by #1791 and must "
-            "not be reinstated"
+            f"{INVARIANTS_MD_PATH} was folded into AGENTS.md by #1791 and must not be reinstated"
         )
 
     def test_claude_rules_dir_removed(self):

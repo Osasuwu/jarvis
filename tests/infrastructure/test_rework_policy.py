@@ -125,12 +125,8 @@ class TestScopeCreepGuard:
     def test_file_outside_initial_diff_triggers_scope_creep(self):
         """AC: attempt 2, files touched include one outside initial diff → stuck_scope."""
         history = [
-            make_attempt(
-                1, findings=[f("regression", "a.py")], files_touched={"a.py", "b.py"}
-            ),
-            make_attempt(
-                2, findings=[f("concurrency", "c.py")], files_touched={"a.py", "c.py"}
-            ),
+            make_attempt(1, findings=[f("regression", "a.py")], files_touched={"a.py", "b.py"}),
+            make_attempt(2, findings=[f("concurrency", "c.py")], files_touched={"a.py", "c.py"}),
         ]
         result = decide(
             attempts=2,
@@ -142,9 +138,7 @@ class TestScopeCreepGuard:
     def test_all_files_within_initial_diff_is_safe(self):
         """All files in attempt stay within initial diff → scope OK."""
         history = [
-            make_attempt(
-                1, findings=[f("regression", "a.py")], files_touched={"a.py", "b.py"}
-            ),
+            make_attempt(1, findings=[f("regression", "a.py")], files_touched={"a.py", "b.py"}),
             make_attempt(2, findings=[f("concurrency", "a.py")], files_touched={"a.py"}),
         ]
         result = decide(

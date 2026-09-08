@@ -1,15 +1,10 @@
 """Plan-lock helper — canonicalize/hash a ``## Plan`` section, and a strict
 parser that rejects malformed plans (issue #1685).
 
-Sibling module to :mod:`agents.scope_hash` (issue #773's consolidation
-pattern: one module, many callers) — but this hashes plan *text*, not a
-file list, so it is a distinct primitive rather than an extension of
-``scope_hash``.
-
 Canonicalization: CRLF -> LF, then strip trailing whitespace from every
 line, so a digest is stable across line-ending and trailing-whitespace
 variants of an otherwise-identical plan (golden tests in
-``tests/reactive_core/test_plan_lock.py``).
+``tests/plan_review/test_plan_lock.py``).
 """
 
 from __future__ import annotations
@@ -38,8 +33,9 @@ class ParsedPlan:
     lock: str
 
 
-# Public: reused by agents.plan_section.replace_plan_section (#1689) so the
-# heading/next-heading section-scoping recipe has exactly one implementation.
+# Public: the heading/next-heading section-scoping recipe consumed by
+# `## Plan` section replacement logic (formerly agents.plan_section,
+# demolished with reactive-core in #1802).
 HEADING_RE = re.compile(r"^##\s*Plan\s*$", re.MULTILINE)
 NEXT_HEADING_RE = re.compile(r"^#{1,6}(?:\s|$)", re.MULTILINE)
 _HEADING_RE = HEADING_RE

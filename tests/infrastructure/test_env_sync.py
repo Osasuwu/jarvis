@@ -1,11 +1,8 @@
 """Tests for scripts/lib/env_sync.py (#1312).
 
-Covers AC#1 (check/heal core), AC#2 (lock reclaim), and the registry slice
-of AC#8's meta-test (probe_modules coverage of third-party imports across
-the three MCP server files).
+Covers AC#1 (check/heal core) and AC#2 (lock reclaim).
 """
 
-import ast
 import json
 import os
 import subprocess
@@ -309,64 +306,6 @@ def test_heal_returns_locked_when_second_caller_blocked(tmp_path, monkeypatch):
 
     assert result.success is False
     assert result.reason == "locked"
-
-
-# ---------------------------------------------------------------------------
-# Registry meta-test (AC#8): probe_modules must cover every third-party
-# top-level import across the MCP server files. This is the standing
-# guard against the nest_asyncio/telethon class of silent drift recurring.
-#
-# mcp-memory/server.py and mcp-status/server.py were retired along with the
-# rest of the memory stack (#1801) — scripts/telegram-mcp-server.py is now
-# the sole surviving MCP server file this guard covers.
-# ---------------------------------------------------------------------------
-
-_STDLIB_ALLOWLIST = set(sys.stdlib_module_names) if hasattr(sys, "stdlib_module_names") else set()
-
-_SERVER_FILES = [
-    _REPO_ROOT / "scripts" / "telegram-mcp-server.py",
-]
-
-# Local first-party packages that show up as top-level imports but are not
-# pip-installed third-party dependencies (repo-local modules).
-_FIRST_PARTY_ALLOWLIST = {"scripts", "client", "embeddings", "handlers"}
-
-
-def _is_sibling_module(name: str, source_dir: Path) -> bool:
-    return (source_dir / f"{name}.py").exists() or (source_dir / name / "__init__.py").exists()
-
-
-def _top_level_third_party_imports(path: Path) -> set:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    found = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                found.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.level and node.level > 0:
-                continue  # relative import, always first-party
-            if node.module:
-                found.add(node.module.split(".")[0])
-    return {
-        m
-        for m in found
-        if m not in _STDLIB_ALLOWLIST
-        and m not in _FIRST_PARTY_ALLOWLIST
-        and not _is_sibling_module(m, path.parent)
-    }
-
-
-def test_registry_probe_modules_cover_all_server_third_party_imports():
-    main_env = env_sync.get_env("main")
-    assert main_env is not None
-
-    required = set()
-    for server_file in _SERVER_FILES:
-        required |= _top_level_third_party_imports(server_file)
-
-    missing = required - set(main_env.probe_modules)
-    assert not missing, f"probe_modules missing third-party imports: {missing}"
 
 
 # ---------------------------------------------------------------------------

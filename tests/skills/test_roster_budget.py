@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # a short description before tripping the regression guard.
 ROSTER_CHAR_BUDGET = 6500
 
+
 def test_roster_stays_under_budget():
     entries = load_skills()
     total = total_roster_chars(entries)

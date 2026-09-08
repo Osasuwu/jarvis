@@ -113,11 +113,4 @@ def _no_live_supabase(monkeypatch):
             "in the test instead."
         )
 
-    # Blocked at create_client, not get_client: get_client's own
-    # missing-credentials RuntimeError runs first and is itself under test
-    # (test_supabase_client_errors_without_credentials), so blocking the outer
-    # function would shadow the contract it asserts. Both seams are patched
-    # because agents/supabase_client.py imports the name at module level while
-    # every scripts/ helper imports it lazily inside the function.
     monkeypatch.setattr("supabase.create_client", _blocked, raising=False)
-    monkeypatch.setattr("agents.supabase_client.create_client", _blocked, raising=False)
