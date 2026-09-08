@@ -109,7 +109,7 @@ class TestResolveIsClass2:
 
     def test_class_2_label_present_returns_true(self) -> None:
         client = mock.MagicMock()
-        client.get_issue.return_value = {"labels": [{"name": "class:2"}, {"name": "task"}]}
+        client.get_issue.return_value = {"labels": [{"name": "afk:2-plan"}, {"name": "task"}]}
         assert resolve_is_class_2(42, client=client) is True
         client.get_issue.assert_called_once_with(42)
 
