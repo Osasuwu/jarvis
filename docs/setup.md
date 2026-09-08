@@ -35,19 +35,25 @@ notepad config\repos.conf
 nano config/repos.conf
 ```
 
-## 2. Run the device setup script
+## 2. Create the Python environment
 
 ```bash
-python scripts/setup-device.py
+uv sync --project .
 ```
 
-This is idempotent — safe to re-run anytime. It:
+```bash
+# Windows
+copy .env.example .env
 
-1. Creates `.venv/` and installs locked dependencies (`uv.lock`)
-2. Copies `.env.example` → `.env` (you fill in the values, see below)
-3. Validates Python packages, env vars, config files, CLI tools
-4. Installs the Claude Code plugins listed in [§7](#7-plugins) — the vendored fork
-   directly from `.claude/marketplace`, the rest from the official Anthropic marketplace
+# Linux / macOS
+cp .env.example .env
+```
+
+`uv sync` is idempotent — safe to re-run anytime — and creates `.venv/`, installing the
+locked dependencies from `uv.lock`. Fill in the copied `.env` per [§3](#3-fill-in-secrets-env)
+below. Install the Claude Code plugins listed in [§7](#7-plugins) separately — the
+vendored fork from `.claude/marketplace`, the rest from the official Anthropic
+marketplace.
 
 ## 3. Fill in secrets (`.env`)
 
@@ -100,22 +106,19 @@ the same database instance** — vectors are model-specific.
 
 Jarvis used to ship an installer (`install.ps1` / `install.sh` /
 `scripts/install/installer.py`) that synced skills, hooks, and MCP config from this
-repo's `.claude-userlevel/` into `~/.claude/` on every device. **That installer still
-exists in this repo today** and remains the sync mechanism for the operator's own
-existing devices while the migration tracked by
-[#1798](https://github.com/Osasuwu/jarvis/issues/1798)/[#1799](https://github.com/Osasuwu/jarvis/issues/1799)/[#1800](https://github.com/Osasuwu/jarvis/issues/1800)/[#1803](https://github.com/Osasuwu/jarvis/issues/1803)
-is in flight — if you're picking up an existing jarvis device that already runs it, keep
-using it.
+repo's `.claude-userlevel/` into `~/.claude/` on every device. **That installer was
+retired in [#1800](https://github.com/Osasuwu/jarvis/issues/1800).** Per decision
+[`57fd2895`](https://github.com/Osasuwu/jarvis), the target model is: `~/.claude/` is
+*your own* private dotfiles repo, which you create and version yourself (like a
+personal `dotfiles` repo for shell config) — not something synced in from
+`jarvis/.claude-userlevel/` by a script.
 
-**If you're setting up `~/.claude/` for the first time, skip the legacy installer
-entirely.** Per decision [`57fd2895`](https://github.com/Osasuwu/jarvis), the target
-model is: `~/.claude/` is *your own* private dotfiles repo, which you create and version
-yourself (like a personal `dotfiles` repo for shell config) — not something synced in
-from `jarvis/.claude-userlevel/` by a script. Copy what you want from
-`.claude-userlevel/CLAUDE.md`, `SOUL.md`, `DOCTRINE.md`, and `.claude-userlevel/skills/`
-into your own `~/.claude/`, put it under `git`, and adapt it to your own setup. The
-manual MCP registration checklist below is exactly what replaces what the legacy
-installer would otherwise have auto-seeded into `.mcp.json`.
+Copy what you want from [`.claude-userlevel/skills/`](../.claude-userlevel/skills/)
+(the only thing left under `.claude-userlevel/` — the source of truth for user-level
+skills) into your own `~/.claude/skills/`, and use [`config/SOUL.md`](../config/SOUL.md)
+as the template for your own `~/.claude/SOUL.md`. Put `~/.claude/` under `git` and adapt
+it to your own setup. The manual MCP registration checklist below is exactly what
+replaces what the legacy installer would otherwise have auto-seeded.
 
 ## 5. Verify the memory server
 
@@ -153,8 +156,7 @@ Jarvis's user-scope MCP servers are `memory`, `status` (both project-local — s
 
 ## 7. Plugins
 
-`python scripts/setup-device.py` (§2) installs all of these automatically. Manual
-install commands below if you need to redo one:
+Install commands below for each plugin:
 
 | Plugin | Source | Install |
 |---|---|---|
@@ -290,4 +292,4 @@ Then open the project in Claude Code and run `/triage`.
 | Memory schema | `mcp-memory/schema.sql` |
 | Vendored plugin fork + its pin | `.claude/marketplace/`, [`docs/reference/vendored-plugin-pins.md`](reference/vendored-plugin-pins.md) |
 | Project-scoped skills (jarvis-only) | `.claude/skills/` |
-| Legacy installer (existing devices, mid-migration) | `install.ps1` / `install.sh` / `scripts/install/installer.py`, source in `.claude-userlevel/` |
+| User-level skills source of truth | `.claude-userlevel/skills/` (copy into your own `~/.claude/skills/`, see [§4](#4-claude--make-it-your-own-private-dotfiles-repo)) |
