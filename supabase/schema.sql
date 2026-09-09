@@ -8,10 +8,14 @@
 --
 -- The prior memory-stack tables (memories, memory_links, memory_review_queue,
 -- episodes, known_unknowns, fok_judgments) and their RPCs were retired along
--- with the standalone memory/status/morning MCP servers (#1801). What
--- remains here backs task_queue, the reactive events substrate, comm_patterns,
--- and the sandcastle/safety tables (credential_registry, audit_log,
--- review_debt, driver_heartbeat).
+-- with the standalone memory/status/morning MCP servers (#1801). The
+-- reactive-core agent stack (orchestrator, executor, wake_driver) that used
+-- to read/write task_queue and events was itself demolished in #1802 — those
+-- two tables plus task_outcomes have no live producer or consumer left in
+-- this repo (kept here only as historical/aspirational shape, not active
+-- schema; #1803 tracks whether to drop them outright). Tables that do still
+-- have a live consumer: goals, comm_patterns (+ its watermark/sources),
+-- credential_registry, audit_log, review_debt, driver_heartbeat.
 
 -- =========================================================================
 -- Goals table — Jarvis 2.0 Pillar 1: Goals & Strategic Context

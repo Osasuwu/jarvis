@@ -32,10 +32,10 @@ T2_CANONICAL = {
 }
 
 # User-level MIRROR paths (relative to ``~/.claude/``). Canonical source for
-# these lives in the repo; the installer copies/templates them into
-# ``~/.claude/``. Kept for conceptual parity with the user-level hook even
-# though a project-scoped hook observing a ``~/.claude/*`` path is unlikely
-# in practice.
+# these lives in the repo; a manual copy (the install script was retired in
+# #1800) puts them into ``~/.claude/``. Kept for conceptual parity with the
+# user-level hook even though a project-scoped hook observing a ``~/.claude/*``
+# path is unlikely in practice.
 _USER_LEVEL_PROTECTED_FILES = {
     "settings.json",
     "SOUL.md",

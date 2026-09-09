@@ -1,4 +1,14 @@
-"""Pre-dispatch gate for /dispatch and drain_tasks (issues #642, #931, #1099, #1085, #1651, #1617).
+"""Historical pre-dispatch gate — orphaned post-#1802/#1803 (issues #642, #931, #1099, #1085, #1651, #1617).
+
+Current `/dispatch` (`dispatch/SKILL.md` v4.0.0+, #1793) reimplements its own
+five-condition readiness check inline against `gh issue view` output and does
+not call this module or perform any in-flight/dedup check. `drain_tasks` and
+the reactive-core dispatcher that used to call `check_in_flight` at spawn time
+were demolished in #1802; `task_queue` has no live producer or consumer left
+(`supabase/schema.sql`'s own header comment). Kept for now as historical
+record and because `check_orchestrator_target` still has test coverage
+exercising the (also-orphaned) `task_queue.origin="orchestrator"` shape —
+tracked for possible deletion, not active on any call path.
 
 `check_issue` refuses to admit an issue unless it satisfies four readiness
 conditions:
@@ -18,15 +28,14 @@ silently spawn work against the wrong repository. Milestone 58 (#959) S3
 (queue schema, #1119) and S4a (spawn swap, #1121) are where real per-row
 repo resolution belongs; this check is removable once that lands.
 
-`check_issue` has two call sites, both still live:
+`check_issue` originally had two call sites; neither is live any more:
 
-  - `/dispatch`'s advisory gate, run once per issue before enqueue — a
-    courtesy filter, not the enforcement authority (see dispatch/SKILL.md
-    §Contract: advisory readiness gate).
+  - `/dispatch`'s advisory gate, run once per issue before enqueue — replaced
+    by an inline five-condition check in `dispatch/SKILL.md` v4.0.0+ (#1793);
+    this module is no longer invoked from there.
   - `drain_tasks`'s mechanical re-check on a fresh issue fetch immediately
-    before spawn (#1085 S2-3) — this is the actual enforcement authority,
-    since the queue row may be stale relative to the issue by the time it's
-    claimed.
+    before spawn (#1085 S2-3) — `drain_tasks` and the reactive-core dispatcher
+    it lived in were demolished in #1802.
 
 `check_in_flight` additionally SKIPs an issue that already has in-flight work
 (dispatch-dedup, #931): an open PR referencing it via a closing keyword or a
@@ -36,11 +45,10 @@ not the dedup mechanism**: the real per-issue dedup is now
 `task_queue`'s partial unique index on `issue_number`
 (`idx_task_queue_issue_number_active`, Slice 1, PR #1529) — a database-level
 CAS enforced on every `enqueue()` call, not by an LLM correctly following
-prose. `check_in_flight` still runs (at both call sites above) as a second-line
-catch for pre-Slice-2 branch/PR-based in-flight work that has no queue row to
-collide against; it is not expected to fire once Slice 2 is the only active
-dispatch path. The branch-push claim `check_in_flight` used to gate against is
-retired — nothing pushes a claim branch as an atomic dispatch step anymore.
+prose. Both `check_in_flight` and the `task_queue` dedup index it backstopped are
+orphaned now — their call sites (above) no longer exist. The branch-push
+claim `check_in_flight` used to gate against was already retired before
+that: nothing pushes a claim branch as an atomic dispatch step.
 
 The gate is invoked with a strict envelope on stdin (no bare-issue fallback —
 a missing or malformed `issue` / `open_prs` / `open_branches` / `repo` fails
@@ -72,7 +80,8 @@ producer emits this) requires a pre-fetched issue and re-runs only the
 sandcastle-label subset of `check_issue`'s conditions, not the AC-heading/
 UUID checks (those are dispatch-authoring conventions, not applicable to an
 orchestrator-classified target). This function has no CLI/`main()` entry
-point yet — `drain_tasks` calls it directly (#1617 plan step 14).
+point; its only caller, `drain_tasks`, was demolished in #1802, so it is
+orphaned like the rest of this module.
 
 Notes:
   - This module does no network I/O — callers fetch PR/branch lists (with
