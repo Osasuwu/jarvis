@@ -18,8 +18,8 @@ every test's identity, only the path prefix changed.
 | `weekly_release/` | Weekly-release skill tests | `.claude/skills/weekly-release/` |
 
 Two files stay at the **root** by design (no domain home, cross-cutting entry
-points): `test_go_gate.py`, `test_menu_renderer.py`. `conftest.py` also stays at
-root — it must sit at the collection root to apply to every subdir.
+points): `test_competence_scoring.py`, `test_repos_conf.py`. `conftest.py` also
+stays at root — it must sit at the collection root to apply to every subdir.
 
 ## Tie-break order (when a test could fit two domains)
 
