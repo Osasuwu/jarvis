@@ -9,7 +9,6 @@ every test's identity, only the path prefix changed.
 
 | Subdir | Owns | Source area |
 |---|---|---|
-| `memory/` | Recall-dedup cache (mid-turn dedup, unrelated to the retired Supabase memory stack) | `scripts/lib/recall_dedup.py` |
 | `comms/` | Communication-pattern classifier / reflect surface | `scripts/comm_patterns/` |
 | `infrastructure/` | Installer units, hooks, secret scanner/scrubber, protected files, risk radar, session-context — the cross-cutting **catch-all** | `scripts/`, `src/` |
 | `ci/` | Path-filtered CI-guard meta-tests (#326) — one per guarded workflow | `.github/workflows/` |
@@ -29,8 +28,8 @@ precedence (first match wins):
 
 1. `ci/` — if it's a meta-test for a `paths:`-filtered workflow guard, it goes
    here regardless of what the guard watches.
-2. `memory/` → `comms/` → `plan_review/` → `evals/` → `skills/` →
-   `weekly_release/` — the named capability domains, in that order.
+2. `comms/` → `plan_review/` → `evals/` → `skills/` → `weekly_release/` — the
+   named capability domains, in that order.
 3. `infrastructure/` — the catch-all. A test lands here only when it matches no
    named domain above.
 
