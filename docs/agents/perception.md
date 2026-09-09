@@ -292,7 +292,7 @@ When writing `agents/perception_<source>.py`, hit every one:
 
 - [ ] Module-level constant `SOURCE = "<source>"` (matches `approved_by` prefix without the colon)
 - [ ] Pure `_build_row(payload) -> dict` function — no DB, no I/O. Unit-testable.
-- [ ] Pure `_idempotency_key(payload) -> str` — sha256 hex of the formula in this doc's table. Use `agents.safety.idempotency_key` if the formula matches its `(agent_id, action, target, scope_hash)` shape; otherwise compute directly with `hashlib.sha256(...).hexdigest()`.
+- [ ] Pure `_idempotency_key(payload) -> str` — sha256 hex of the formula in this doc's table. `agents.safety.idempotency_key` (demolished with reactive-core in #1802) previously covered the `(agent_id, action, target, scope_hash)` shape; compute directly with `hashlib.sha256(...).hexdigest()` instead.
 - [ ] `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` — never raw INSERT
 - [ ] Per-source allowlist as a module constant (chat ids, repos, etc.); reject unknown principals before computing the key
 - [ ] Source tier classification (`source:1-auto` / `source:2-review` / `source:3-human`) — translate to `auto_dispatch` boolean per the mapping table above

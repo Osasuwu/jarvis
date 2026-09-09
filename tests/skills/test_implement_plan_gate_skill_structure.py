@@ -3,10 +3,10 @@
 Verifies the skill-contract prose actually references the trigger-evaluation
 module (agents.implement_plan_gate.evaluate_trigger) rather than describing
 a parallel, undocumented mechanism — the docs-side half of AC1/AC2/AC3/AC5.
-The code-side behavior (classification, carve-out, requires_plan) is covered
-by tests/reactive_core/test_implement_plan_gate.py; this suite only checks
-that SKILL.md's prose is wired to that module, not that the module's logic
-is correct.
+The code-side behavior (classification, carve-out, requires_plan) was covered
+by tests/reactive_core/test_implement_plan_gate.py, demolished with
+reactive-core in #1802; this suite only checks that SKILL.md's prose is wired
+to that module, not that the module's logic is correct.
 """
 
 import re
