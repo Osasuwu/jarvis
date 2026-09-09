@@ -48,9 +48,10 @@ You (any device)
   |     |
   |-- Telegram (via Claude Code Channels, optional)
 
-Supabase DB -- reactive core, not memory
-  |-- task_queue  (sandcastle work items)
-  |-- events      (CI, alerts, deployments)
+Supabase DB -- not memory (memory is native/file-based, see below)
+  |-- comm_patterns, credential_registry, audit_log, review_debt, goals, ...
+  |-- (task_queue / events: aspirational shape, no live producer since the
+  |    reactive-core agent stack was demolished in #1802 -- see supabase/schema.sql)
 ```
 
 The custom installer (`install.ps1` / `install.sh` / `scripts/install/installer.py`)
@@ -68,10 +69,10 @@ manually (MCP registration, plugin list, skills).
 | Component | Description |
 |-----------|-------------|
 | **Native memory** | File-based, per project, under `~/.claude/projects/<project>/memory/`. No server, no sync. |
-| **Core skills** | `/implement`, `/delegate`, `/research`, `/end` (`--quick` for fast exit). |
+| **Core skills** | `/implement`, `/dispatch`, `/research`, `/end` (`--quick` for fast exit). |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
-| **Delegation pipeline** | Issue -> branch -> coding agent -> PR, with verification |
+| **Dispatch pipeline** | Issue -> `agent:dispatch` label -> `agent-dispatch.yml` workflow -> `claude-code-action` -> PR queued for auto-merge |
 | **Setup guide** | [`docs/setup.md`](docs/setup.md) -- manual walkthrough, validates prerequisites |
 
 ## Skills
@@ -79,7 +80,7 @@ manually (MCP registration, plugin list, skills).
 | Skill | Trigger | What it does |
 |-------|---------|-------------|
 | `/implement` | "реализуй #42", "implement #X" | Issue → branch → inline implementation → PR (main session does the work) |
-| `/delegate` | "делегируй #X #Y", "раскидай на агентов" | Multiple issues → parallel coding subagents, orchestrator reviews each diff + decides merge |
+| `/dispatch` | "раскидай #X #Y на агентов" | Issue → readiness gate → `agent:dispatch` label → `agent-dispatch.yml` runs `claude-code-action` headless → PR queued for auto-merge |
 | `/research` | "research X", "compare A vs B" | Web research with source validation |
 | `/end` | End of session | Behavioral reflection, decision log, memory save, commit. With `--quick`: checkpoint + commit only (~30 sec). |
 
@@ -124,13 +125,13 @@ jarvis/
     repos.conf           <- repos to scan
   .claude/
     skills/              <- project-scoped slash commands (sprint-report)
-    agents/              <- subagent definitions (coding)
+    agents/              <- plan-review critic panel (planner, critic-goal-fit,
+                            critic-state-fit, critic-tiebreak, coding)
     settings.json        <- project hooks
   supabase/
-    schema.sql           <- declarative target shape (reactive core: task queue, events)
+    schema.sql           <- declarative target shape (goals, comm_patterns,
+                            credential_registry, audit_log, review_debt, ...)
     migrations/          <- apply-order DDL history
-  src/
-    risk_radar.py        <- standalone risk scan (no LLM)
   docs/                  <- vision, architecture, guides
 ```
 
@@ -141,7 +142,7 @@ jarvis/
 3. Open in Claude Code
 4. (Optional) Register scheduled automation (daily briefs, risk radar, etc.) via the scheduled-tasks MCP tools
 
-Memory syncs automatically via Supabase. All config lives in the repo.
+Memory does **not** sync across devices today — it's native/file-based and per-machine (see [Memory System](#memory-system) above). All config lives in the repo.
 
 ## Contributing
 
