@@ -203,7 +203,10 @@ def run(
                 break
             except Exception as e:
                 stats["classifier_errors"] += 1
-                print(f"[backfill] classifier error on {fp}#{idx}: {type(e).__name__}", file=sys.stderr)
+                print(
+                    f"[backfill] classifier error on {fp}#{idx}: {type(e).__name__}",
+                    file=sys.stderr,
+                )
                 continue
             if not classified or classified.get("primary_label") is None:
                 stats["no_pattern"] += 1
@@ -236,7 +239,9 @@ def run(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Backfill comm_patterns from ~/.cache/jarvis-comms-analysis")
+    ap = argparse.ArgumentParser(
+        description="Backfill comm_patterns from ~/.cache/jarvis-comms-analysis"
+    )
     ap.add_argument("--dry-run", action="store_true", help="Don't hit Supabase; print plan only.")
     ap.add_argument(
         "--cache-root",

@@ -137,6 +137,7 @@ MIN_MATCH_SCORE = 0.08  # keyword rank threshold — drops tail noise
 ALLOWED_TYPES = {"feedback", "decision", "reference"}
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
+
 # Shares the recall cache namespace with pretooluse-recall-hook.py — the
 # dedup key already includes the derived query text + project, so a
 # "decision ..." query naturally occupies its own slot regardless of which

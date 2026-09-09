@@ -115,8 +115,9 @@ def test_dedup_key_unique_index() -> None:
     That shape stays true for the migration file (history is immutable), but
     schema.sql no longer mirrors it: #1491 superseded the partial index with a
     full UNIQUE constraint, because PostgREST's bare ON CONFLICT (dedup_key)
-    cannot infer a partial index (42P10). The current canon shape is pinned by
-    tests/reactive_core/test_events_dedup_schema_guard.py.
+    cannot infer a partial index (42P10). The current canon shape was pinned by
+    tests/reactive_core/test_events_dedup_schema_guard.py, demolished with
+    reactive-core in #1802.
     """
     migration = MIGRATION.read_text(encoding="utf-8")
     assert "UNIQUE INDEX" in migration, "dedup_key must have UNIQUE index"

@@ -1,8 +1,5 @@
 """Tests for agents.plan_lock — canonicalization/hashing + strict parser
 for the ``## Plan`` section (issue #1685).
-
-Sibling module to agents.scope_hash (issue #773's consolidation pattern),
-but over plan *text*, not a file list.
 """
 
 from __future__ import annotations

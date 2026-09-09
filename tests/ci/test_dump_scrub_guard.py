@@ -121,6 +121,7 @@ def test_ip_in_code_context_passes():
 def test_patterns_have_labels():
     """Every pattern entry must carry a non-empty label string."""
     import re
+
     for pat, label in _SENSITIVE_PATTERNS:
         assert isinstance(pat, type(re.compile(""))), f"entry {label} has non-Pattern"
         assert label and isinstance(label, str), "entry has empty or non-str label"
@@ -129,6 +130,7 @@ def test_patterns_have_labels():
 def test_octet_rejects_256():
     """The _OCTET helper must not match numbers above 255."""
     import re
+
     octet = dq._OCTET
     assert re.fullmatch(octet, "0")
     assert re.fullmatch(octet, "255")

@@ -82,6 +82,7 @@ def quarter_date_range(year: int, q: int) -> tuple[str, str]:
         end_month += 1  # go to first day of NEXT month
         # last day of quarter = first day of next month minus 1 day
     import calendar
+
     _, last_day = calendar.monthrange(year, start_month + 2)
     start = f"{year}-{start_month:02d}-01T00:00:00Z"
     end = f"{year}-{start_month + 2:02d}-{last_day}T23:59:59Z"

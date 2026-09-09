@@ -249,7 +249,9 @@ def main() -> int:
                     if m and int(m.group(1)) >= 1:
                         suffixed.append((f, lineno, label, target, int(m.group(1))))
         if suffixed:
-            print(f"\nL2 sanity audit (#662): {len(suffixed)} suffixed-N anchor link(s) — manual-review punch list:\n")
+            print(
+                f"\nL2 sanity audit (#662): {len(suffixed)} suffixed-N anchor link(s) — manual-review punch list:\n"
+            )
             by_file: dict[Path, list[tuple[int, str, str, int]]] = {}
             for f, lineno, label, target, n in suffixed:
                 by_file.setdefault(f, []).append((lineno, label, target, n))

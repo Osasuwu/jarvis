@@ -104,9 +104,7 @@ def _check_max_attempts(attempts: int) -> tuple[bool, str]:
     return False, ""
 
 
-def _check_scope_creep(
-    history: list[dict], initial_files: set[str]
-) -> tuple[bool, str]:
+def _check_scope_creep(history: list[dict], initial_files: set[str]) -> tuple[bool, str]:
     """Guard: LOC delta >50% OR files outside initial diff → stuck_scope.
 
     LOC delta is measured as a percentage of the first attempt's LOC count.

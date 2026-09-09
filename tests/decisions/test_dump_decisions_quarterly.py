@@ -191,19 +191,21 @@ class TestRenderDocument(unittest.TestCase):
 
     def test_actor_prefix_aggregation(self):
         decisions = self.make_decisions(2)
-        decisions.append({
-            "id": "f0000000-0000-0000-0000-000000000003",
-            "actor": "session:orchestrator",
-            "kind": "decision_made",
-            "created_at": "2026-05-01T12:00:00Z",
-            "payload": {
-                "decision": "Session decision",
-                "rationale": "Rationale",
-                "reversibility": "hard",
-                "alternatives_considered": [],
-                "memories_used": [],
-            },
-        })
+        decisions.append(
+            {
+                "id": "f0000000-0000-0000-0000-000000000003",
+                "actor": "session:orchestrator",
+                "kind": "decision_made",
+                "created_at": "2026-05-01T12:00:00Z",
+                "payload": {
+                    "decision": "Session decision",
+                    "rationale": "Rationale",
+                    "reversibility": "hard",
+                    "alternatives_considered": [],
+                    "memories_used": [],
+                },
+            }
+        )
         doc = dq.render_document(decisions, "2026-Q2", "2026-05-18")
         self.assertIn("- `skill`: 2", doc)
         self.assertIn("- `session`: 1", doc)
@@ -211,19 +213,21 @@ class TestRenderDocument(unittest.TestCase):
     def test_multiple_months(self):
         decisions = []
         for month in ("2026-04", "2026-05"):
-            decisions.append({
-                "id": f"m-{month}-0000-0000-0000-000000000000",
-                "actor": "skill:test",
-                "kind": "decision_made",
-                "created_at": f"{month}-15T12:00:00Z",
-                "payload": {
-                    "decision": f"Decision in {month}",
-                    "rationale": "Rationale",
-                    "reversibility": "reversible",
-                    "alternatives_considered": [],
-                    "memories_used": [],
-                },
-            })
+            decisions.append(
+                {
+                    "id": f"m-{month}-0000-0000-0000-000000000000",
+                    "actor": "skill:test",
+                    "kind": "decision_made",
+                    "created_at": f"{month}-15T12:00:00Z",
+                    "payload": {
+                        "decision": f"Decision in {month}",
+                        "rationale": "Rationale",
+                        "reversibility": "reversible",
+                        "alternatives_considered": [],
+                        "memories_used": [],
+                    },
+                }
+            )
         doc = dq.render_document(decisions, "2026-Q2", "2026-05-18")
         self.assertIn("## 2026-04", doc)
         self.assertIn("## 2026-05", doc)
