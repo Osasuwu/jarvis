@@ -42,7 +42,7 @@ There is no automated propagation to `~/.claude/`. Skills are kept in sync by ha
 | Component | Source in repo | Kept in sync at | Purpose |
 |-----------|----------------|--------------|---------|
 | Identity | `config/SOUL.md` | `~/.claude/SOUL.md` (manual copy) | Personality, tone, behavior rules (loaded via a **bare, line-start** `@SOUL.md` import in CLAUDE.md — #1328 introduced it, #1426 made it actually resolve) |
-| Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` (manual copy) | Core slash commands: `implement`, `dispatch`, `diagnose`, `file-issue`, `grill`, `improve-codebase-architecture`, `research`, `to-tickets`, `triage`, `end` |
+| Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` (manual copy) | Core slash commands: `implement`, `dispatch`, `diagnose`, `file-issue`, `grill`, `improve-codebase-architecture`, `research`, `to-tickets`, `triage`, `weekly-release`, `end` |
 | Hooks | — (no repo-side source; edited directly) | `~/.claude/settings.json` | SessionStart, PreCompact, PreToolUse protected-file scan |
 | MCP servers | — (no repo-side source file) | `~/.claude.json` `mcpServers` block, via `claude mcp add --scope user` | github, obsidian (device-dependent), etc. |
 
