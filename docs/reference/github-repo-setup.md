@@ -73,9 +73,10 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `meta-tests` | `ci-meta.yml` or equivalent | Guard-fixture tests that keep CI config internally consistent (e.g. pinning a required-check name to the job that produces it) |
 | gitleaks / secret scan | `gitleaks.yml` | Secret committed |
 
-Repo-custom gates layer on top of this floor (jarvis also runs `pytest-db` and
-`require-paired-migration` — schema-drift guards specific to its Supabase dependency). Add
-them as needed; they don't need to match another repo's set.
+Repo-custom gates layer on top of this floor (jarvis also runs
+`require-paired-migration` — a schema-drift guard specific to its Supabase dependency; its
+former `pytest-db` sibling was removed with reactive-core in #1802). Add them as needed; they
+don't need to match another repo's set.
 
 **Issue-schema-check** is advisory in jarvis today, not a hard-blocking gate: `issue-checks.yml`
 syncs the `area:` label from the issue body's declared area and logs a note (not a failure)
