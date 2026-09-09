@@ -64,7 +64,7 @@ Grepped on the branch state, 2026-08-31. Rows are call sites in live code, not m
 | S4 | **Hooks** | 22 registrations across 6 Claude Code events in `.claude-userlevel/settings.json` (`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Stop`, `PreCompact`, `SessionEnd`) | **Bodies are already neutral** — Python scripts reading JSON on stdin. Coupled: (a) the registration file, (b) the event *names*, (c) the stdin/stdout **payload schema** (`hook_event_name`, `tool_name`, `tool_input`, `session_id`, `cwd` in; `permissionDecision`, `additionalContext` out). OpenCode's equivalent is a JS/TS plugin in `~/.config/opencode/plugins/` on `tool.execute.before`, `session.created`, `session.idle`, `session.compacted`. |
 | S5 | **Headless spawn** | `agents/executor.py::_resolve_claude_binary` + `spawn()` argv (`claude -p <text> --permission-mode acceptEdits --allowedTools …`), `agents/task_dispatch.py:957`, `agents/plan_review_drain.py:166`, sandcastle scripts | Fully Claude-specific: binary name, flags, **and the permission vocabulary** (`Bash(git status:*)`, `Read`, `Glob` — a 28-entry allowlist). OpenCode's is `opencode run --agent --model --format json --auto` with a different permission model. |
 | S6 | **Transcripts** | `~/.claude/projects/*/*.jsonl` read by `scripts/analyze-comms/extract_comms.py:12`, `scripts/comm_patterns/smoke.py:26`; deriver buffer `~/.claude/.deriver-buffer` (`scripts/deriver/pipeline.py:38`, `scripts/deriver-accumulator.py:49`); `scripts/pre-compact-backup.py`; `scripts/capture-episode.py` | Claude-specific location *and* JSONL record schema. Deepest coupling: comm-patterns, the Deriver, and compaction backup all parse it. |
-| S7 | **Agent home** | `~/.claude` recomputed inline in ≥5 modules (`scripts/lib/recall_dedup.py:38-45`, `scripts/memory-recall-hook.py:178`, `scripts/pretooluse-recall-hook.py:119`, `scripts/protected-files.py:70`, `scripts/record-decision-gate.py:143`), each with its own `JARVIS_CLAUDE_HOME` override | Partially abstracted already — but by copy-paste, five times. Consolidation is the cheapest real slice. |
+| S7 | **Agent home** | Re-audited 2026-09-10: down to one inline copy, `.claude/hooks/protected-files.py:45-53` (`_user_claude_home`, used at line 71). The other four sites this row used to name are gone — `scripts/lib/recall_dedup.py` and `scripts/memory-recall-hook.py`/`scripts/pretooluse-recall-hook.py` deleted (#1865/#1870, #1800/#1801), `scripts/protected-files.py` retired in favor of the standalone `.claude/hooks/protected-files.py` (#1792/#1800), `scripts/record-decision-gate.py`'s copy removed along with its dead recall logic (#1870). A real `scripts/lib/harness/` was even built once (#1771) and then deleted along with the rest of the old hook infra (#1800). | No longer "copy-paste five times" — one site, and it's copy-paste on purpose: its docstring says "no harness seam" so it runs unmodified in CI with zero repo-internal imports. `home()` may still be worth building for S5/S6/S9's sake, but this hook may deliberately keep its own inline copy rather than adopt it. |
 | S8 | **Installer** | `install.ps1` / `install.sh` / `scripts/install/installer.py`, `install-manifest.yaml` (`target_root: ~/.claude`), backup prefix `.claude.backup-`, debug-dir carve-outs | A single `target_root` already exists; it needs to become per-harness targets plus per-harness renderers for S3/S4. |
 | S9 | **Quota / usage** | `scripts/sandcastle/Quota-Probe.ps1` polling `claude -p "/usage"`, `agents/usage_probe.py`, `CLAUDE_QUOTA_PRESSURE` repo variable, pre-spawn gate in `executor.spawn` | Claude-Max-specific and not emulable. The canonical *capability-absent* case (see Q1). |
 | S10 | **CI review gate** | `.github/workflows/code-review.yml` → `anthropics/claude-code-action@v1` (`code-review-retry.yml`, `event-dispatch.yml`, `merge-train.yml`, `auto-merge-enable.yml` and their backing scripts were cut in #1796) | Vendor action. Portable in principle (any harness with a headless mode can post a verdict); the *verdict contract* — the comment shape parsed by the verdict guard in `code-review.yml` — is already ours and is the part that matters. |
@@ -107,7 +107,7 @@ stays in neutral code.
 
 | Method | Returns | Consumers |
 |---|---|---|
-| `home()` | agent home dir (`~/.claude`, `~/.config/opencode`) | S7 — the five inline copies |
+| `home()` | agent home dir (`~/.claude`, `~/.config/opencode`) | S7 — the one remaining inline copy (which may opt to stay inline; see S7 row above) |
 | `binary()` | resolved executable path | S5 |
 | `spawn_argv(prompt, tools, mode, model, output)` | full argv | S5 — executor, plan-review drain, sandcastle |
 | `transcripts()` | root + a record-normalising reader | S6 — comm-patterns, Deriver, pre-compact |
@@ -144,10 +144,14 @@ silent one.
 One PR each, in dependency order. Slices 1–5 are refactors under `claude-code` and carry no
 behaviour change; 6 onward add the second adapter.
 
-1. **S7 — agent-home consolidation.** `scripts/lib/harness/` with `home()` + detection;
-   replace the five inline `JARVIS_CLAUDE_HOME` copies. Cheapest slice, touches the most
-   files, unblocks everything else. Tests: each former call site resolves identically with
-   and without the override.
+1. **S7 — agent-home `home()`.** `scripts/lib/harness/` with `home()` + detection. Down to one
+   inline `JARVIS_CLAUDE_HOME` copy now (`.claude/hooks/protected-files.py`), which may stay
+   inline on purpose — it's the standalone CI-hook surface, deliberately free of repo-internal
+   imports. So this slice is now about building `home()` for S5/S6/S9's sake, not about
+   erasing copy-paste. (A prior attempt, #1771, built exactly this and was deleted along with
+   the rest of the old hook infra in #1800 — re-check that history before re-landing it.)
+   Cheapest slice, no longer the broadest. Tests: each remaining/former call site resolves
+   identically with and without the override.
 2. **S5 — spawn adapter.** Move binary resolution, argv construction, permission vocabulary,
    and env sanitization behind `spawn_argv()`. Neutral tool spec plus a Claude renderer that
    reproduces the current 28-entry allowlist verbatim. Tests assert argv equality against the
@@ -171,9 +175,10 @@ behaviour change; 6 onward add the second adapter.
 9. **S10 — CI review gate parameterisation.** Only after 1–8; the verdict contract is already
    ours, the action is the swappable part.
 
-Ordering rationale: the two cheap-and-broad slices (S7, S5) come first because they create the
-module every later slice imports; the two data-contract slices (S4a, S6) are separated by four
-slices so the risky one lands against an established seam.
+Ordering rationale: S7 and S5 come first — S7 no longer for breadth (down to one call site that
+may stay inline), but because both create the module every later slice imports; the two
+data-contract slices (S4a, S6) are separated by four slices so the risky one lands against an
+established seam.
 
 ---
 
