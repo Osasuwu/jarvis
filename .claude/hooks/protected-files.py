@@ -114,9 +114,9 @@ def _block_reason(file_path: str, classification: str) -> str:
         return (
             f"BLOCKED: '{file_path}' is a user-level mirror under ~/.claude/. "
             "Edit the canonical source in the jarvis repo "
-            "(config/SOUL.md, .claude-userlevel/...), open a PR, then propagate "
-            "with `install.ps1 -Apply` (or `install.sh -a`). Direct edits drift "
-            "from source on next install."
+            "(config/SOUL.md, .claude-userlevel/...), open a PR, then copy the "
+            "changed file into ~/.claude/ by hand on this device (no installer). "
+            "Direct edits here drift silently from the repo source."
         )
     return (
         f"BLOCKED: '{file_path}' is a protected canonical source (project-level "
