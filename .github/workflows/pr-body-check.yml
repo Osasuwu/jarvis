@@ -37,7 +37,7 @@ jobs:
             // Fix-inline escape: [no-issue] marker bypasses the requirement.
             // Checked in both body and title — mirrors the commit-msg convention in
             // .pre-commit-config.yaml (#329) where the marker lives in the commit title.
-            // Matches CLAUDE.md "Fix > track for trivial reversible (#428)" — drive-by
+            // Matches AGENTS.md "Fix > track for trivial reversible (#428)" — drive-by
             // fixes shouldn't require filing a tracker just to satisfy paperwork.
             if (/\[no-issue\]/i.test(body) || /\[no-issue\]/i.test(title)) {
               console.log('[no-issue] marker present — skipping linked-issue requirement (fix-inline per #428).');

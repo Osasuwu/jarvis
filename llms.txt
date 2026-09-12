@@ -3,7 +3,7 @@
 > Auto-discovered by external LLM tools via llms.txt convention.
 > Pointers only — see the target files for authoritative content.
 
-- [CLAUDE.md](CLAUDE.md): Project rules, process conventions, skill routing, engineering posture
+- [AGENTS.md](AGENTS.md): Process rules — development workflow, merge gates, engineering posture, delegation
 - [config/SOUL.md](config/SOUL.md): Agent identity, personality, judgment calibration
 - [CONTEXT.md](CONTEXT.md): Domain glossary, invariants, architectural model
 - [README.md](README.md): Project overview and setup instructions
