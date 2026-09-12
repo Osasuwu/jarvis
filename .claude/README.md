@@ -18,8 +18,11 @@ Only jarvis-project-specific Claude Code config:
 
 - [`agents/`](agents/) — project-scoped subagent definitions
   (e.g. `coding.md`).
-- `settings.json` — intentionally empty (`{}`); project-local hooks go
-  here if jarvis ever needs them.
+- [`hooks/`](hooks/) — project-local hook scripts (`secret-scanner.py`,
+  `protected-files.py`, `device-info.py`).
+- `settings.json` — wires three `PreToolUse` matchers: `secret-scanner.py`
+  on file writes (`Edit|Write|NotebookEdit`), on `Bash`, and on a ten-tool
+  `mcp__github__` write matcher; `protected-files.py` on file writes.
 
 Everything else (the core skills, plus SOUL.md and `.mcp.json`) was removed
 in M5 (#340). They're still available in every session, just from
