@@ -86,14 +86,13 @@ Rules that need to survive compaction belong in `AGENTS.md` (or another bare-`@i
 
 ## Context layering is one-directional
 
-A repo file may cite user-level (`~/.claude/CLAUDE.md`, `DOCTRINE.md`, a `~/.claude/reference/*`
-doc); user-level must never point back at a repo's own `CONTEXT.md` or other repo-local file.
-User-level content loads in every repo a session touches, so a pointer into one repo's
-`CONTEXT.md` doesn't just dangle when that repo isn't the current one — it misdirects the session
-into the wrong repo's domain model. This is why DOCTRINE.md's own citation convention (a repo's
-tooling internals stay in that repo's `CONTEXT.md`, referenced only as a qualified pointer like
-"jarvis `CONTEXT.md` → *X*") reads as guidance to repo authors, not as user-level linking *into*
-a specific repo.
+A repo file may cite user-level (`~/.claude/CLAUDE.md`, a `~/.claude/reference/*` doc); user-level
+must never point back at a repo's own `CONTEXT.md` or other repo-local file. User-level content
+loads in every repo a session touches, so a pointer into one repo's `CONTEXT.md` doesn't just
+dangle when that repo isn't the current one — it misdirects the session into the wrong repo's
+domain model. This is why the citation convention (a repo's tooling internals stay in that repo's
+`CONTEXT.md`, referenced only as a qualified pointer like "jarvis `CONTEXT.md` → *X*") reads as
+guidance to repo authors, not as user-level linking *into* a specific repo.
 
 ## Related
 
