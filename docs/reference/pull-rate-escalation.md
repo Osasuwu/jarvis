@@ -21,8 +21,8 @@ What ships is two branches plus a sample-size guard, all evaluated by `evaluate_
    rows before drawing a conclusion.
 2. **`pull_rate <= LOW_THRESHOLD` (0.15, i.e. 15%) → escalate.** The instruction alone isn't
    reaching a workable usage rate. Escalation means moving the Glossary-pull content down one
-   level on the baseline-carrier ladder (DOCTRINE.md → *Baseline carrier selection*): from the
-   `@import`-carried instruction (level 2 — the agent has to choose to act on it) to a
+   level on the baseline-carrier ladder (`~/.claude/reference/baseline-carriers.md` → *Selection
+   order*): from the `@import`-carried instruction (level 2 — the agent has to choose to act on it) to a
    `.claude/rules/*.md` + `paths:` file (level 1 — delivery is 100% whenever a matching path is
    read, verified empirically by #1274). Concretely: identify what content the instruction was
    meant to get pulled, and give it a path-scoped rule file instead of relying on the agent
@@ -43,6 +43,6 @@ revision once real usage data accumulates past the first `MIN_SAMPLE_SIZE` runs.
 `compute_pull_rate()` in `scripts/pull-rate-report.py` produces `{total_runs, runs_with_pull,
 pull_rate}`; `evaluate_escalation(pull_rate, sample_size)` applies the branches above. Running
 the script's `main()` prints both together. Trigger is a manual reading of this output — never a
-staleness stamp evaluated by `session-context.py` on the SessionStart hot path; per DOCTRINE.md's
-carrier-selection rule 5, this is retrieval-shaped ("not checkable, situational"), not a baseline
-that should recur on every session.
+staleness stamp evaluated by `session-context.py` on the SessionStart hot path; per
+`~/.claude/reference/baseline-carriers.md`'s carrier-selection rule 5, this is retrieval-shaped
+("not checkable, situational"), not a baseline that should recur on every session.

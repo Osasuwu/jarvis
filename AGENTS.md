@@ -34,9 +34,10 @@ hardcoded on a shared code path.
 
 Merging is gated by four required CI checks on the default branch: the code-review verdict,
 `owner-queue-guard`, `require-linked-issue`, and the repo's own test gates — branch-protection
-enforced, no cooperation needed from you. `DOCTRINE.md`'s admin-merge carve-outs (review-blind
-PRs, a false-failing gate) are the only sanctioned ways around a stuck gate; never normalize a
-bypass for a gate that's merely inconvenient.
+enforced, no cooperation needed from you. `~/.claude/reference/merge-gates.md`'s admin-merge
+carve-outs (review-blind PRs, a sanctioned stop-gap merge for a false-failing gate) are the only
+sanctioned ways around a stuck gate; never normalize a bypass for a gate that's merely
+inconvenient.
 
 ## Substrate rule
 

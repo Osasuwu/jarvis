@@ -72,10 +72,10 @@ validation outright, so no verdict comment posts. The gate on the other end fail
 open: `auto-merge-enable.yml`'s positive-evidence check (`has_code=true`, no verdict comment,
 nothing failed or in flight ⇒ `exit 1`, #1434) sits atop the head-lineage/PR-state probes (#1228),
 so a review-blind PR reads `review` as RED rather than a silent pass. Verified live on PR #1499
-(runs `31378173152`/`31378378047`, 2026-08-10). This makes such a PR review-blind in the DOCTRINE
-`~/.claude/DOCTRINE.md` → *Review-blind carve-out* sense — "gate cannot run" is not "gate ran and
-raised no objection" — and `auto-merge-enable` correctly withholds merge until an admin-merge is
-used per the sanctioned stop-gap case.
+(runs `31378173152`/`31378378047`, 2026-08-10). This makes such a PR review-blind in the
+`~/.claude/reference/merge-gates.md` → *review-blind carve-out* sense — "gate cannot run" is not
+"gate ran and raised no objection" — and `auto-merge-enable` correctly withholds merge until an
+admin-merge is used per the sanctioned stop-gap case.
 
 ## Related
 
