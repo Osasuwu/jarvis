@@ -21,7 +21,7 @@ Adapted from upstream Pocock v1.1's `prototype` skill (mattpocock/skills), with 
 
 **UI variants via query param, not branching files.** When showing alternative UI treatments side by side, use a single page/component with a `?variant=1`, `?variant=2`, ... query-param switch, not separate files per variant. Keeps the artifact singular and diffable while still letting the user compare options side by side.
 
-**No skill-to-skill calls.** This skill produces an artifact and stops. It does not invoke `/grill` or `/reason` itself — the user (or a later turn) decides what happens with the artifact next. Skills stay independent and complementary, not chained.
+**No skill-to-skill calls.** This skill produces an artifact and stops. It does not invoke `/grill` itself — the user (or a later turn) decides what happens with the artifact next. Skills stay independent and complementary, not chained.
 
 ## Process
 

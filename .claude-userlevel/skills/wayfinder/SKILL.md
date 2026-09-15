@@ -70,7 +70,7 @@ The principal invokes `/wayfinder` and optionally names a scope (a milestone, se
    - #127 <title> — needs-prd, decision-only scope
    ```
 
-4. **Stop there.** `/wayfinder` produces the report and, if the principal picks a node, names the downstream skill to invoke next (`/research`, `/grill`, `/to-spec`, `/implement`, `/delegate`). It does not invoke those skills itself (ADR-0001 — no skill-to-skill calls) and does not change any label or milestone state as a side effect of running.
+4. **Stop there.** `/wayfinder` produces the report and, if the principal picks a node, names the downstream skill to invoke next (`/research`, `/grill`, `/to-spec`, `/implement`, `/dispatch`). It does not invoke those skills itself (ADR-0001 — no skill-to-skill calls) and does not change any label or milestone state as a side effect of running.
 
 ## Dry-run walkthrough
 
