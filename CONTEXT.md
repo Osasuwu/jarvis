@@ -76,6 +76,18 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Layer A / Layer B** — the two halves of the code-gate; the boundary between them *is* the anti-overlap rule. Deterministically checkable ⇒ Layer A, never both.
 - **Tier rule (per project)** — what decides whether Layer B fires. Jarvis fixes the contract only; the tier list is an in-repo file per project.
 - **Special-class repo** — a foreign-owner repo (e.g. `SergazyNarynov/redrobot`) the owner has personally authorized the bot to manage as its own; auto-actionable within that authorized scope, distinct from ordinary foreign-owner repos which stay flag-only/read. Declared per-repo in `config/repos.conf`.
+- **jarvis-oss** — Public docs + examples + resources repo with one setup skill; not a mirror of `jarvis`. Template era archived at `v0.7.0`.
+- **Three buckets** — `docs/` (reasoning), `examples/` (read-only worked cases), `resources/` (takeable artifacts paired with a doc).
+- **Trial unit** — One doc plus one thing to try in ≤2 hours; never the whole system.
+- **Setup skill** — Format-portable `SKILL.md` that reads the reader's rules file and emits only the delta.
+- **Portability tier** — Format-portable (AGENTS.md, SKILL.md, MCP) vs harness-specific (hooks: Claude Code only).
+- **Support contract** — No compatibility promise, no roadmap; Discussions for questions, Issues for broken resources.
+- **Entry point** — The setup skill; its first question picks *trial* or *full*.
+- **Author sign-off** — Agents draft docs from evidence; the author signs as reviewer; unsigned does not ship.
+- **Examples kinds** — Author's own (`fit:` + `last_seen:`) and external (link + `verified:`); none is a default.
+- **Structure gate** — One pytest frontmatter test on jarvis-oss `main`, required by branch protection.
+- **jarvis vs jarvis-oss** — `jarvis` is the author's personal install; `jarvis-oss` is the instruction for building your own.
+- **Sign-off ledger** — `docs/SIGNOFF.md` in jarvis-oss, edited in a commit separate from the doc body (D26).
 
 ### Core entities
 
