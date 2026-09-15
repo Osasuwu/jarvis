@@ -9,8 +9,7 @@ episodes.
 **Why now, and why YAGNI does not apply.** The counting unit for abstraction in this repo is
 *readers who could depend on the code*, not implementations the principal runs
 (`CLAUDE.md` → §Project, decision `855188a3-c71f-4e86-a412-9a07b76f19df`). `jarvis-oss` is a
-public template whose operators do not all hold a Claude subscription; a harness-locked
-template is a template only for people who already bought the same tool. Portability is also
+public body of docs, examples and resources (no longer a template — `docs/decisions/2026-Q3.md`, 2026-09-12 grill) whose readers do not all hold a Claude subscription; advice that only runs on one harness is advice only for people who already bought the same tool. The jarvis-oss shape settled on a format-portable core plus a dated harness table, so this adapter layer lost that justification (decision journal D13.2); its remaining justification is the principal's own exit option below. Portability is also
 the principal's own exit option from a single vendor's pricing. Both are freedom-of-choice
 goals, which is exactly the class of goal YAGNI does not govern.
 
