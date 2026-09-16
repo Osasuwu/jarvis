@@ -231,3 +231,30 @@ def test_plugin_marketplace_inputs_retired() -> None:
     text = LIVE_WORKFLOW.read_text(encoding="utf-8")
     assert "plugins: code-review@jarvis-fork-plugins" not in text
     assert "plugin_marketplaces:" not in text
+
+
+# #1887: three consecutive review-blind runs on one PR, every denial the same
+# shape — the reviewer tried to STAGE the diff to a file (`gh pr diff > /tmp/
+# x.diff`, `mkdir -p .tmp_review`, `rm -rf /tmp/jarvis-review && git clone …`)
+# instead of reading it from its own context. None of that is fixable on the
+# allowlist axis: a shell redirect defeats the literal prefix match no matter
+# how broadly the redirected command is granted, so `Bash(gh pr:*)` cannot
+# rescue `gh pr diff <n> > file`. The only lever is the prompt telling the
+# reviewer not to compose that shape. This pins the instruction so a prompt
+# rewrite can't drop it and silently re-open the blind-review class.
+PROMPT_SHELL_RULES = (
+    "SHELL SHAPE",
+    "NEVER clone the repo",
+    "NEVER redirect command output to a file",
+    "/tmp/code-review-comment.md, via the Write tool",
+)
+
+
+def test_prompt_forbids_scratch_file_shapes() -> None:
+    text = LIVE_WORKFLOW.read_text(encoding="utf-8")
+    for rule in PROMPT_SHELL_RULES:
+        assert rule in text, (
+            f"code-review prompt lost the #1887 shell-shape rule {rule!r} — without "
+            f"it the reviewer composes redirect/clone/mkdir calls, every one is "
+            f"denied by prefix matching, and the gate fails closed on a blind review."
+        )
