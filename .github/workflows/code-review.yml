@@ -158,6 +158,30 @@ jobs:
             deterministic tool: git-blame/log context, cross-file reasoning,
             comparing the diff against the issue's stated intent.
 
+            SHELL SHAPE (#1887 — read this before composing any Bash call).
+            The repo is ALREADY checked out in your working directory at full
+            depth (`fetch-depth: 0`), with every branch and tag fetched. You do
+            not need to obtain it, and the shell cannot write scratch files.
+            Therefore:
+            - NEVER clone the repo, and never create, remove, or change into a
+              directory (`git clone`, `mkdir`, `rm`, `cd`). Run `git` on the
+              checkout you are standing in.
+            - NEVER redirect command output to a file (`>`, `>>`, `tee`).
+              Permission matching here is a literal PREFIX match, so a
+              redirect denies the whole command no matter how allowlisted the
+              command itself is — `gh pr diff <n> > /tmp/x.diff` is refused
+              while a bare `gh pr diff <n>` is allowed. Read command output
+              from your context; it is already there.
+            - The ONLY file you may create is the verdict body at
+              /tmp/code-review-comment.md, via the Write tool (step 5) — never
+              via a shell redirect.
+            - A big diff is read in slices (`gh pr diff <n> -- <path>`,
+              `git diff <base>...HEAD -- <path>`), never by staging it to a
+              file first.
+            A denied call means you composed a shape this list forbids —
+            re-compose it, do not retry the same command. Going silent after
+            denials fails the gate closed and blocks the PR.
+
             Review PR #${{ steps.pr.outputs.number }} in repo
             ${{ github.repository }}:
 
