@@ -84,6 +84,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Support contract** — No compatibility promise, no roadmap; Discussions for questions, Issues for broken resources.
 - **Entry point** — The setup skill; its first question picks *trial* or *full*.
 - **Author sign-off** — Agents draft docs from evidence; the author signs as reviewer; unsigned does not ship.
+- **Evidence location** — `docs/incidents/` in `jarvis` is where boundary clauses' evidence pointers resolve; one dated file per incident.
 - **Examples kinds** — Author's own (`fit:` + `last_seen:`) and external (link + `verified:`); none is a default.
 - **Structure gate** — One pytest frontmatter test on jarvis-oss `main`, required by branch protection.
 - **jarvis vs jarvis-oss** — `jarvis` is the author's personal install; `jarvis-oss` is the instruction for building your own.
