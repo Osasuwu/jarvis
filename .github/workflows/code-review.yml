@@ -40,6 +40,24 @@ jobs:
       # would block on an infrastructure gap rather than on a review verdict).
       actions: read
 
+    env:
+      # #1897: the ONE definition of "is there something to review" — consumed
+      # by both the `diff` step's has_code computation and (via the `codedef`
+      # step's output, since `${{ env.X }}` has no precedent working inside a
+      # `with: prompt:` block in this repo) the Layer B reviewer's own skip
+      # criteria, so the two can never silently drift apart. Extensions cover
+      # source/config/schema; markdown is carved out BY PATH, not by blanket
+      # `*.md` — only files that carry behavior (skill/agent bodies, prompt
+      # templates, CLAUDE.md/AGENTS.md/SOUL.md at repo root or nested) count as
+      # code. A blanket `*.md` made every docs-only PR report has_code=true;
+      # the reviewer correctly declines pure documentation (posts nothing), and
+      # the #1434 positive-evidence gate then read that as a silent no-review
+      # and failed closed forever — the docs-only deadlock this fixes.
+      CODE_PATHSPECS: >-
+        *.py *.ts *.tsx *.js *.jsx *.yaml *.yml *.json *.sh *.ps1 *.sql
+        CLAUDE.md */CLAUDE.md AGENTS.md */AGENTS.md SOUL.md */SOUL.md
+        .claude/agents/*.md .claude-userlevel/skills/*.md
+
     steps:
       - uses: actions/checkout@v7
         with:
@@ -64,6 +82,16 @@ jobs:
             echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
           fi
 
+      # #1897: re-export the job-level CODE_PATHSPECS env value as a step
+      # OUTPUT. `${{ env.X }}` has no working precedent inside a `with:
+      # prompt:` block in this repo, whereas `${{ steps.<id>.outputs.<name> }}`
+      # is already proven there (steps.pr.outputs.number, above). No `if:` —
+      # this must also fire on workflow_dispatch, where the `diff` step (below)
+      # is skipped, so the review prompt always has a pathspecs value.
+      - name: Define code pathspecs
+        id: codedef
+        run: echo "pathspecs=$CODE_PATHSPECS" >> "$GITHUB_OUTPUT"
+
       # Skip review entirely when the diff has no substantive code changes.
       # EOL/whitespace-only diffs (common on Windows with CRLF) trigger the
       # plugin, which posts a non-standard "no code changes" verdict the
@@ -81,10 +109,6 @@ jobs:
             --repo "${{ github.repository }}" \
             --json baseRefName -q .baseRefName)
           git fetch origin "$PR_BASE"
-          # `.sql` is in the glob: schema/migration PRs are code and must be
-          # reviewed (this repo is schema-drift-sensitive). A pure-.sql PR used
-          # to fall through as "no code" and — worse — trip the crash below.
-          #
           # grep -c prints "0" AND exits 1 when there are zero matches. The old
           # `|| echo 0` then APPENDED a second "0", so LINES became the two-line
           # string "0\n0" and `echo "lines=$LINES" >> $GITHUB_OUTPUT` wrote a
@@ -92,15 +116,23 @@ jobs:
           # (and the whole `review` check) failed on any PR touching only
           # non-listed extensions. Use `|| true` (grep already emits the count)
           # and default-guard the empty-pipeline case.
-          LINES=$(git diff "origin/$PR_BASE"...HEAD -- \
-            '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' \
-            '*.yaml' '*.yml' '*.json' '*.sh' '*.ps1' '*.md' '*.sql' \
+          #
+          # $CODE_PATHSPECS (job-level env, #1897) is the ONE definition of
+          # "is there something to review" — do not hand-write a second glob
+          # list here. `set -f` disables shell glob-expansion around the `git
+          # diff` call: without it, the runner's own shell could expand a bare
+          # `*.py` against files actually present in the checked-out working
+          # tree before git ever sees the pattern, silently corrupting the
+          # pathspec list passed to `git diff`.
+          set -f
+          LINES=$(git diff "origin/$PR_BASE"...HEAD -- $CODE_PATHSPECS \
             | grep -cE '^[+-][^+-]' 2>/dev/null || true)
+          set +f
           LINES=${LINES:-0}
           HAS=$( [ "$LINES" -gt 0 ] && echo true || echo false )
           echo "lines=$LINES" >> "$GITHUB_OUTPUT"
           echo "has_code=$HAS" >> "$GITHUB_OUTPUT"
-          echo "Substantive diff lines: $LINES (has_code=$HAS)"
+          echo "Substantive diff lines: $LINES (has_code=$HAS) pathspecs=[$CODE_PATHSPECS]"
 
       # Skip review when the push comes from the auto-rebase bot. osasuwu-ci[bot]
       # exclusively pushes "Merge branch 'main' into <feature>" commits — pure
@@ -187,10 +219,22 @@ jobs:
 
             1. `gh pr view <n> --json title,body,baseRefName,headRefOid` and
                `gh pr diff <n>` to get the diff and the linked issue's intent.
-            2. Skip review (post nothing, exit 0) if the PR is a draft, or the
-               diff has no code changes, or a `### Code review` comment from
-               you already covers the current head SHA with no new commits
-               since.
+            2. Skip review (post nothing, exit 0) if the PR is a draft, or a
+               `### Code review` comment from you already covers the current
+               head SHA with no new commits since, or every changed path in
+               the diff falls OUTSIDE this pathspec list (#1897 — the same
+               definition the `has_code` gate uses, so your skip decision and
+               the gate's positive-evidence check never disagree):
+               ${{ steps.codedef.outputs.pathspecs }}
+               A path counts as covered if it matches one of these space-
+               separated glob patterns (bare `*` crosses `/`, e.g. `*.py`
+               matches at any depth; `.claude/agents/*.md` matches only inside
+               that directory). Pure documentation outside this list (README,
+               docs/, decision journals, session snapshots) has nothing for
+               you to review — skip it. Markdown files that carry behavior
+               (`CLAUDE.md`/`AGENTS.md`/`SOUL.md`, `.claude/agents/*.md`,
+               `.claude-userlevel/skills/*.md`) ARE in the list and must still
+               be reviewed like code.
             3. Evaluate the diff against EXACTLY these 8 finding classes — no
                others, no severity ladder, no nitpicks:
                - `regression` — reintroduces a bug a prior commit fixed. Use

@@ -2068,6 +2068,24 @@ class TestPositiveEvidenceLogic:
         # pure noise (same reasoning as the non-OPEN carve-out).
         assert verdict([], has_code=True, is_draft=True) == "pass"
 
+    def test_docs_only_pr_reaches_legitimate_skip_not_ran_but_silent(self):
+        """#1897 end-to-end: a docs-only PR must land on the fallthrough pass
+        (workflow's "legitimate skip" comment, code-review.yml ~line 742), not
+        on the ran-but-silent fail-closed branch (EXEC_FILE check, ~line 784).
+
+        The chain this pins (docstring pointer per the #1897 plan, not a
+        cross-module import): the `diff` step reports has_code=false for a
+        docs-only diff (see tests/ci/test_code_review_substantive_diff.py ::
+        test_docs_only_paths_are_not_code) -> the `review` step's `if:`
+        (has_code == 'true' required off pull_request) never runs -> EXEC_FILE
+        is never populated -> ran stays at its default False. This single
+        call already exercises that exact ran=False + has_code=False
+        conjunction that test_no_substantive_code_still_passes exercises
+        implicitly via defaults; spelling both kwargs out here makes the
+        conjunction itself the thing under test, not an accident of defaults.
+        """
+        assert verdict([], ran=False, has_code=False) == "pass"
+
     def test_non_open_pr_outranks_the_code_check(self):
         assert verdict([], has_code=True, pr_state="MERGED") == "pass"
 
