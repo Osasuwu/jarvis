@@ -1,17 +1,33 @@
 # Harness-agnostic substrate — design
 
-**Purpose.** Jarvis is currently welded to one agent harness (Claude Code). This document
-defines the seam that lets the same instance run on another harness — OpenCode, Codex CLI,
-or a future one — without rewriting skills, hooks, memory, or the reactive core. It is the
-architectural narrative; rationale for individual calls lives in the cited `decision_made`
-episodes.
+> **Status: retired as active/planned architecture (2026-09-16, `docs/decisions/2026-Q3.md`
+> → *Harness-agnostic adapter layer: retire*, supersedes `855188a3`).** The coupling inventory
+> below (§Coupling inventory) stands as reference documentation of what is Claude-Code-coupled
+> and at what cost to change. The "Target architecture", "five adapter methods", and "Slices"
+> sections describe code that was never built past one slice (S7, deleted in #1800/#1851) and
+> is not scheduled — read them as a historical sketch, not a plan anyone is executing. Re-open
+> only if a concrete second harness need shows up with a real target to build against.
 
-**Why now, and why YAGNI does not apply.** The counting unit for abstraction in this repo is
-*readers who could depend on the code*, not implementations the principal runs
-(`CLAUDE.md` → §Project, decision `855188a3-c71f-4e86-a412-9a07b76f19df`). `jarvis-oss` is a
-public body of docs, examples and resources (no longer a template — `docs/decisions/2026-Q3.md`, 2026-09-12 grill) whose readers do not all hold a Claude subscription; advice that only runs on one harness is advice only for people who already bought the same tool. The jarvis-oss shape settled on a format-portable core plus a dated harness table, so this adapter layer lost that justification (decision journal D13.2); its remaining justification is the principal's own exit option below. Portability is also
-the principal's own exit option from a single vendor's pricing. Both are freedom-of-choice
-goals, which is exactly the class of goal YAGNI does not govern.
+**Purpose (historical).** Jarvis was welded to one agent harness (Claude Code) and this
+document sketched the seam that would let the same instance run on another harness —
+OpenCode, Codex CLI, or a future one — without rewriting skills, hooks, memory, or the
+reactive core. It is the architectural narrative; rationale for individual calls lives in the
+cited `decision_made` episodes.
+
+**Why now (superseded).** This section originally argued YAGNI did not apply because the
+counting unit for abstraction in this repo is *readers who could depend on the code*, not
+implementations the principal runs — anchored on `jarvis-oss` being a public template whose
+readers might not all hold a Claude subscription (decision `855188a3-c71f-4e86-a412-9a07b76f19df`).
+The jarvis-oss shape grill (2026-09-12, `docs/decisions/2026-Q3.md` D3/D13) retired the
+template itself — jarvis-oss ships docs + examples + resources with a format-portable core
+and a dated harness table, so "no code travels, so there is nothing to adapt" (D3) removed
+that justification outright. The one justification left standing — the principal's own vendor
+exit option — was reconsidered on its own (`docs/decisions/2026-Q3.md`, 2026-09-16) against
+this repo's own prior precedent for the same axis (`docs/decisions/2026-Q2.md` Q7: "do NOT
+preemptively abstract... but DO declare the trade-off explicitly") and against the fact that
+zero adapters have ever shipped. The layer is retired; the trade-off itself — this repo is
+committed to Claude Code, and switching costs whatever the coupling inventory below says it
+costs — remains declared, on purpose, exactly per Q7's original resolution.
 
 **Non-goal.** Feature parity across harnesses. Harnesses differ in what they can do at all
 (see §Capability registry). The goal is that Jarvis *runs, degrades legibly, and says which
@@ -78,7 +94,7 @@ backup) read the transcript format directly.
 
 ---
 
-## Target architecture
+## Target architecture (historical sketch — not planned)
 
 ```
         neutral source of truth                 renderers / adapters              harness
@@ -138,7 +154,7 @@ silent one.
 
 ---
 
-## Slices
+## Slices (historical sketch — not scheduled)
 
 One PR each, in dependency order. Slices 1–5 are refactors under `claude-code` and carry no
 behaviour change; 6 onward add the second adapter.

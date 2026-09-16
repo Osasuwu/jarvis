@@ -84,6 +84,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Support contract** — No compatibility promise, no roadmap; Discussions for questions, Issues for broken resources.
 - **Entry point** — The setup skill; its first question picks *trial* or *full*.
 - **Author sign-off** — Agents draft docs from evidence; the author signs as reviewer; unsigned does not ship.
+- **Evidence location** — `docs/incidents/` in `jarvis` is where boundary clauses' evidence pointers resolve; one dated file per incident.
 - **Examples kinds** — Author's own (`fit:` + `last_seen:`) and external (link + `verified:`); none is a default.
 - **Structure gate** — One pytest frontmatter test on jarvis-oss `main`, required by branch protection.
 - **jarvis vs jarvis-oss** — `jarvis` is the author's personal install; `jarvis-oss` is the instruction for building your own.
@@ -181,6 +182,7 @@ Durable behavior rules live in three tiers, each a backstop for the one above, s
 - **Support contract** — No compatibility promise, no roadmap; versions mark content snapshots (`v1.0` = the docs the author has signed by the first trial); questions go to Discussions, Issues only for a broken resource.
 - **Entry point** — One setup skill; its first question picks *trial* (apply one doc's one thing) or *full* (interview). The human reads the doc, the skill applies it. Flips to docs-first if the docs read well on their own.
 - **Author sign-off** — Agents draft docs, boundary clauses included, from evidence in the repos (journal entries, research artifacts, incidents). The author signs only as a human reviewer. Unsigned = does not ship. Trust is meant to land on the information, not on the author; opinion appears only as a marked "what I would pick" line.
+- **Evidence location** — [`docs/incidents/`](docs/incidents/) in `jarvis` (this repo) is where boundary clauses' evidence pointers resolve: one dated file per incident (what happened, what it cost, what rule/decision came out of it). Memory files stay as pointers to the tracked copy, never the copy of record (D35).
 - **Examples kinds** — author's own (no current/historical split; each carries `fit:` and `last_seen: <jarvis sha> <date>`) and external (link-only, `verified: <date>`). None is a default.
 - **Structure gate** — Frontmatter on every doc/example/resource, checked by one pytest test required by branch protection on jarvis-oss `main` (docs: `applies_when`, `applies_when_not`, `signed_off`; examples: `fit`, `last_seen`/`source`+`verified`; resources: `pairs_with`, `harnesses`, `cost`). The same test fails a boundary section with no resolvable evidence pointer (D21), a `signed_off` with no ledger entry (D26), a doc over the size cap, an own example whose `last_seen` is older than 180 days. Personal-literal scrub is a CI step on every PR reading a secret-held list (D25), never a public list.
   _Avoid_: `in_use` (retired, D32).
