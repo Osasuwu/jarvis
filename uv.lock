@@ -53,7 +53,7 @@ requires-dist = [
     { name = "jarvis-agent", extras = ["agents"], marker = "extra == 'full'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.4.0,<2" },
-    { name = "python-dotenv", specifier = ">=1.0.1,<2" },
+    { name = "python-dotenv", specifier = ">=1.2.3,<2" },
     { name = "pyyaml", marker = "extra == 'agents'", specifier = ">=6.0.3,<7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.8,<1" },
 ]
