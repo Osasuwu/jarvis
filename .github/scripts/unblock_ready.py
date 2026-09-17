@@ -344,7 +344,14 @@ def resolve(repo):
 
 
 def sweep_closed(repo):
-    """Strip `status:*` from every closed issue, one status label at a time."""
+    """Strip `status:*` from every closed issue, one status label at a time.
+
+    `GET /issues` lists pull requests alongside issues, and a label DELETE on a
+    PR needs `pull-requests: write`, which this workflow deliberately does not
+    grant — GitHub answers `403 Resource not accessible by integration` and the
+    sweep dies on the first such PR. A PR's labels aren't this script's business
+    anyway (it tracks the issue lifecycle), so PRs are skipped.
+    """
     names, page = [], 1
     while True:
         batch = _api("GET", f"repos/{repo}/labels?per_page=100&page={page}")
@@ -356,10 +363,20 @@ def sweep_closed(repo):
         if not name.startswith("status:") or name.startswith(HARDWARE_PREFIX):
             continue
         query = f"repos/{repo}/issues?state=closed&per_page=100&labels={urllib.parse.quote(name)}"
-        # Always page 1: every pass removes the label, so the result set shrinks.
-        while batch := _api("GET", query):
-            for issue in batch:
+        page = 1
+        while batch := _api("GET", f"{query}&page={page}"):
+            issues = [item for item in batch if "pull_request" not in item]
+            for issue in issues:
                 apply(repo, issue, plan_close)
+            if issues:
+                # The page shrank by what we just relabelled, so page `page`
+                # refills from behind: ask for it again rather than stepping on.
+                continue
+            if len(batch) < 100:
+                break
+            # A full page of nothing but PRs never shrinks, so asking for it
+            # again would loop forever. Step past it to the issues behind it.
+            page += 1
 
 
 def main():
