@@ -220,8 +220,9 @@ jobs:
             1. `gh pr view <n> --json title,body,baseRefName,headRefOid` and
                `gh pr diff <n>` to get the diff and the linked issue's intent.
             2. Skip review (post nothing, exit 0) if the PR is a draft, or a
-               `### Code review` comment from you already covers the current
-               head SHA with no new commits since, or every changed path in
+               `### Code review` comment from you carries a `Reviewed <sha>`
+               line whose SHA is CHARACTER-FOR-CHARACTER this PR's current
+               `headRefOid` from step 1, or every changed path in
                the diff falls OUTSIDE this pathspec list (#1897 — the same
                definition the `has_code` gate uses, so your skip decision and
                the gate's positive-evidence check never disagree):
@@ -235,6 +236,18 @@ jobs:
                (`CLAUDE.md`/`AGENTS.md`/`SOUL.md`, `.claude/agents/*.md`,
                `.claude-userlevel/skills/*.md`) ARE in the list and must still
                be reviewed like code.
+               #1890 — "already reviewed" means that literal SHA match and
+               nothing looser. An UNCHANGED DIFF IS NOT A MATCH: merging `main`
+               into the branch moves the head SHA without changing the diff,
+               and the verdict gate below anchors freshness on the head
+               commit's own committer date, so a verdict posted for the old
+               SHA reads as stale and the gate fails closed with nothing to
+               re-anchor it. So when the diff is unchanged but the head SHA
+               moved, do NOT skip — RE-POST (step 5) with a body of
+               `Unchanged since <old-sha>.` and the SAME
+               `<!-- code-review-findings -->` block as the verdict you are
+               carrying forward. Re-posting is what re-anchors the gate;
+               posting nothing is what blocks the PR.
             3. Evaluate the diff against EXACTLY these 8 finding classes — no
                others, no severity ladder, no nitpicks:
                - `regression` — reintroduces a bug a prior commit fixed. Use
@@ -265,8 +278,12 @@ jobs:
                tight).
             5. Post exactly one PR comment via `gh pr comment <n> --body-file
                /tmp/code-review-comment.md` (compose the body with Write, never
-               inline shell string-interpolation of review prose). The comment
-               body is prose summarizing what you found (or "No issues found."
+               inline shell string-interpolation of review prose). The body
+               opens with a `### Code review` heading (the merge gate selects
+               verdict comments by that heading), then a line reading exactly
+               `Reviewed <headRefOid from step 1>` — the full 40-char SHA, no
+               abbreviation, since that line is what step 2 matches on. Then
+               prose summarizing what you found (or "No issues found."
                if clean), followed by this exact HTML comment as the LAST thing
                in the body:
 

@@ -2420,3 +2420,57 @@ class TestStaleGraceWindowWiring:
             "interval must stay coarse (20s) — the comments endpoint is "
             "paginated and polled repeatedly (#1469)."
         )
+
+
+class TestHeadShaSkipContract:
+    """#1890: the reviewer's skip clause must key on a LITERAL head SHA.
+
+    The reviewer prompt and this verdict step are two halves of one contract,
+    and they disagreed. The prompt let the reviewer skip when a prior verdict
+    "already covers the current head SHA with no new commits since", which a
+    reviewer reads as diff-equivalence; the gate above has no such exception —
+    it demands a comment newer than the head commit's committer date. A merge
+    of `main` into a feature branch satisfies the prompt's reading (same diff)
+    and violates the gate's (new head commit, older verdict), so EVERY such
+    merge failed the gate closed and needed an admin-merge (#1887).
+
+    The fix is on the prompt side, and it is prose — nothing but this guard
+    stops a later rewrite from loosening it back to diff-equivalence.
+    """
+
+    @pytest.fixture(scope="class")
+    def prompt(self, review_step) -> str:
+        return review_step["with"]["prompt"]
+
+    def test_the_verdict_comment_carries_the_sha_it_reviewed(self, prompt):
+        # The findings JSON deliberately carries no SHA field, so the anchor
+        # the skip clause matches on has to live in the comment prose.
+        assert "Reviewed <headRefOid from step 1>" in prompt, (
+            "Step 5 must make the reviewer stamp the full head SHA into the "
+            "comment body — without it there is nothing for the skip clause "
+            "to match literally, and it falls back to judging equivalence."
+        )
+        assert "full 40-char SHA" in prompt, (
+            "An abbreviated SHA turns the literal match back into a fuzzy one."
+        )
+
+    def test_the_skip_clause_demands_a_literal_match(self, prompt):
+        assert "CHARACTER-FOR-CHARACTER" in prompt, (
+            "Step 2's skip must key on a literal `Reviewed <sha>` match. Any "
+            "softer wording ('already covers', 'no new commits since') reads "
+            "as diff-equivalence and reopens #1890."
+        )
+        assert "no new commits since" not in prompt, (
+            "The retired diff-equivalence wording is back in the prompt."
+        )
+
+    def test_an_unchanged_diff_on_a_moved_head_re_posts(self, prompt):
+        assert "UNCHANGED DIFF IS NOT A MATCH" in prompt
+        assert "Unchanged since <old-sha>." in prompt, (
+            "The re-post body is what re-anchors this gate; a reviewer that "
+            "stays silent on a merge-of-main leaves the PR blocked forever."
+        )
+        assert "code-review-findings" in prompt, (
+            "The re-post must carry the findings block forward, or the gate "
+            "reads the re-post as an unparseable verdict."
+        )
