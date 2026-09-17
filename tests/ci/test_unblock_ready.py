@@ -323,6 +323,59 @@ def test_every_mode_the_resolver_emits_has_a_planner(monkeypatch):
     assert emitted == set(unblock_ready.PLANNERS)
 
 
+def _sweep_api(pages, calls):
+    """Stub `_api` for a sweep: one status label, then `pages` of results.
+
+    `pages` maps a 1-based page number to the list that page returns; a page
+    with no entry returns []. Every DELETE is recorded in `calls`.
+    """
+
+    def fake_api(method, path, body=None):
+        calls.append((method, path))
+        if method == "DELETE":
+            # The real API drops the label, so that issue leaves the result set.
+            number = int(path.split("/issues/", 1)[1].split("/", 1)[0])
+            for items in pages.values():
+                items[:] = [i for i in items if i["number"] != number]
+            return None
+        if "/labels?" in path:
+            return [{"name": "status:review"}]
+        page = int(path.rsplit("page=", 1)[1])
+        return pages.get(page, [])
+
+    return fake_api
+
+
+def _closed(number, is_pr=False):
+    item = {"number": number, "state": "closed", "labels": [{"name": "status:review"}]}
+    if is_pr:
+        item["pull_request"] = {"url": f"https://api.github.com/repos/owner/repo/pulls/{number}"}
+    return item
+
+
+def test_sweep_leaves_pull_requests_alone(monkeypatch):
+    # `GET /issues` lists PRs too, and a label DELETE on a PR needs
+    # `pull-requests: write` — the sweep job only has `issues: write`, so
+    # touching one dies with 403 "Resource not accessible by integration".
+    calls = []
+    pages = {1: [_closed(1833, is_pr=True), _closed(1840)]}
+    monkeypatch.setattr(unblock_ready, "_api", _sweep_api(pages, calls))
+    unblock_ready.sweep_closed("owner/repo")
+    deletes = [path for method, path in calls if method == "DELETE"]
+    assert deletes == ["repos/owner/repo/issues/1840/labels/status%3Areview"]
+
+
+def test_sweep_pages_past_a_full_page_of_pull_requests(monkeypatch):
+    # Page 1 never shrinks — nothing on it is ours to relabel — so re-asking
+    # for it would spin forever. The issues behind it must still get swept.
+    calls = []
+    pages = {1: [_closed(n, is_pr=True) for n in range(100)], 2: [_closed(1840)]}
+    monkeypatch.setattr(unblock_ready, "_api", _sweep_api(pages, calls))
+    unblock_ready.sweep_closed("owner/repo")
+    deletes = [path for method, path in calls if method == "DELETE"]
+    assert deletes == ["repos/owner/repo/issues/1840/labels/status%3Areview"]
+
+
 def test_an_unlabel_promotes_only_an_issue_that_was_once_blocked():
     assert unblock_ready.plan_unlabeled(_issue(["task"])) == (["status:ready"], [])
     never = {"state": "open", "labels": [], "issue_dependencies_summary": {"blocked_by": 0}}
