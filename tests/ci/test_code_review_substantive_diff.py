@@ -120,7 +120,19 @@ def test_blanket_md_glob_dropped():
 
 def test_common_code_extensions_still_covered():
     globs = _diff_globs()
-    for ext in ("*.py", "*.ts", "*.tsx", "*.js", "*.jsx", "*.yaml", "*.yml", "*.json", "*.sh", "*.ps1", "*.sql"):
+    for ext in (
+        "*.py",
+        "*.ts",
+        "*.tsx",
+        "*.js",
+        "*.jsx",
+        "*.yaml",
+        "*.yml",
+        "*.json",
+        "*.sh",
+        "*.ps1",
+        "*.sql",
+    ):
         assert ext in globs, f"{ext} dropped from substantive-diff glob: {globs}"
 
 
@@ -297,7 +309,9 @@ def test_behavior_carrying_markdown_is_code():
         ".claude-userlevel/skills/grill/SKILL.md",
         ".claude-userlevel/skills/grill/CRITIC.md",
     ):
-        assert _is_code_path(path), f"{path} must count as code (behavior-carrying markdown, #1897 AC3)"
+        assert _is_code_path(path), (
+            f"{path} must count as code (behavior-carrying markdown, #1897 AC3)"
+        )
 
 
 def test_markdown_negative_controls_not_falsely_matched():
