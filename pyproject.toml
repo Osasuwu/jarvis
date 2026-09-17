@@ -92,3 +92,10 @@ target-version = "py311"
 # exit-code-only, zero PR comments). Groups 2-4 (BLE001/S110/SIM105, E501,
 # S603/S607) are follow-up cleanup slices — see #1816's issue body.
 select = ["F", "B", "E722"]
+
+[tool.ruff.format]
+# Ruff 0.16 formats Python blocks inside markdown; 0.14 did not. Prose docs
+# and SKILL.md files carry illustrative snippets that are deliberately
+# elided or abbreviated, so reformatting them is churn at best and
+# misleading at worst. Keep the formatter to actual source (#1909).
+exclude = ["*.md"]
