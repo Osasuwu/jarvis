@@ -30,7 +30,7 @@ classifiers = [
 # tests/ci/test_dependency_bounds_guard.py fails closed if a bare `>=`-only
 # spec is reintroduced here.
 dependencies = [
-  "python-dotenv>=1.0.1,<2",
+  "python-dotenv>=1.2.3,<2",
 ]
 
 [project.optional-dependencies]
