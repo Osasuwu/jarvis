@@ -275,6 +275,26 @@ def test_real_config_redrobot_prefixless_planning_no_longer_shadow_matches():
     assert "mujoco/**" not in guarded, "mujoco/** dropped per a7111a44 (tier 2, not plan-gated)"
 
 
+def test_real_config_redrobot_every_tier1_path_is_class_2():
+    """The two tests above pin `driver/` and `planning/` — the two zones #1684
+    happened to name. Tier 1 (decision a7111a44) has five entries, and a fix
+    that prefixed only the zones it was shown would leave the other three
+    falling through to AFK-safe, which is the same fail-open one file over.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    config = load_protected_paths(repo_root / "config" / "protected-paths.json")
+    for path in (
+        "redrobot/driver/motor.py",
+        "redrobot/planning/policy.py",
+        "redrobot/experiments.py",
+        "tests/safety/test_limits.py",
+        "tests/experiments/test_rehearsal_guard.py",
+    ):
+        verdict = classify_static_paths([path], repo="SergazyNarynov/redrobot", config=config)
+        assert verdict.cls == 2, f"{path} should be class 2, got {verdict.cls}"
+        assert verdict.bucket == "guarded", path
+
+
 def test_real_config_jarvis_hitl_file_is_class_3():
     repo_root = Path(__file__).resolve().parents[2]
     config = load_protected_paths(repo_root / "config" / "protected-paths.json")
