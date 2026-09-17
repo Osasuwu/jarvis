@@ -1,6 +1,7 @@
 """Label decisions of .github/scripts/unblock_ready.py (issue and PR lifecycle events)."""
 
 import importlib.util
+import io
 import urllib.error
 from pathlib import Path
 
@@ -184,6 +185,82 @@ def test_a_delete_failing_for_any_other_reason_still_raises(monkeypatch):
     issue = dict(_issue(["status:ready"], state="closed"), number=7)
     with pytest.raises(urllib.error.HTTPError):
         unblock_ready.apply("owner/repo", issue, unblock_ready.plan_close)
+
+
+def _http_error(status, body="", headers=None):
+    return urllib.error.HTTPError(
+        "https://api.github.com/x", status, body, headers or {}, io.BytesIO(body.encode())
+    )
+
+
+def _api_over(monkeypatch, responses):
+    """Drive `_api` against a scripted sequence, with a sleep that never blocks."""
+    slept, queue = [], list(responses)
+
+    def fake_request(method, path, body=None):
+        outcome = queue.pop(0)
+        if isinstance(outcome, urllib.error.HTTPError):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(unblock_ready, "_request", fake_request)
+    return slept, lambda: queue
+
+
+def test_a_throttled_call_backs_off_and_then_succeeds(monkeypatch):
+    slept, _ = _api_over(
+        monkeypatch,
+        [_http_error(403, "You have exceeded a secondary rate limit"), {"ok": True}],
+    )
+    result = unblock_ready._api("DELETE", "repos/o/r/issues/1/labels/x", sleep=slept.append)
+    assert result == {"ok": True}
+    assert slept == [1]
+
+
+def test_a_403_that_is_not_a_throttle_raises_without_retrying(monkeypatch):
+    slept, remaining = _api_over(monkeypatch, [_http_error(403, "Resource not accessible")])
+    with pytest.raises(urllib.error.HTTPError):
+        unblock_ready._api("DELETE", "repos/o/r/issues/1/labels/x", sleep=slept.append)
+    assert slept == []
+    assert remaining() == []
+
+
+def test_retry_after_sets_the_delay_and_is_capped(monkeypatch):
+    slept, _ = _api_over(monkeypatch, [_http_error(429, "slow down", {"Retry-After": "999"}), None])
+    unblock_ready._api("POST", "repos/o/r/issues/1/labels", sleep=slept.append)
+    assert slept == [unblock_ready.MAX_BACKOFF_SECONDS]
+
+
+def test_an_exhausted_primary_limit_waits_for_its_reset(monkeypatch):
+    headers = {"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1000"}
+    slept, _ = _api_over(monkeypatch, [_http_error(403, "rate limit", headers), None])
+    monkeypatch.setattr(unblock_ready.time, "time", lambda: 970)
+    unblock_ready._api("POST", "repos/o/r/issues/1/labels", sleep=slept.append)
+    assert slept == [30]
+
+
+def test_a_throttle_that_never_clears_gives_up_after_the_attempt_cap(monkeypatch):
+    throttled = [_http_error(429, "slow down") for _ in range(unblock_ready.MAX_ATTEMPTS)]
+    slept, remaining = _api_over(monkeypatch, throttled)
+    with pytest.raises(urllib.error.HTTPError):
+        unblock_ready._api("DELETE", "repos/o/r/issues/1/labels/x", sleep=slept.append)
+    assert len(slept) == unblock_ready.MAX_ATTEMPTS - 1
+    assert remaining() == []
+
+
+def test_a_404_is_left_for_the_caller_to_tolerate(monkeypatch):
+    slept, _ = _api_over(monkeypatch, [_http_error(404, "Label does not exist")])
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        unblock_ready._api("DELETE", "repos/o/r/issues/1/labels/x", sleep=slept.append)
+    assert caught.value.code == 404
+    assert slept == []
+
+
+def test_a_failing_call_logs_its_response_body(monkeypatch, capsys):
+    slept, _ = _api_over(monkeypatch, [_http_error(403, "Resource not accessible by integration")])
+    with pytest.raises(urllib.error.HTTPError):
+        unblock_ready._api("DELETE", "repos/o/r/issues/1/labels/x", sleep=slept.append)
+    assert "Resource not accessible by integration" in capsys.readouterr().out
 
 
 def test_a_closed_issue_resolves_to_itself_plus_what_it_unblocks(monkeypatch):
