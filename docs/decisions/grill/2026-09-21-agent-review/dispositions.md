@@ -76,3 +76,19 @@ User: "25 и 6 — согласен с рекомендацией" (one reply to
 Facts verified 2026-09-21: GitHub ToS B.3 allows one machine account; `branch_protection_rule` and `pull_request: unlabeled` triggers exist (docs.github.com, "Events that trigger workflows").
 
 All D clusters (D1–D25) now have a disposition. F applied. L filed as #95. AC-lock unblocked.
+
+## Post-lock addendum — answered 2026-09-21, during ticketing
+
+Two gaps surfaced while the locked design was cut into issues. Both were put to the user as
+separate questions with a recommendation; reply: "A–D согласен с рекомендацией". Neither changes
+an AC; each fills in a mechanism an AC left open.
+
+| Gap | Belongs to | What it commits to |
+|---|---|---|
+| A. How a reviewer-machinery PR ever merges | D5, AC5 | The guard does not fail such a PR forever. It runs from the base branch, re-applies `waiting-human-review` on every push of a PR that touches machinery files, and is red while the label is present. The human removes the label after reading; the detector (D6) records the removal. Finding behind it: the existing `waiting-human-review.yml` runs on `pull_request`, so a PR can rewrite the check that holds it; the guard on `pull_request_target` without checkout closes that. |
+| B. Click-audit size and draw | D4, AC17 | k = 5 claims per doc, or all of them if the doc has fewer. A script draws them, seeded with the PR head SHA, so the draw is reproducible and the agent does not pick. k is revisited on the first audited miss. |
+
+Ticketing (jarvis-oss, milestone v0.9.0, parent #38): #96–#112. AC2a + AC17 → #96; AC2b → #101;
+AC8 → #102; AC4 + AC15 → #104; AC3 → #106; AC5 → #97; AC6 → #98; required checks → #107;
+AC7 → #108; AC9 → #109; AC13 → #111; AC11 → #103; AC14 → #110; AC12 → #99 (hook, detector) and
+#100 (leak gate); AC10 → #105; AC16 → #112.

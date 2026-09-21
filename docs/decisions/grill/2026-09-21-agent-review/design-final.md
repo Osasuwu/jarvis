@@ -61,7 +61,7 @@ A `missing` option is a follow-up unless it triggers (iii).
   commit are unioned (D24). Red or pending means wait.
 - Machinery guard (D5): a second required check on `pull_request_target` WITHOUT checkout; reads
   the changed-file list through the API; fails PRs touching workflow, skill, calibration or gate
-  files.
+  files. How such a PR is released: `dispositions.md`, post-lock addendum A.
 - `check_quotes.py` is a required PR check, failing on `NOT FOUND` only; the unfetchable count is
   printed. The full `tests/` suite runs in CI (#84) (D15).
 - Record (D10): one flat frontmatter key `review: <PR URL>`, may be empty (D19). The report is a PR
@@ -126,3 +126,4 @@ that "the human merges" is a convention; the cron badge.
 - AC15. A drift-key mismatch fails the review check.
 - AC16. Auto-application of the hold is removed only on the D25 trigger; the label stays required.
 - AC17. Click-audit procedure written down: k, how claims are drawn, where misses are recorded.
+  (k and the draw: `dispositions.md`, post-lock addendum B.)
