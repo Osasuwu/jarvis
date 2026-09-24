@@ -55,10 +55,9 @@ jobs:
 
             // Linkage keywords: closing keywords (closes/fixes/resolves) auto-close on
             // merge; refs/references LINK WITHOUT closing (#1136 AC-GATE). A partial-work
-            // PR uses `Refs #N` to satisfy this gate while leaving the issue open — the
-            // executor lane's Closes-mandate escape (agents/task_dispatch.py) mirrors this.
-            // pr-merged.yml is deliberately unchanged: auto-close stays closingIssuesReferences-
-            // driven, so `Refs` links-without-closing by construction.
+            // PR uses `Refs #N` to satisfy this gate while leaving the issue open. Auto-close
+            // is driven by closingIssuesReferences only, so `Refs` links-without-closing by
+            // construction.
             const issueMatches = [...body.matchAll(/(?:closes|fixes|resolves|refs?|references?)\s+#(\d+)/gi)];
             const issueNumbers = [...new Set(issueMatches.map(m => parseInt(m[1], 10)))];
 
