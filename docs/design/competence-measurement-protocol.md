@@ -1,5 +1,10 @@
 # Competence Measurement Protocol — construct C (code-review judgment)
 
+> **Retired 2026-09-24.** Series 1 never started and the direction was closed — see
+> [`.out-of-scope/competence-measurement.md`](../../.out-of-scope/competence-measurement.md).
+> The protocol and `scripts/competence_scoring.py` are kept so a new series can start from
+> them; nothing collects verdicts today, and `owner_competence_profile` (§1) no longer exists.
+
 **Status:** pre-registered, series 1 not yet started.
 **Closes:** #1249 (AC1).
 **Decisions:** grill chain 2026-08-03/04 — `491cb4a5` (method pivot: live review cycle over a seeded-defect bank), `4bc5c5a3` (slice boundary: measure-and-journal only), `7b6c8930` (scoring semantics), `32badce3` (capture mechanics).
