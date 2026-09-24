@@ -32,9 +32,11 @@ hardcoded on a shared code path.
 
 ## Merge rules
 
-Merging is gated by four required CI checks on the default branch: the code-review verdict,
-`owner-queue-guard`, `require-linked-issue`, and the repo's own test gates — branch-protection
-enforced, no cooperation needed from you. `~/.claude/reference/merge-gates.md`'s admin-merge
+Merging is gated by four required CI checks on the default branch: `code-gate` (the code-review
+verdict), `require-linked-issue`, `pytest`, and `gitleaks` — branch-protection enforced, no
+cooperation needed from you. `status:owner-queue` on a PR is **advisory**: no check reads it since
+`owner-queue-guard` was deleted in #1796, so to hold a PR keep it in draft. The enforced
+replacement is the `waiting-human-review` check (#1892/#1893). `~/.claude/reference/merge-gates.md`'s admin-merge
 carve-outs (review-blind PRs, a sanctioned stop-gap merge for a false-failing gate) are the only
 sanctioned ways around a stuck gate; never normalize a bypass for a gate that's merely
 inconvenient.

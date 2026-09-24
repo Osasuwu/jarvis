@@ -22,7 +22,8 @@ Group by family, not by ad-hoc naming. jarvis's current families:
 
 - **`type`** (bare, no prefix) — `task`, `bug`, `enhancement`
 - **`priority:`** — `critical` / `high` / `medium` / `low`
-- **`status:`** — `ready`, `in-progress`, `review`, `owner-queue`, `rework-in-progress`
+- **`status:`** — `ready`, `in-progress`, `review`, `owner-queue` (advisory on PRs — see §3),
+  `rework-in-progress`
 - **`area:`** — one per subsystem (`docs`, `quality`, `skills`, `config`, `infrastructure`,
   `core-agent`, `memory`, `security`, `ci-quality`, `release`, …) — pick the set that matches
   the repo's actual subsystems, don't copy jarvis's list verbatim
@@ -66,23 +67,20 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 
 | Gate (check name) | Workflow | What it blocks |
 |---|---|---|
-| `review` | `code-review.yml` (+ retry wrapper) | Code-gate: Layer A (`ruff check`, lint rule group 1) + Layer B (tiered LLM review) — fails closed on a `{blocking: true, findings: [...]}` verdict or a missing/malformed one |
-| `owner-queue-guard` | `owner-queue-guard.yml` | PR carries `status:owner-queue` — explicit manual hold |
+| `code-gate` | `code-review.yml` | Code-gate: Layer A (deterministic checks) + Layer B (tiered LLM review) — fails closed on a `{blocking: true, findings: [...]}` verdict or a missing/malformed one |
 | `require-linked-issue` | `pr-body-check.yml` | PR body has no `Closes #N`/`Refs #N`, no `[no-issue]` marker, no `refactor:` prefix, no `priority:critical` hotfix bypass |
-| test suite (`pytest`, language-equivalent) | your language's own CI workflow | Tests fail |
-| `meta-tests` | `ci-meta.yml` or equivalent | Guard-fixture tests that keep CI config internally consistent (e.g. pinning a required-check name to the job that produces it) |
-| gitleaks / secret scan | `gitleaks.yml` | Secret committed |
+| `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
+| `gitleaks` | `gitleaks.yml` | Secret committed |
 
-Repo-custom gates layer on top of this floor (jarvis also runs
-`require-paired-migration` — a schema-drift guard specific to its Supabase dependency; its
-former `pytest-db` sibling was removed with reactive-core in #1802). Add them as needed; they
-don't need to match another repo's set.
+These four are exactly the required checks on jarvis's `main` since #1796/#1835 (read back from
+the live branch-protection settings, 2026-09-24). That cut deleted the former
+`owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the review retry wrapper and the advisory
+`issue-checks.yml`; don't copy them from older docs. Repo-custom gates layer on top of this
+floor as needed; they don't need to match another repo's set.
 
-**Issue-schema-check** is advisory in jarvis today, not a hard-blocking gate: `issue-checks.yml`
-syncs the `area:` label from the issue body's declared area and logs a note (not a failure)
-when a task/bug has no parent or milestone. If a repo wants schema violations to actually
-block, that's a deliberate escalation from advisory to enforcing — do it explicitly, don't
-assume the jarvis pattern already enforces it.
+**No merge hold is enforced today.** `status:owner-queue` on a PR is advisory — nothing reads
+it. Until `waiting-human-review` lands as a required check (#1892/#1893), the only working hold
+is keeping the PR in draft.
 
 **Branch protection** wires these check names into
 `Settings → Branches → Branch protection rules` (or `gh api -X PUT
@@ -208,8 +206,9 @@ read it back out of the body).
   that replaces native auto-close, not an optional extra.
 - **Draft is the manual hold** — a PR stays in draft while it's not ready for auto-merge to
   even consider it; flip to ready only once gates should start evaluating.
-- **`status:owner-queue`** is the narrower hold for a PR that's content-complete and could
-  pass every gate, but the owner still wants to eyeball it before it ships.
+- **`status:owner-queue`** was the narrower hold for a PR that's content-complete but still
+  owed a human look. It is **advisory** now (its guard was deleted in #1796); use draft until
+  the `waiting-human-review` check replaces it (#1892/#1893).
 
 ### Free-plan / private-repo caveats
 
