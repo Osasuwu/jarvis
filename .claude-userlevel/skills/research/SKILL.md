@@ -244,7 +244,7 @@ When `/research` was triggered against a specific issue carrying the `needs-rese
 gh issue edit <N> --repo <owner/repo> --remove-label "needs-research"
 ```
 
-This is the contract that lets `/delegate`'s pre-dispatch gate (issue #642) trust that an unlabelled issue is genuinely research-clean. Skipping the removal leaves the issue stuck in `status:owner-queue` forever. If `/research` exits without a confident answer (confidence <50), leave the label in place — the issue still needs work.
+This is the contract that lets `/delegate`'s pre-dispatch gate (issue #642) trust that an unlabelled issue is genuinely research-clean. Skipping the removal leaves the issue stuck assigned to the owner forever. If `/research` exits without a confident answer (confidence <50), leave the label in place — the issue still needs work.
 
 
 ## Quality rules

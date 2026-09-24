@@ -44,7 +44,7 @@ READY = "status:ready"
 REVIEW = "status:review"
 # Status labels that may coexist with ready; any other `status:*` means the
 # issue already moved past ready and must not be overwritten.
-COEXISTS_WITH_READY = {READY, "status:owner-queue"}
+COEXISTS_WITH_READY = {READY}
 # Statuses of work under way; stale once the issue is reopened or its PR dropped.
 IN_FLIGHT = {"status:in-progress", REVIEW, "status:rework-in-progress"}
 # Set by a hardware lifecycle workflow on close/reopen; not ours to touch.

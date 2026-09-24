@@ -3,8 +3,8 @@ name: Waiting for human review
 # #1892: a merge hold that reads the same at any team size. At N>1 a pending
 # review request carries it; at one developer a review cannot be requested
 # from oneself, so the `waiting-human-review` label carries the same hold
-# instead. Not yet a required check -- landing it as required and retiring
-# the advisory `status:owner-queue` label is #1893.
+# instead. Required as of #1893, which also retired the `status:owner-queue`
+# label this check replaced.
 
 on:
   pull_request:
