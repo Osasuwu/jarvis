@@ -36,7 +36,11 @@ Convention: docs/reference/ci-guard-meta-tests.md (#326).
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -126,6 +130,67 @@ class TestStepShape:
             "prefix must track the branch name the worker prompt tells the agent to create"
         )
         assert "github.event.issue.number" in prefix
+
+
+class TestNoPrFailsLoud:
+    """#1927: a run that produced no PR must end red, not green.
+
+    The worker's escalation comment and assignee change are authored by
+    AGENT_DISPATCH_PAT, i.e. the owner's own account, and GitHub never
+    notifies a user about their own activity. A red run is the only signal
+    that reaches the owner: GitHub's native failed-workflow notification.
+    """
+
+    @staticmethod
+    def _run_step(automerge_step: dict, tmp_path: Path, pr_list_output: str):
+        # Stub `gh`: `pr list` prints the given rows, `pr merge` succeeds.
+        stub = tmp_path / "gh"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "$1 $2" = "pr list" ]; then printf "%b" "$GH_STUB_LIST"; fi\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        env = {
+            **os.environ,
+            "PR_BRANCH_PREFIX": "claude/issue-1927",
+            "ISSUE_NUMBER": "1927",
+            "GH_STUB_LIST": pr_list_output,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        }
+        return subprocess.run(
+            ["bash", "-c", automerge_step["run"]],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_no_pr_branch_errors_and_exits_nonzero(self, automerge_step):
+        run = automerge_step["run"]
+        branch = run[run.index('if [ -z "$pr" ]') : run.index("fi", run.index('if [ -z "$pr" ]'))]
+        assert "::error::" in branch
+        assert "exit 1" in branch
+        assert "exit 0" not in branch
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or shutil.which("bash") is None,
+        reason="executes the step's bash script; CI runs it on Linux",
+    )
+    def test_no_pr_run_fails(self, automerge_step, tmp_path):
+        result = self._run_step(automerge_step, tmp_path, "")
+        assert result.returncode == 1
+        assert "::error::" in result.stdout
+        assert "#1927" in result.stdout
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or shutil.which("bash") is None,
+        reason="executes the step's bash script; CI runs it on Linux",
+    )
+    def test_pr_found_run_succeeds(self, automerge_step, tmp_path):
+        result = self._run_step(automerge_step, tmp_path, "claude/issue-1927-fix\t55")
+        assert result.returncode == 0, result.stderr
+        assert "Auto-merge queued on PR #55" in result.stdout
 
 
 class TestAgentCannotMergeItself:

@@ -173,9 +173,16 @@ jobs:
       # the unattended lane.
       #
       # `if: always()` so a worker that opened its PR and then hit the 45-min
-      # timeout still gets its PR queued. When the worker escalated per step 5
-      # (label + comment, no PR) there is nothing to match and the step exits
-      # 0 with a notice.
+      # timeout still gets its PR queued.
+      #
+      # No PR (the worker escalated per step 5, or stopped at the step-2
+      # preflight) fails the step on purpose (#1927). The worker's comment and
+      # assignee change go out under AGENT_DISPATCH_PAT, which is the owner's
+      # own account, and GitHub never notifies a user about their own
+      # activity. A green run here would leave the escalation with no signal
+      # at all. A red run triggers GitHub's native failed-workflow
+      # notification to the triggering actor, i.e. whoever applied
+      # `agent:dispatch`.
       #
       # PAT, not GITHUB_TOKEN, for the same reason as the worker step: the
       # eventual merge commit lands on `main` as a normal external actor, so
@@ -186,6 +193,7 @@ jobs:
           GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
           GH_REPO: ${{ github.repository }}
           PR_BRANCH_PREFIX: claude/issue-${{ github.event.issue.number }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           # Match the worker's branch exactly, or with a `-<slug>` suffix. The
@@ -203,8 +211,8 @@ jobs:
           pr=$(awk -F'\t' -v p="$PR_BRANCH_PREFIX" \
                  '$1 == p || index($1, p "-") == 1 { print $2; exit }' <<< "$raw")
           if [ -z "$pr" ]; then
-            echo "::notice::No open PR on ${PR_BRANCH_PREFIX}[-*]; worker escalated or opened none."
-            exit 0
+            echo "::error::No PR from the worker for issue #${ISSUE_NUMBER}: it escalated or stopped at preflight. Read the issue comments."
+            exit 1
           fi
           gh pr merge "$pr" --squash --auto
           echo "::notice::Auto-merge queued on PR #${pr} (squash); merges when all required checks pass."
