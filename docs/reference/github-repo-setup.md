@@ -71,16 +71,27 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `require-linked-issue` | `pr-body-check.yml` | PR body has no `Closes #N`/`Refs #N`, no `[no-issue]` marker, no `refactor:` prefix, no `priority:critical` hotfix bypass |
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
+| `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
 
-These four are exactly the required checks on jarvis's `main` since #1796/#1835 (read back from
-the live branch-protection settings, 2026-09-24). That cut deleted the former
-`owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the review retry wrapper and the advisory
-`issue-checks.yml`; don't copy them from older docs. Repo-custom gates layer on top of this
-floor as needed; they don't need to match another repo's set.
+These four required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`) are
+exactly what's enforced on jarvis's `main` since #1796/#1835 (read back from the live
+branch-protection settings, 2026-09-24). That cut deleted the former `owner-queue-guard`,
+`meta-tests`/`ci-meta.yml`, the review retry wrapper and the advisory `issue-checks.yml`; don't
+copy them from older docs. Repo-custom gates layer on top of this floor as needed; they don't
+need to match another repo's set.
+
+`waiting-human-review` (#1892) is **not yet one of the required four** — it reports on every PR
+(triggers: opened, synchronize, ready_for_review, review_requested, review_request_removed,
+labeled, unlabeled, and `pull_request_review: submitted`) but is not wired into branch
+protection yet. Its check name is fixed now so it never needs renaming once #1893 makes it
+required: the job id is `waiting-human-review` with no `name:` override, same pattern as
+`require-linked-issue` in `pr-body-check.yml`. It re-fetches PR state (`pulls.get`) rather than
+trusting the triggering event's payload, since a `review_submitted` event's payload snapshot may
+not yet reflect GitHub clearing the submitting reviewer from `requested_reviewers`.
 
 **No merge hold is enforced today.** `status:owner-queue` on a PR is advisory — nothing reads
-it. Until `waiting-human-review` lands as a required check (#1892/#1893), the only working hold
-is keeping the PR in draft.
+it, and `waiting-human-review` is not yet a required check. Until #1893 lands, the only working
+hold is keeping the PR in draft.
 
 **Branch protection** wires these check names into
 `Settings → Branches → Branch protection rules` (or `gh api -X PUT
@@ -209,6 +220,12 @@ read it back out of the body).
 - **`status:owner-queue`** was the narrower hold for a PR that's content-complete but still
   owed a human look. It is **advisory** now (its guard was deleted in #1796); use draft until
   the `waiting-human-review` check replaces it (#1892/#1893).
+- **`waiting-human-review`** (#1892) is the developer-count-agnostic replacement, shipped but
+  not yet required: red while at least one review request is pending (N>1), or while the
+  `waiting-human-review` label is applied with no request pending (the solo-developer path — a
+  review can't be requested from oneself, so the label carries the same hold under the same
+  name). Landing it as a required check and retiring the advisory `status:owner-queue` label is
+  #1893; until then it reports but doesn't block.
 
 ### Free-plan / private-repo caveats
 
