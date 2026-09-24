@@ -193,7 +193,7 @@ Closes #
 ```
 
 The Risk Assessment tiers cross-reference the #1512 risk-assessment carve-out named in
-`.claude-userlevel/reference/merge-gates.md` — keep the tier names (LOW/MEDIUM/HIGH/CRITICAL)
+`~/.claude/reference/merge-gates.md` — keep the tier names (LOW/MEDIUM/HIGH/CRITICAL)
 in sync with that doc if either changes.
 
 ## 7. Issue templates

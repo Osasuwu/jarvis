@@ -32,8 +32,8 @@ T2_CANONICAL = {
 }
 
 # User-level MIRROR paths (relative to ``~/.claude/``). Canonical source for
-# these lives in the repo; a manual copy (the install script was retired in
-# #1800) puts them into ``~/.claude/``. Kept for conceptual parity with the
+# these lives in the operator's private repo (#1923): ``skills/`` arrives via a
+# junction, ``settings.json`` via a manual copy. Kept for conceptual parity with the
 # user-level hook even though a project-scoped hook observing a ``~/.claude/*``
 # path is unlikely in practice.
 _USER_LEVEL_PROTECTED_FILES = {
@@ -113,10 +113,11 @@ def _block_reason(file_path: str, classification: str) -> str:
     if classification == "mirror":
         return (
             f"BLOCKED: '{file_path}' is a user-level mirror under ~/.claude/. "
-            "Edit the canonical source in the jarvis repo "
-            "(config/SOUL.md, .claude-userlevel/...), open a PR, then copy the "
-            "changed file into ~/.claude/ by hand on this device (no installer). "
-            "Direct edits here drift silently from the repo source."
+            "Edit the canonical source instead: user-level skills and "
+            "settings.json live in the operator's private repo clone "
+            "(~/.claude/skills is a junction into it, #1923) — edit there and "
+            "commit; config/SOUL.md lives in this repo. "
+            "Direct edits here bypass the tracked source."
         )
     return (
         f"BLOCKED: '{file_path}' is a protected canonical source (project-level "

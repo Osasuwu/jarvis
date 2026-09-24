@@ -1,7 +1,7 @@
 # Pull-rate escalation rule — pull-only reference
 
 Read this when reviewing the output of `scripts/pull-rate-report.py` (#1275) — the on-demand
-reader that measures how often the Glossary pull instruction (`.claude-userlevel/CLAUDE.md` →
+reader that measures how often the Glossary pull instruction (the user-level `CLAUDE.md` →
 *Pull-only references*) actually gets used. There is no automatic trigger; a human (or a
 skill acting on the human's behalf) runs the script and reads this file to decide what the
 number means.

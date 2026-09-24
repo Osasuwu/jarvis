@@ -84,18 +84,20 @@ Optional, depending on what you use:
 
 Jarvis used to ship an installer (`install.ps1` / `install.sh` /
 `scripts/install/installer.py`) that synced skills, hooks, and MCP config from this
-repo's `.claude-userlevel/` into `~/.claude/` on every device. **That installer was
+repo into `~/.claude/` on every device. **That installer was
 retired in [#1800](https://github.com/Osasuwu/jarvis/issues/1800).** Per decision
 [`57fd2895`](https://github.com/Osasuwu/jarvis), the target model is: `~/.claude/` is
 *your own* private dotfiles repo, which you create and version yourself (like a
 personal `dotfiles` repo for shell config) — not something synced in from
-`jarvis/.claude-userlevel/` by a script.
+this repo by a script.
 
-Copy what you want from [`.claude-userlevel/skills/`](../.claude-userlevel/skills/)
-(the only thing left under `.claude-userlevel/` — the source of truth for user-level
-skills) into your own `~/.claude/skills/`, and use [`config/SOUL.md`](../config/SOUL.md)
-as the template for your own `~/.claude/SOUL.md`. Put `~/.claude/` under `git` and adapt
-it to your own setup. The manual MCP registration checklist below is exactly what
+This repo ships no user-level skills (#1923). The reference instance keeps its skills,
+`CLAUDE.md`, `SOUL.md` and their tests in a private dotfiles repo cloned **next to**
+`~/.claude` (never inside it — `~/.claude` holds live credentials and transcripts), wired in
+per device: `~/.claude/skills` and `~/.claude/reference` are directory junctions (symlinks on
+macOS/Linux) into the clone, and `~/.claude/CLAUDE.md` is a stub of bare `@import` lines
+pointing at the clone. Use [`config/SOUL.md`](../config/SOUL.md) as the template for your
+own `SOUL.md`, and adapt the layout to your own setup. The manual MCP registration checklist below is exactly what
 replaces what the legacy installer would otherwise have auto-seeded.
 
 ## 5. Manual MCP registration checklist
@@ -260,4 +262,4 @@ Then open the project in Claude Code and run `/triage`.
 | Supabase schema (declarative target) | `supabase/schema.sql` |
 | Vendored plugin fork + its pin | `.claude/marketplace/`, [`docs/reference/vendored-plugin-pins.md`](reference/vendored-plugin-pins.md) |
 | Project-scoped skills (jarvis-only) | `.claude/skills/` |
-| User-level skills source of truth | `.claude-userlevel/skills/` (copy into your own `~/.claude/skills/`, see [§4](#4-claude--make-it-your-own-private-dotfiles-repo)) |
+| User-level skills source of truth | your private dotfiles repo, junctioned into `~/.claude/skills/` — not in this repo (#1923, see [§4](#4-claude--make-it-your-own-private-dotfiles-repo)) |

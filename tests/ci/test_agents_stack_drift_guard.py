@@ -77,9 +77,6 @@ ALLOWLIST: dict[str, object] = {
     "docs/design/": ALL,  # design-history docs — lineage mentions
     "docs/research/": ALL,  # research drafts — verbatim external/pre-retirement captures
     # -- specific files, restricted to their correct-by-design tokens ---------
-    ".claude-userlevel/skills/implement/SKILL.md": {
-        "apscheduler"
-    },  # historical bug-class example (#304/#298)
     # This guard file itself defines the token set — every token appears here.
     "tests/ci/test_agents_stack_drift_guard.py": ALL,
 }

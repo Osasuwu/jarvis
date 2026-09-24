@@ -65,7 +65,7 @@ Editing these changes behaviour for **every Claude Code session on the device**,
 | `~/.claude/SOUL.md` | User-level identity — loaded via a **bare, line-start** `@SOUL.md` import in `~/.claude/CLAUDE.md` (#1328; the import only actually resolved from #1426 — before that it sat mid-prose and delivered nothing) |
 | `~/.claude/skills/*/SKILL.md` | User-level skill definitions — available in every project |
 
-The source of truth for these files lives in the jarvis repo (`config/SOUL.md`, `.claude-userlevel/skills/*/SKILL.md`; `~/.claude/settings.json` has no repo-side source and is edited directly). There is no installer — a change lands in the repo via PR, then gets copied by hand into `~/.claude/` on each device. Direct edits to `~/.claude/` without updating the repo source drift silently, since nothing re-syncs them.
+The source of truth for these files lives outside `~/.claude/`: `config/SOUL.md` is the template in this repo; user-level skills and the reference `settings.json` live in the operator's private dotfiles repo (#1923). `~/.claude/skills` is a directory junction into that repo's clone and `settings.json` is copied by hand. There is no installer — edit through the clone's own path and commit there; the hook blocks the `~/.claude/` path so edits land where git tracks them.
 
 Enforced via PreToolUse hook: `.claude/hooks/protected-files.py` (covers both surfaces; user-level paths anchored to `Path.home() / ".claude"` or `$JARVIS_CLAUDE_HOME` override). Unlike the retired `scripts/protected-files.py` (#426's principal-aware bypass for the `live` principal), this standalone successor always blocks — it carries no principal-detection seam, so both canonical and mirror files block for every principal (#1800).
 

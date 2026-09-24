@@ -1,4 +1,5 @@
-License for skills imported into `.claude-userlevel/skills/` from
+License for skills imported into `.claude-userlevel/skills/` (moved to the
+operator's private dotfiles repo in #1923, which carries a copy of this notice) from
 https://github.com/mattpocock/skills (MIT, 2026 Matt Pocock).
 
 Skills covered: caveman, diagnose, grill-me, grill-with-docs,

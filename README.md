@@ -55,11 +55,11 @@ Supabase DB -- not memory (memory is native/file-based, see below)
 ```
 
 The custom installer (`install.ps1` / `install.sh` / `scripts/install/installer.py`)
-that used to sync `.claude-userlevel/` into `~/.claude/` was retired in #1800 —
+that used to sync a repo-side config tree into `~/.claude/` was retired in #1800 —
 Claude Code's own hooks, MCP registrations, and settings live at user level
-directly now, not as a build artifact of a repo-side installer. Source of truth
-for user-level skills is still [`.claude-userlevel/skills/`](.claude-userlevel/skills/)
-in this repo; see [`docs/setup.md`](docs/setup.md) for how to wire `~/.claude/` up
+directly now, not as a build artifact of a repo-side installer. User-level skills
+are not in this repo (#1923): each operator keeps them in their own private dotfiles
+repo; see [`docs/setup.md`](docs/setup.md) for how to wire `~/.claude/` up
 manually (MCP registration, plugin list, skills).
 
 **Design principle:** Claude Code native first -- skills, hooks, subagents, and native auto-memory; custom Python is justified on merit (see [`docs/reference/native-first-substrate.md`](docs/reference/native-first-substrate.md)).

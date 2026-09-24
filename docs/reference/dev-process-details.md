@@ -54,15 +54,13 @@ storage (this repo's `.md` files, `docs/**`) may hold: evergreen lessons, decisi
 reference info (API shapes, config locations), target architecture, pointers ("see #633 for
 current status"). If a field would be wrong in two weeks, it belongs in GitHub, not here.
 
-## Skills live in `.claude-userlevel/skills/`
+## Skills live in the operator's private dotfiles repo
 
-That directory is the canonical location (rare project overrides aside); `~/.claude/skills/` is
-a manually-wired mirror. The scripted installer that used to sync `.claude-userlevel/` into
-`~/.claude/` was retired in #1800, so there's nothing left to revert a direct edit — but
-`~/.claude/skills/` is still not the source of truth: edit
-`.claude-userlevel/skills/<name>/SKILL.md`, get it reviewed and merged, then manually copy/link
-the updated file into `~/.claude/skills/<name>/SKILL.md` on each device (see
-[`docs/setup.md`](../setup.md)).
+User-level skills have one copy (#1923): `skills/<name>/SKILL.md` in the operator's private
+dotfiles repo, which `~/.claude/skills` junctions into — so the loaded copy is the tested copy.
+Their structural tests and CI live in that repo too; this repo carries no skill copy (rare
+project overrides under `.claude/skills/` aside). Edit in the clone, run its tests, commit and
+push; other devices `git pull` (see [`docs/setup.md`](../setup.md)).
 
 ## Other pointers
 
