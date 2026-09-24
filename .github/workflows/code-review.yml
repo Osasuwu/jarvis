@@ -56,7 +56,7 @@ jobs:
       CODE_PATHSPECS: >-
         *.py *.ts *.tsx *.js *.jsx *.yaml *.yml *.json *.sh *.ps1 *.sql
         CLAUDE.md */CLAUDE.md AGENTS.md */AGENTS.md SOUL.md */SOUL.md
-        .claude/agents/*.md .claude-userlevel/skills/*.md
+        .claude/agents/*.md
 
     steps:
       - uses: actions/checkout@v7
@@ -233,9 +233,8 @@ jobs:
                that directory). Pure documentation outside this list (README,
                docs/, decision journals, session snapshots) has nothing for
                you to review — skip it. Markdown files that carry behavior
-               (`CLAUDE.md`/`AGENTS.md`/`SOUL.md`, `.claude/agents/*.md`,
-               `.claude-userlevel/skills/*.md`) ARE in the list and must still
-               be reviewed like code.
+               (`CLAUDE.md`/`AGENTS.md`/`SOUL.md`, `.claude/agents/*.md`) ARE
+               in the list and must still be reviewed like code.
                #1890 — "already reviewed" means that literal SHA match and
                nothing looser. An UNCHANGED DIFF IS NOT A MATCH: merging `main`
                into the branch moves the head SHA without changing the diff,

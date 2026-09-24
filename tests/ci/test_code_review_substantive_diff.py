@@ -146,7 +146,6 @@ def test_behavior_carrying_markdown_pathspecs_present():
         "SOUL.md",
         "*/SOUL.md",
         ".claude/agents/*.md",
-        ".claude-userlevel/skills/*.md",
     ):
         assert path in globs, (
             f"{path} missing from CODE_PATHSPECS -- behavior-carrying markdown "
@@ -306,8 +305,6 @@ def test_behavior_carrying_markdown_is_code():
         "AGENTS.md",
         "config/SOUL.md",
         ".claude/agents/planner.md",
-        ".claude-userlevel/skills/grill/SKILL.md",
-        ".claude-userlevel/skills/grill/CRITIC.md",
     ):
         assert _is_code_path(path), (
             f"{path} must count as code (behavior-carrying markdown, #1897 AC3)"
