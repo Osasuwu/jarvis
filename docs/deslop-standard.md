@@ -1,5 +1,10 @@
 # Deslop standard — comment-only cleanup & regeneration guard
 
+> **Retired 2026-09-24.** The pipeline this document specifies (trace inventory, comment
+> classifier, `diff_gate`) was deleted in #1868 and the direction was closed — see
+> [`.out-of-scope/deslop-pipeline.md`](../.out-of-scope/deslop-pipeline.md). The keep/remove
+> taxonomy below is kept as reference only; nothing enforces it.
+
 Established: grill episode `f981009e-ac9c-4e17-ac46-56539c5ca846`.
 
 ## What "deslop" is
