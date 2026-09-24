@@ -71,18 +71,18 @@ Check condition 0 against the fetched repo, conditions 1 and 4 against `labels`,
 
 **On refusal** (any one or more of the five conditions fail):
 
-1. `gh issue edit <N> --add-label "status:owner-queue"` — surfaces in the next `status_digest` read.
+1. `gh issue edit <N> --add-assignee "<repo-owner>"` — surfaces in the next `status_digest` read.
 2. Append one line to `~/.claude/projects/<project>/memory/decisions.md`: `- YYYY-MM-DD — refused dispatch of #<N> — <verbatim gate message> — #<N>`.
 3. Report to the principal in the batch summary: `#N refused — <verbatim gate message>`.
-4. The issue is **not** labeled `agent:dispatch`, not claimed, no label churn beyond the owner-queue flag. `/grill` / `/research` / fixing the cited gap are the unblock paths — once fixed, re-dispatch flips the route.
+4. The issue is **not** labeled `agent:dispatch`, not claimed, no label churn beyond the assignee flag. `/grill` / `/research` / fixing the cited gap are the unblock paths — once fixed, re-dispatch flips the route.
 
 **No Telegram escalation** even on repeat refuses — last-resort rule. Owner discovers via a `status_digest` read.
 
 **Interactive `/implement` is NOT gated by this check.** The gate guards
 *label-routed* dispatch where no operator is present at execution time.
 Inline `/implement` keeps the grill trigger checkbox as its in-skill
-backstop and can run on any issue (including `status:owner-queue`-tagged
-ones) — the operator IS the gate.
+backstop and can run on any issue (including ones assigned to the owner
+as a review hold) — the operator IS the gate.
 
 ## Contract: label (replaces the old queue-enqueue driver)
 
@@ -132,7 +132,7 @@ Produce a short split plan for the principal before acting. Example:
 
 ### 2. Advisory readiness gate
 
-Per §Contract above, for every issue routed to **dispatch**. Refused issues exit immediately (owner-queue label, decisions.md line, excluded from the labeling step).
+Per §Contract above, for every issue routed to **dispatch**. Refused issues exit immediately (assigned to the repo owner, decisions.md line, excluded from the labeling step).
 
 ### 3. Label
 

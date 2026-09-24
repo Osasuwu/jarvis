@@ -73,8 +73,9 @@ jobs:
             5. If genuinely blocked — ambiguous scope, an acceptance
                criterion contradicts the codebase, or the change needs a
                human decision — do NOT guess. Comment the specific blocker
-               on the issue, apply the `status:owner-queue` label, and stop
-               without opening a PR.
+               on the issue, assign it to the repo owner
+               (`gh issue edit ${{ github.event.issue.number }} --add-assignee "${{ github.repository_owner }}"`),
+               and stop without opening a PR.
             6. Otherwise commit, push the branch, and open a PR whose body
                has `Closes #${{ github.event.issue.number }}` on its own
                line and a filled-in Summary/Why/Risk Assessment/Testing

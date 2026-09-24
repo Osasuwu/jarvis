@@ -232,7 +232,7 @@ When `/grill` resolves an issue's open questions and the AC is updated with veri
 gh issue edit <N> --repo <owner/repo> --remove-label "needs-grill"
 ```
 
-This is the contract that lets `/delegate`'s pre-dispatch gate (issue #642) trust that an unlabelled issue is genuinely grill-clean. Skipping the removal leaves the issue stuck in `status:owner-queue` forever. If `/grill` exits without resolution (owner walks away mid-session), leave the label in place — the issue still needs work.
+This is the contract that lets `/delegate`'s pre-dispatch gate (issue #642) trust that an unlabelled issue is genuinely grill-clean. Skipping the removal leaves the issue stuck assigned to the owner forever. If `/grill` exits without resolution (owner walks away mid-session), leave the label in place — the issue still needs work.
 
 ### Offer ADRs sparingly
 

@@ -42,10 +42,6 @@ def test_issue_past_ready_is_not_overwritten():
     assert unblock_ready.plan(_issue(["task", "status:in-progress"])) == ([], [])
 
 
-def test_owner_queue_issue_still_gets_ready():
-    assert unblock_ready.plan(_issue(["status:owner-queue"])) == (["status:ready"], [])
-
-
 def test_already_ready_is_a_no_op():
     assert unblock_ready.plan(_issue(["status:ready"])) == ([], [])
 
@@ -72,10 +68,6 @@ def test_open_needs_label_keeps_issue_unready():
     assert unblock_ready.plan(_issue(["needs-safety-review"])) == ([], [])
 
 
-def test_needs_label_with_owner_queue_keeps_issue_unready():
-    assert unblock_ready.plan(_issue(["status:owner-queue", "needs-triage"])) == ([], [])
-
-
 def test_issue_with_past_blocker_is_reevaluated():
     assert unblock_ready.was_blocked(_issue()) is True
 
@@ -88,10 +80,13 @@ def test_never_blocked_issue_is_not_promoted_on_unlabel():
 
 def test_close_strips_status_labels_but_keeps_hardware():
     issue = _issue(
-        ["task", "status:in-progress", "status:owner-queue", "status:hardware-done"],
+        ["task", "status:in-progress", "status:rework-in-progress", "status:hardware-done"],
         state="closed",
     )
-    assert unblock_ready.plan_close(issue) == ([], ["status:in-progress", "status:owner-queue"])
+    assert unblock_ready.plan_close(issue) == (
+        [],
+        ["status:in-progress", "status:rework-in-progress"],
+    )
 
 
 def test_close_cleanup_skips_issue_reopened_in_the_meantime():
@@ -127,7 +122,7 @@ def test_pr_up_moves_ready_issue_to_review():
 
 
 def test_pr_up_replaces_in_progress_with_review():
-    issue = _issue(["status:in-progress", "status:owner-queue"])
+    issue = _issue(["status:in-progress"])
     assert unblock_ready.plan_review(issue) == (["status:review"], ["status:in-progress"])
 
 

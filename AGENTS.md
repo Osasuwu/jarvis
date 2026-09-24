@@ -32,14 +32,16 @@ hardcoded on a shared code path.
 
 ## Merge rules
 
-Merging is gated by four required CI checks on the default branch: `code-gate` (the code-review
-verdict), `require-linked-issue`, `pytest`, and `gitleaks` — branch-protection enforced, no
-cooperation needed from you. `status:owner-queue` on a PR is **advisory**: no check reads it since
-`owner-queue-guard` was deleted in #1796, so to hold a PR keep it in draft. The enforced
-replacement is the `waiting-human-review` check (#1892/#1893). `~/.claude/reference/merge-gates.md`'s admin-merge
-carve-outs (review-blind PRs, a sanctioned stop-gap merge for a false-failing gate) are the only
-sanctioned ways around a stuck gate; never normalize a bypass for a gate that's merely
-inconvenient.
+Merging is gated by five required CI checks on the default branch: `code-gate` (the code-review
+verdict), `require-linked-issue`, `pytest`, `gitleaks`, and `waiting-human-review` —
+branch-protection enforced, no cooperation needed from you. `waiting-human-review` is the merge
+hold: red while a human look is owed (a pending review request, or the label applied directly on
+the solo-developer path), and being a required check it blocks merge outright, including via
+auto-merge. The `status:owner-queue` label it replaced is retired — the label no longer exists
+in the repo; draft remains the manual hold for a PR not yet ready for gates to evaluate at all.
+`~/.claude/reference/merge-gates.md`'s admin-merge carve-outs (review-blind PRs, a sanctioned
+stop-gap merge for a false-failing gate) are the only sanctioned ways around a stuck gate; never
+normalize a bypass for a gate that's merely inconvenient.
 
 ## Substrate rule
 
