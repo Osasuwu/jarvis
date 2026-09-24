@@ -212,11 +212,14 @@ read it back out of the body).
   PR merged with the default `GITHUB_TOKEN` gets attributed to `github-actions[bot]`, and
   GitHub's bot-recursion-prevention silently suppresses **native** linked-issue auto-close for
   *any* automated (bot or App) merge — even a GitHub App token merging doesn't restore it.
-  Two pieces are both required: (1) mint and use a GitHub App token for the merge step so the
-  PR's `pull_request: closed` event itself isn't suppressed, and (2) add a second workflow
-  triggered on `pull_request: closed` that explicitly closes each issue in the PR's
-  `closingIssuesReferences` (jarvis's `pr-merged.yml`) — this is the deterministic close path
-  that replaces native auto-close, not an optional extra.
+  Two ways out. Either queue auto-merge with a **user** PAT, so the merge is attributed to a
+  person and native auto-close fires (jarvis does this: `agent-dispatch.yml` queues
+  `gh pr merge --auto` with `AGENT_DISPATCH_PAT`). Or, if merges must be bot/App-authored, both
+  of these are required: (1) mint and use a GitHub App token for the merge step so the PR's
+  `pull_request: closed` event itself isn't suppressed, and (2) add a second workflow triggered
+  on `pull_request: closed` that explicitly closes each issue in the PR's
+  `closingIssuesReferences` — the deterministic close path that replaces native auto-close.
+  (jarvis ran that as `pr-merged.yml` until #1796 deleted it.)
 - **Draft is the manual hold** — a PR stays in draft while it's not ready for auto-merge to
   even consider it; flip to ready only once gates should start evaluating.
 - **`waiting-human-review`** (#1892, required as of #1893) is the developer-count-agnostic

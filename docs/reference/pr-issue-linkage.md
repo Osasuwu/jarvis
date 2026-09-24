@@ -8,7 +8,7 @@ the mechanism and the failure catalogue behind it — read once, not every sessi
 
 ## The mechanism
 
-Auto-close (native GitHub *and* `pr-merged.yml`) fires from the PR's own
+Native GitHub auto-close fires from the PR's own
 `closingIssuesReferences` **before merge**, and — separately — from GitHub's own commit-message
 scan of whatever commit actually lands on the default branch **at merge time**. That pre-merge
 list is built from closing keywords — `Closes` / `Fixes` / `Resolves #N` and their
@@ -23,9 +23,8 @@ Consequences, each of which has bitten at least once:
 - **An absorbed issue you don't list gets neither close path.** It stays open with stale
   `sandcastle` / `in-progress` labels. This is #948 Mode 2: PR #900 shipped #845, #846, #847,
   #859 and #860 but listed only `Closes #851`, leaving five issues open.
-- **Cross-repo closes are not automated.** `Closes owner/other#N` is not closed by
-  `pr-merged.yml` — its `GITHUB_TOKEN` is repo-scoped, so it skips and warns. Close a foreign
-  absorbed issue manually.
+- **Cross-repo closes are not guaranteed.** Don't rely on `Closes owner/other#N` closing a
+  foreign issue; close a foreign absorbed issue manually.
 - **The list is frozen at merge time.** If the PR is already merged, editing its body is
   documentation-only and fires no close. Close the issues directly:
   `gh issue close #N --reason completed`.
