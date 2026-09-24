@@ -11,8 +11,6 @@ Conduct this grill session in two phases:
 
 ### Phase 1: Session-Parameter Gate
 
-Expertise level and context familiarity are no longer verbalized here — they are sourced from the `owner_competence_profile` memory and not restated at session start. If the principal's behavior deviates from that profile, they flag it unprompted; the skill does not pre-emptively ask.
-
 What genuinely varies session-to-session, and is worth asking up front:
 
 - **Time budget**: How much time does the user have for this discussion right now?

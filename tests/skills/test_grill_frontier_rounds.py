@@ -68,13 +68,11 @@ class TestPhase1SessionParameterGate:
             "Phase 1 heading must no longer be 'Assumption Verbalization'"
         )
 
-    def test_phase1_sources_expertise_from_memory_not_restated(self, phase1_section: str):
-        assert re.search(r"owner_competence_profile", phase1_section), (
-            "Phase 1 must cite owner_competence_profile as the source of expertise/context, not restate it"
+    def test_phase1_does_not_cite_deleted_competence_profile(self, phase1_section: str):
+        assert not re.search(r"owner_competence_profile", phase1_section), (
+            "owner_competence_profile was deleted with the Supabase memory stack; "
+            "Phase 1 must not source expertise from it"
         )
-        assert re.search(
-            r"not restat|no longer restat|without restat", phase1_section, re.IGNORECASE
-        ), "Phase 1 must explicitly say expertise/context familiarity are not restated"
 
     def test_phase1_no_confirmation_gate_language(self, phase1_section: str):
         assert not re.search(r"confirm|off base|wrong about", phase1_section, re.IGNORECASE), (
