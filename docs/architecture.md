@@ -37,12 +37,12 @@ Since EPIC #335 (2026-04-23), Jarvis is **federated** to user level: the SOUL, t
 
 ### User-level (universal, one device at a time — no installer)
 
-There is no automated propagation to `~/.claude/`. Skills are kept in sync by hand: edit the source under `.claude-userlevel/skills/`, get it reviewed and merged, then manually copy the changed `SKILL.md` into `~/.claude/skills/` on each device. SOUL and CLAUDE.md are edited the same way. MCP servers are registered per-device with `claude mcp add --scope user` — there is no `.mcp.json` file being deep-merged.
+There is no automated propagation to `~/.claude/`. User-level skills have a single source in the operator's private dotfiles repo (#1923); `~/.claude/skills` is a directory junction into its clone, so an edit there is live immediately and reaches other devices by `git pull`. SOUL and CLAUDE.md are edited the same way. MCP servers are registered per-device with `claude mcp add --scope user` — there is no `.mcp.json` file being deep-merged.
 
 | Component | Source in repo | Kept in sync at | Purpose |
 |-----------|----------------|--------------|---------|
 | Identity | `config/SOUL.md` | `~/.claude/SOUL.md` (manual copy) | Personality, tone, behavior rules (loaded via a **bare, line-start** `@SOUL.md` import in CLAUDE.md — #1328 introduced it, #1426 made it actually resolve) |
-| Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` (manual copy) | Core slash commands: `implement`, `dispatch`, `diagnose`, `file-issue`, `grill`, `improve-codebase-architecture`, `research`, `to-tickets`, `triage`, `weekly-release`, `end` |
+| Universal skills | — (operator's private dotfiles repo, `skills/*/SKILL.md`, #1923) | `~/.claude/skills/*/SKILL.md` (junction into the clone) | Core slash commands: `implement`, `dispatch`, `diagnose`, `file-issue`, `grill`, `improve-codebase-architecture`, `research`, `to-tickets`, `triage`, `weekly-release`, `end` |
 | Hooks | — (no repo-side source; edited directly) | `~/.claude/settings.json` | SessionStart, PreCompact, PreToolUse protected-file scan |
 | MCP servers | — (no repo-side source file) | `~/.claude.json` `mcpServers` block, via `claude mcp add --scope user` | github, obsidian (device-dependent), etc. |
 
@@ -54,7 +54,7 @@ There is no automated propagation to `~/.claude/`. Skills are kept in sync by ha
 | Project skills | `.claude/skills/sprint-report/` | Only skill that isn't universal (redrobot release flow) |
 | Project subagents | `.claude/agents/coding.md` | Project-scoped coding agent definition |
 | Empty hooks | `.claude/settings.json` (`{}`) | Reserved for jarvis-only hooks if ever needed |
-| Tombstone | `.claude/README.md` | Redirects readers to `.claude-userlevel/` |
+| Tombstone | `.claude/README.md` | Redirects readers to the user-level skill source |
 
 ### External Python (only what Claude Code can't do)
 
@@ -116,7 +116,7 @@ Claude Code (Sonnet — default)
 
 ## 5. Skills
 
-Universal skills live at `~/.claude/skills/` (source of truth: `.claude-userlevel/skills/`, kept in sync by hand — no installer) and are invoked as `/skill-name` from any CWD. The routing table in `AGENTS.md` describes when each is used.
+Universal skills live at `~/.claude/skills/` (single source: the operator's private dotfiles repo, junctioned in — #1923) and are invoked as `/skill-name` from any CWD. The routing table in `AGENTS.md` describes when each is used.
 
 | Skill | Purpose |
 |-------|---------|
@@ -162,8 +162,6 @@ Nightly research runs at 03:00, topics configured in `config/research-topics.yam
 jarvis/
 ├── config/
 │   └── SOUL.md              ← Jarvis personality (canonical; copied by hand to ~/.claude/SOUL.md)
-├── .claude-userlevel/       ← SOURCE OF TRUTH for universal skills only (no installer)
-│   └── skills/              ← universal skills, copied by hand to ~/.claude/skills/
 ├── scripts/                 ← project-local automation (gates, reports, hooks not tied to Edit/Write)
 ├── src/
 │   └── risk_radar.py        ← Standalone risk scanner (no LLM)
@@ -174,7 +172,7 @@ jarvis/
 │   │   └── agent-boundaries.md  ← Protected-file + scope rules (single source)
 │   └── design/              ← Design notes per pillar
 ├── .claude/                 ← Project-scoped (see .claude/README.md)
-│   ├── README.md            ← Points to .claude-userlevel/ for universal-skill source
+│   ├── README.md            ← Points to the user-level skill source
 │   ├── hooks/                ← secret-scanner.py, protected-files.py, device-info.py
 │   ├── settings.json        ← PreToolUse/SessionStart hook registrations
 │   ├── agents/coding.md     ← Project-scoped coding subagent

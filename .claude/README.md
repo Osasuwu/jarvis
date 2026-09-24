@@ -5,9 +5,9 @@ out of this directory in EPIC #335 (Pillar 7 Phase 0: Federation) so that
 Claude Code has the same SOUL, core skills, hooks, and MCP servers
 regardless of which project's CWD it's launched from.
 
-Source of truth for user-level skills lives in
-[`.claude-userlevel/skills/`](../.claude-userlevel/skills/) at the repo root.
-The custom installer that used to mirror the rest of `.claude-userlevel/`
+User-level skills are not in this repo: their single source is the operator's
+private dotfiles repo, junctioned into `~/.claude/skills` (#1923).
+The custom installer that used to mirror user-level config into `~/.claude/`
 (`scripts/install/`, `install.ps1`/`install.sh`) was retired in #1800 —
 Claude Code's own hooks, MCP registrations, and settings live at user level
 directly now, not as a build artifact of a repo-side installer.
@@ -30,7 +30,8 @@ in M5 (#340). They're still available in every session, just from
 
 ## Where to look next
 
-- **Editing a core skill** → `.claude-userlevel/skills/<name>/SKILL.md`.
+- **Editing a core skill** → `skills/<name>/SKILL.md` in the private dotfiles clone
+  (commit and push there; see [`docs/setup.md`](../docs/setup.md) §4).
 - **Editing SOUL** → [`config/SOUL.md`](../config/SOUL.md) is the canonical
   location.
 - **Protected-file rules** →
