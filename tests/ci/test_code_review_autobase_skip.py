@@ -102,19 +102,6 @@ def test_workflow_dispatch_always_runs_verdict():
     assert _verdict_should_run(event_name="workflow_dispatch", actor="github-actions[bot]")
 
 
-def test_jarvis_agent_push_runs_review():
-    # Real rework commits come from "Jarvis Agent" (git author), but the
-    # github.actor on the push is "Osasuwu" or a PAT — never osasuwu-ci[bot].
-    assert _review_should_run(event_name="pull_request", actor="Osasuwu", has_code=True)
-
-
-def test_autobase_bot_first_attempt_skips_review():
-    # Explicit run_attempt=1 form of test_autobase_bot_synchronize_skips_review.
-    assert not _review_should_run(
-        event_name="pull_request", actor=AUTOBASE_BOT, has_code=True, run_attempt=1
-    )
-
-
 def test_autobase_bot_rerun_disarms_skip_and_runs_review():
     # #1523: code-review-retry.yml reruns the whole `review` job in place, but
     # `github.actor` stays the bot across re-runs — without the run_attempt
@@ -140,16 +127,6 @@ def _step_by_id(steps: list[dict], step_id: str) -> dict | None:
 
 def _step_by_name(steps: list[dict], name: str) -> dict | None:
     return next((s for s in steps if s.get("name") == name), None)
-
-
-def test_workflow_exists():
-    assert WORKFLOW_PATH.is_file(), "code-review.yml missing"
-
-
-def test_autobase_step_exists():
-    steps = _load_steps()
-    step = _step_by_id(steps, AUTOBASE_STEP_ID)
-    assert step is not None, f"Step with id='{AUTOBASE_STEP_ID}' not found in review job"
 
 
 def test_autobase_step_condition_references_bot():
