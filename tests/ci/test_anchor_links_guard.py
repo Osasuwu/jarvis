@@ -16,7 +16,6 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-AUDIT_SCRIPT = REPO_ROOT / "scripts" / "audit_anchors.py"
 
 
 # -- Fixture tests: functions from audit_anchors.py ---------------------------
@@ -83,10 +82,9 @@ def test_slugify_edge_case_consecutive_dashes():
     """Slugify preserves consecutive dashes from punctuation."""
     from scripts.audit_anchors import slugify
 
-    # "C17 — Observability" should keep the -- from em-dash
-    result = slugify("C17 — Observability")
-    # em-dash becomes space, plus space -> a--, plus more chars -> c17--observability
-    assert "--" in result or result == "c17-observability"
+    # The em-dash is dropped and each flanking space becomes its own dash, so
+    # the slug keeps a double dash (GitHub's behaviour for "C17 — Observability").
+    assert slugify("C17 — Observability") == "c17--observability"
 
 
 def test_collect_anchors_basic():
@@ -139,40 +137,25 @@ def test_collect_anchors_lowercase_inline():
 
 
 def test_fence_skipping_skip_code_in_fence():
-    """Fence-skipping: lines inside ``` ``` are not parsed for anchors."""
+    """Fence-skipping: a heading inside a code fence does not define an anchor."""
     from scripts.audit_anchors import find_broken_links
 
-    # This text has an anchor-like #foo inside a code fence — should be ignored
-    corpus = {
-        REPO_ROOT / "test.md": """# Foo
-\`\`\`markdown
-# Foo
-[link](#foo)  <- inside fence, not a real anchor
-\`\`\`
-"""
-    }
-    # The actual anchor is "foo", and the fake one in the fence should not cause an error
-    broken = find_broken_links(corpus)
-    # Should have 0 broken links (not caught by the fence-skip logic since fence contains the anchor name)
-    # Actually, this test validates that the code inside fence is NOT parsed
-    assert len(broken) == 0
+    # "# Fake" exists only inside the fence, so a link to #fake from outside
+    # the fence must be reported as broken.
+    text = "# Real\n```markdown\n# Fake\n```\n[link](#fake)\n"
+    broken = find_broken_links({REPO_ROOT / "test.md": text})
+    assert [(lineno, target) for _, lineno, _, target in broken] == [(5, "#fake")]
 
 
 def test_fence_skipping_with_language_tag():
-    """Fence-skipping works with language tags (``` ```python)."""
+    """Fence-skipping: a link inside a language-tagged fence is not checked."""
     from scripts.audit_anchors import find_broken_links
 
-    corpus = {
-        REPO_ROOT / "test.md": """# Real
-\`\`\`python
-# Fake
-[link](#fake)
-\`\`\`
-[real link](#real)
-"""
-    }
-    broken = find_broken_links(corpus)
-    assert len(broken) == 0
+    # The fenced link points at an anchor that does not exist (the fenced
+    # heading does not count either); only the link outside the fence is real.
+    text = "# Real\n```python\n# Fake\n[link](#missing)\n```\n[real link](#real)\n"
+    broken = find_broken_links({REPO_ROOT / "test.md": text})
+    assert broken == []
 
 
 def test_fence_skipping_many_fence_pairs_no_drift():
@@ -239,19 +222,6 @@ def test_gh_relative_path_allowlist():
     assert not is_github_relative_path("docs/README.md")
 
 
-def test_suffixed_n_anchor_resolution():
-    """Suffixed-N anchors resolve to the Nth occurrence (zero-indexed counter)."""
-    from scripts.audit_anchors import collect_anchors
-
-    # 3 identical headings: first is #foo, second is #foo-1, third is #foo-2
-    text = "# Foo\n\n# Foo\n\n# Foo"
-    anchors = collect_anchors(text)
-    # With zero-indexed counting: 1st -> foo, 2nd -> foo-1, 3rd -> foo-2
-    assert "foo" in anchors
-    assert "foo-1" in anchors
-    assert "foo-2" in anchors
-
-
 def test_suffixed_n_resolution_example_4th_occurrence():
     """Example: the 4th occurrence of 'Bar' is #bar-3."""
     from scripts.audit_anchors import collect_anchors
@@ -280,23 +250,6 @@ def test_line_number_annotation_regex():
 
 
 # -- Integration tests -------------------------------------------------------
-
-
-def test_audit_script_exists():
-    """The audit script must exist."""
-    assert AUDIT_SCRIPT.exists(), f"Expected {AUDIT_SCRIPT}"
-
-
-def test_audit_script_is_executable():
-    """The audit script can be run."""
-    assert AUDIT_SCRIPT.is_file()
-
-
-def test_find_broken_links_function_exists():
-    """find_broken_links function exists and is callable."""
-    from scripts.audit_anchors import find_broken_links
-
-    assert callable(find_broken_links)
 
 
 def test_find_broken_links_same_file_anchor():
@@ -403,39 +356,23 @@ def test_live_no_broken_anchors_in_corpus():
     assert len(broken) == 0
 
 
-# -- L3 regex tests ---------------------------------------------------------
+# -- L3 tests (regex cases live in test_line_number_annotation_regex) --------
 
 
-def test_l3_line_annotation_simple():
-    """L3: Line-number annotation inside link text is detected."""
-    from scripts.audit_anchors import LINE_NUMBER_ANNOTATION_RE
+def test_live_no_line_number_annotations_in_corpus():
+    """L3: Live test — no line-number annotation inside link text in the corpus.
 
-    # This should match the L3 pattern
-    text = "[text (line 42)](url)"
-    assert LINE_NUMBER_ANNOTATION_RE.search(text)
+    The module docstring declares L3 CI-enforced; nothing in CI runs the
+    script's CLI, so this test is the enforcement.
+    """
+    from scripts.audit_anchors import find_line_number_annotations, get_corpus
 
-
-def test_l3_line_annotation_lines_plural():
-    """L3: Plural 'lines' is also matched."""
-    from scripts.audit_anchors import LINE_NUMBER_ANNOTATION_RE
-
-    assert LINE_NUMBER_ANNOTATION_RE.search("[text (lines 1-10)](url)")
-
-
-def test_l3_line_annotation_case_insensitive():
-    """L3: 'Line' and 'line' both match."""
-    from scripts.audit_anchors import LINE_NUMBER_ANNOTATION_RE
-
-    assert LINE_NUMBER_ANNOTATION_RE.search("[text (Line 5)](url)")
-    assert LINE_NUMBER_ANNOTATION_RE.search("[text (line 5)](url)")
-
-
-def test_l3_no_match_outside_brackets():
-    """L3: Line numbers outside [brackets] should NOT match."""
-    from scripts.audit_anchors import LINE_NUMBER_ANNOTATION_RE
-
-    text = "See line 42 in the docs"
-    assert not LINE_NUMBER_ANNOTATION_RE.search(text)
+    found = find_line_number_annotations(get_corpus())
+    listing = "\n".join(
+        f"  {f.relative_to(REPO_ROOT).as_posix()} L{lineno}: {text.strip()}"
+        for f, lineno, text in found
+    )
+    assert not found, f"Line-number annotations inside link text (they rot):\n{listing}"
 
 
 def test_l3_finds_annotations_in_corpus():
@@ -447,9 +384,6 @@ def test_l3_finds_annotations_in_corpus():
     assert len(found) == 1
     assert found[0][1] == 3  # line number (1-indexed)
     assert "line 5" in found[0][2].lower()
-
-
-# -- Pathlib portability tests -----------------------------------------------
 
 
 # -- Corpus exclusion tests --------------------------------------------------
@@ -485,12 +419,3 @@ def test_corpus_excludes_research_dir():
         f for f in get_corpus() if f.relative_to(REPO_ROOT).as_posix().startswith("docs/research/")
     ]
     assert not leaked, f"docs/research/ leaked into corpus: {leaked[:5]}"
-
-
-def test_pathlib_path_used_in_corpus():
-    """Test fixtures use pathlib.Path, not string literals."""
-    from scripts.audit_anchors import get_corpus
-
-    corpus = get_corpus()
-    for file_path in corpus.keys():
-        assert isinstance(file_path, Path), f"Expected Path, got {type(file_path)}"

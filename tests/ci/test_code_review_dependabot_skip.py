@@ -58,14 +58,6 @@ def test_dependabot_pr_skipped_on_open():
     )
 
 
-def test_dependabot_pr_skipped_on_synchronize_even_when_actor_is_app():
-    # The regression: a merge-train branch update arrives as `synchronize` with
-    # a non-Dependabot pusher. Author is still dependabot[bot] -> still skip.
-    assert not _review_should_run(
-        event_name="pull_request", head_repo=REPO, base_repo=REPO, pr_author=DEPENDABOT
-    )
-
-
 def test_fork_pr_skipped():
     assert not _review_should_run(
         event_name="pull_request",
@@ -96,10 +88,6 @@ def test_workflow_dispatch_always_runs():
 def _review_if() -> str:
     spec = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
     return spec["jobs"]["code-gate"]["if"]
-
-
-def test_workflow_exists():
-    assert WORKFLOW_PATH.is_file(), "code-review.yml missing"
 
 
 def test_guard_keys_off_pr_author_not_actor():

@@ -89,10 +89,6 @@ def _diff_globs() -> list[str]:
 # --- Config dimension: pin the YAML ---
 
 
-def test_diff_step_exists():
-    assert _diff_step() is not None
-
-
 def test_codedef_step_exists():
     step = _codedef_step()
     assert step is not None

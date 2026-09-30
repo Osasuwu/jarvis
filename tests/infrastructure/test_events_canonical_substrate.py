@@ -70,19 +70,22 @@ def schema_sql() -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("column", REQUIRED_COLUMNS)
-def test_migration_declares_column(migration_sql: str, column: str) -> None:
-    assert re.search(rf"^\s*{column}\s+", migration_sql, re.MULTILINE), (
-        f"column {column!r} missing from CREATE TABLE events_canonical"
-    )
+def _undeclared_columns(sql: str) -> list[str]:
+    return [
+        column
+        for column in REQUIRED_COLUMNS
+        if not re.search(rf"^\s*{column}\s+", sql, re.MULTILINE)
+    ]
 
 
-@pytest.mark.parametrize("column", REQUIRED_COLUMNS)
-def test_schema_mirror_declares_column(schema_sql: str, column: str) -> None:
-    block = _extract_events_canonical_block(schema_sql)
-    assert re.search(rf"^\s*{column}\s+", block, re.MULTILINE), (
-        f"column {column!r} missing from schema.sql events_canonical block"
-    )
+def test_migration_declares_columns(migration_sql: str) -> None:
+    missing = _undeclared_columns(migration_sql)
+    assert not missing, f"column(s) {missing} missing from CREATE TABLE events_canonical"
+
+
+def test_schema_mirror_declares_columns(schema_sql: str) -> None:
+    missing = _undeclared_columns(_extract_events_canonical_block(schema_sql))
+    assert not missing, f"column(s) {missing} missing from schema.sql events_canonical block"
 
 
 def test_event_outcome_enum_present(migration_sql: str, schema_sql: str) -> None:
@@ -112,9 +115,9 @@ def test_degraded_defaults_false(migration_sql: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("index", REQUIRED_INDEXES)
-def test_migration_declares_index(migration_sql: str, index: str) -> None:
-    assert index in migration_sql, f"index {index!r} missing from migration"
+def test_migration_declares_indexes(migration_sql: str) -> None:
+    missing = [index for index in REQUIRED_INDEXES if index not in migration_sql]
+    assert not missing, f"index(es) {missing} missing from migration"
 
 
 def test_cost_index_is_partial(migration_sql: str) -> None:
@@ -158,20 +161,23 @@ def test_notify_payload_includes_trace_id(migration_sql: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("matview", REQUIRED_MATVIEWS)
-def test_migration_declares_matview(migration_sql: str, matview: str) -> None:
-    assert f"CREATE MATERIALIZED VIEW IF NOT EXISTS {matview}" in migration_sql, (
-        f"matview {matview!r} missing"
-    )
+def test_migration_declares_matviews(migration_sql: str) -> None:
+    missing = [
+        matview
+        for matview in REQUIRED_MATVIEWS
+        if f"CREATE MATERIALIZED VIEW IF NOT EXISTS {matview}" not in migration_sql
+    ]
+    assert not missing, f"matview(s) {missing} missing"
 
 
-@pytest.mark.parametrize("matview", REQUIRED_MATVIEWS)
-def test_matview_has_unique_index_for_concurrent_refresh(migration_sql: str, matview: str) -> None:
+def test_matviews_have_unique_index_for_concurrent_refresh(migration_sql: str) -> None:
     """REFRESH MATERIALIZED VIEW CONCURRENTLY requires a unique index."""
-    pattern = rf"CREATE UNIQUE INDEX[^;]*ON {matview}"
-    assert re.search(pattern, migration_sql, re.IGNORECASE), (
-        f"matview {matview!r} needs a unique index for CONCURRENTLY refresh"
-    )
+    missing = [
+        matview
+        for matview in REQUIRED_MATVIEWS
+        if not re.search(rf"CREATE UNIQUE INDEX[^;]*ON {matview}", migration_sql, re.IGNORECASE)
+    ]
+    assert not missing, f"matview(s) {missing} need a unique index for CONCURRENTLY refresh"
 
 
 def test_cost_view_uses_otel_model_key(migration_sql: str) -> None:

@@ -30,11 +30,18 @@ no extra install needed, compatible with ci-meta.yml's minimal dependency set.
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
+
+# Files that declare installable dependency ranges (lockfiles are resolved
+# output, not a range surface, so they are not manifests here).
+_MANIFEST_RE = re.compile(
+    r"(^|/)(pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile)$"
+)
 
 # Any of these characters means the spec carries a version constraint at all
 # (as opposed to a bare self-referencing extra like "jarvis-agent[memory]").
@@ -85,4 +92,15 @@ class TestDependencyBoundsGuard:
         unbounded (e.g. a second requirements.txt) without this guard being
         extended to cover it.
         """
-        assert PYPROJECT_PATH.is_file()
+        tracked = subprocess.run(
+            ["git", "ls-files"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        manifests = sorted(p for p in tracked if _MANIFEST_RE.search(p))
+        assert manifests == ["pyproject.toml"], (
+            "the tracked dependency-manifest set changed; this guard only scans "
+            f"pyproject.toml — extend it to cover every manifest listed: {manifests}"
+        )
