@@ -45,8 +45,8 @@ broke?** A test that stays green in that case is worse than no test — it is co
   The one case where both sides come from production is parity between two artifacts that
   must agree (a script and its twin, a default and the example file that documents it).
 - **Which members to check goes the other way: take it from production.** When a test walks a
-  set (the workflow list, the registered gates, the protected paths), the membership is read
-  from the real code or config, never kept as a hand-written list in the test. This is about
+  set (the workflow list, the hook scripts, the migrations), the membership is read from the
+  real code or config, never kept as a hand-written list in the test. This is about
   which members, not about values: what each member must equal stays a literal. A closed set
   whose membership is itself the contract (the protected paths, the required checks) keeps
   its literal member list next to the walk — read from production alone, a dropped member
@@ -107,7 +107,9 @@ Every test you add or change gets one, whatever the size of the PR.
 6. Run the tests you touched with `pytest -rs`: none may be reported skipped, except a skip
    whose condition is false in the CI job — name it. A skip on a dependency the CI job does
    not install is not done: make the job install it or take the skip out. An unattended run
-   that can do neither escalates instead of pushing the test.
+   that can do neither escalates instead of pushing the test. This step is for a run where
+   pytest works; where it does not run at all, step 4's `not probed` line and label apply
+   and the PR is still opened.
 
 If your diff tightens a limit, changes a default, adds an early exit, edits a fixture or moves
 logic: grep `tests/` for the changed symbol, the limit's name, the fixture's name and the
