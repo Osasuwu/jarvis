@@ -33,10 +33,23 @@ PR scope rules:
 
 ## Testing
 
-<!-- Commands run, scenarios verified, edge cases checked -->
+<!--
+What holds this section: docs/reference/test-quality.md. A pass count is not evidence.
+  - Each acceptance criterion: the test that goes red for it, a command's output, or
+    (one-off static facts only) reading.
+  - Every test added or changed appears in a line, one line per distinct mutation:
+    <production file>:<line> <mutation> → <tests it turns red> red
+    (or "no probe — …" / "not probed — …" where test-quality.md allows it)
+  - Every test deleted: the kept test and the mutation that reddens it, or why the
+    deleted one could not fail, or its "Never write" class.
+  - Tests touched: keep the "CI run" line below until the PR run's passed and skipped
+    counts have been read against main's, then replace it with the two pairs of numbers.
+  - No test touched: say so and delete the "CI run" line.
+-->
 
-- [ ] Unit/integration tests pass
-- [ ] CI is green
+-
+- CI run not checked for skips
+
 - [ ] Manual verification (if needed)
 
 ## Files Changed
