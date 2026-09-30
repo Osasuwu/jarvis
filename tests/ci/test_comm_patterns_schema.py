@@ -75,20 +75,18 @@ def _comm_patterns_block() -> str:
 
 
 class TestTableShape:
-    def test_table_declared(self):
-        assert "create table if not exists comm_patterns" in _schema(), (
-            f"Expected `create table if not exists comm_patterns` in {SCHEMA_PATH.relative_to(REPO_ROOT)}"
-        )
-
-    @pytest.mark.parametrize("col", sorted(EXPECTED_COLUMNS))
-    def test_column_present(self, col):
+    def test_columns_present(self):
         body = _comm_patterns_block()
         # Match column at line start (allowing leading whitespace), followed by
         # whitespace and a type token.
-        pat = rf"(?m)^\s*{re.escape(col)}\s+\w"
-        assert re.search(pat, body), (
-            f"Column `{col}` missing from comm_patterns. "
-            f"If you intentionally dropped it, update ADR 0004 first."
+        missing = [
+            col
+            for col in sorted(EXPECTED_COLUMNS)
+            if not re.search(rf"(?m)^\s*{re.escape(col)}\s+\w", body)
+        ]
+        assert not missing, (
+            f"Column(s) {missing} missing from comm_patterns. "
+            f"If you intentionally dropped one, update ADR 0004 first."
         )
 
     def test_no_project_column(self):
@@ -126,9 +124,10 @@ class TestEnum:
 
 
 class TestIndices:
-    @pytest.mark.parametrize("idx", sorted(EXPECTED_INDICES))
-    def test_index_declared(self, idx):
-        assert idx in _schema(), f"Index `{idx}` missing from schema.sql (ADR 0004)."
+    def test_indices_declared(self):
+        text = _schema()
+        missing = [idx for idx in sorted(EXPECTED_INDICES) if idx not in text]
+        assert not missing, f"Index(es) {missing} missing from schema.sql (ADR 0004)."
 
     def test_dedup_is_unique(self):
         text = _schema()
@@ -144,9 +143,6 @@ class TestIndices:
 
 
 class TestWatermark:
-    def test_watermark_table_declared(self):
-        assert "create table if not exists comm_patterns_watermark" in _schema()
-
     def test_watermark_pk_is_device_session(self):
         text = _schema()
         m = re.search(
@@ -170,9 +166,6 @@ class TestRLS:
 
 
 class TestADR:
-    def test_adr_exists(self):
-        assert ADR_PATH.exists(), f"ADR 0004 missing at {ADR_PATH.relative_to(REPO_ROOT)}"
-
     def test_adr_lists_all_labels(self):
         text = ADR_PATH.read_text(encoding="utf-8")
         for label in EXPECTED_LABELS:

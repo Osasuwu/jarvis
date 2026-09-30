@@ -51,9 +51,6 @@ BANNED_TOKEN_PATTERN = re.compile(
 
 
 class TestAgentsMd:
-    def test_agents_md_exists(self):
-        assert AGENTS_MD_PATH.exists(), f"missing {AGENTS_MD_PATH}"
-
     def test_agents_md_is_at_most_100_lines(self):
         lines = AGENTS_MD_PATH.read_text(encoding="utf-8").splitlines()
         assert len(lines) <= 100, (
@@ -73,9 +70,6 @@ class TestAgentsMd:
 
 
 class TestClaudeMdIsBareImport:
-    def test_claude_md_exists(self):
-        assert CLAUDE_MD_PATH.exists(), f"missing {CLAUDE_MD_PATH}"
-
     def test_claude_md_content_is_exactly_bare_agents_import(self):
         text = CLAUDE_MD_PATH.read_text(encoding="utf-8")
         assert text.strip("\n") == "@AGENTS.md", (
