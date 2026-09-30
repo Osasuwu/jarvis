@@ -65,9 +65,11 @@ an interactive session.
   end-to-end before claiming something already exists.
 - **Skills are a contract, not a trigger.** Invoke the matching skill when the action matches its
   contract, not only when asked by name.
-- **Non-trivial logic leaves one runnable check.** Any change with real logic ships with at least
-  one thing that fails if the logic breaks — the smallest such thing, not a suite. Trivial edits
-  need nothing; this doesn't relax the TDD requirement inside `/implement`.
+- **Non-trivial logic leaves one runnable check** — the smallest thing that fails if the logic
+  breaks, not a suite; trivial edits need nothing. This doesn't relax TDD inside `/implement`.
+- **A test must go red when the behaviour it is named after breaks.** Existing test first, a
+  literal expected value, a mutation probe against the production file per test touched, recorded
+  in the PR's `## Testing`. Read [`docs/reference/test-quality.md`](docs/reference/test-quality.md) first.
 - **Sibling-grep on fixes.** When a reviewer flags a bug in one helper/pattern, grep sibling
   occurrences across the file and related files before declaring the fix done — a second round
   with the same class of finding means the first fix was partial.
