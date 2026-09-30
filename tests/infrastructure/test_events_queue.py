@@ -31,48 +31,33 @@ VALID_STATES = ("pending", "claimed", "processed", "parked")
 # RPC functions this migration declares
 RPC_FUNCTIONS = ("claim_next", "mark_processed", "park_event", "requeue_event")
 
-# Indexes this migration adds (in SQL)
-MIGRATION_INDEXES = ("idx_events_dedup_key",)
-# Additional indexes declared in schema.sql for query performance
-SCHEMA_ONLY_INDEXES = ("idx_events_pending",)
-
 
 # =========================================================================
 # Section 1 — Migration contract tests
 # =========================================================================
 
 
-@pytest.fixture(scope="module")
-def migration_sql() -> str:
-    assert MIGRATION.exists(), f"missing migration file: {MIGRATION}"
-    return MIGRATION.read_text(encoding="utf-8")
-
-
-@pytest.fixture(scope="module")
-def schema_sql() -> str:
-    assert SCHEMA_MIRROR.exists(), f"missing schema mirror: {SCHEMA_MIRROR}"
-    return SCHEMA_MIRROR.read_text(encoding="utf-8")
-
-
 # -- Columns ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("column", NEW_COLUMNS)
-def test_migration_adds_column(column: str) -> None:
+def test_migration_adds_columns() -> None:
     """Each new column must appear in the migration."""
     text = MIGRATION.read_text(encoding="utf-8")
-    assert re.search(rf"ADD COLUMN IF NOT EXISTS\s+{column}\s+", text, re.IGNORECASE), (
-        f"column {column!r} missing from migration ADD COLUMN"
-    )
+    missing = [
+        column
+        for column in NEW_COLUMNS
+        if not re.search(rf"ADD COLUMN IF NOT EXISTS\s+{column}\s+", text, re.IGNORECASE)
+    ]
+    assert not missing, f"column(s) {missing} missing from migration ADD COLUMN"
 
 
-@pytest.mark.parametrize("column", NEW_COLUMNS)
-def test_schema_mirror_declares_column(column: str) -> None:
+def test_schema_mirror_declares_columns() -> None:
     """Each new column must appear in schema.sql events block."""
     block = _extract_events_block(SCHEMA_MIRROR.read_text(encoding="utf-8"))
-    assert re.search(rf"^\s*{column}\s+", block, re.MULTILINE), (
-        f"column {column!r} missing from schema.sql events block"
-    )
+    missing = [
+        column for column in NEW_COLUMNS if not re.search(rf"^\s*{column}\s+", block, re.MULTILINE)
+    ]
+    assert not missing, f"column(s) {missing} missing from schema.sql events block"
 
 
 def test_state_column_has_check_constraint() -> None:
@@ -133,10 +118,9 @@ def test_dedup_key_unique_index() -> None:
 def test_backfill_legacy_processed() -> None:
     """Migration must backfill legacy processed=true rows into new state."""
     text = MIGRATION.read_text(encoding="utf-8")
-    assert (
-        "UPDATE events SET state = 'processed' WHERE processed = true" in text
-        or "UPDATE events SET state = 'processed' WHERE processed = true" in text
-    ), "backfill of legacy processed=true rows missing"
+    assert "UPDATE events SET state = 'processed' WHERE processed = true" in text, (
+        "backfill of legacy processed=true rows missing"
+    )
 
 
 def test_start_clean_archives_backlog() -> None:
@@ -177,22 +161,18 @@ def test_notify_payload_keys() -> None:
 # -- RPC functions ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("rpc", RPC_FUNCTIONS)
-def test_rpc_function_declared_in_migration(rpc: str) -> None:
+def test_rpc_functions_declared_in_migration() -> None:
     """Each RPC function must be declared in the migration."""
     text = MIGRATION.read_text(encoding="utf-8")
-    assert f"CREATE OR REPLACE FUNCTION {rpc}" in text, (
-        f"RPC function {rpc!r} missing from migration"
-    )
+    missing = [rpc for rpc in RPC_FUNCTIONS if f"CREATE OR REPLACE FUNCTION {rpc}" not in text]
+    assert not missing, f"RPC function(s) {missing} missing from migration"
 
 
-@pytest.mark.parametrize("rpc", RPC_FUNCTIONS)
-def test_rpc_function_declared_in_schema(rpc: str) -> None:
+def test_rpc_functions_declared_in_schema() -> None:
     """Each RPC function must also be declared in schema.sql."""
     text = SCHEMA_MIRROR.read_text(encoding="utf-8")
-    assert f"create or replace function {rpc}" in text, (
-        f"RPC function {rpc!r} missing from schema.sql"
-    )
+    missing = [rpc for rpc in RPC_FUNCTIONS if f"create or replace function {rpc}" not in text]
+    assert not missing, f"RPC function(s) {missing} missing from schema.sql"
 
 
 def test_claim_next_orders_by_severity_then_age() -> None:
@@ -211,7 +191,7 @@ def test_claim_next_uses_skip_locked() -> None:
     """claim_next must use FOR UPDATE SKIP LOCKED for concurrency safety."""
     text = MIGRATION.read_text(encoding="utf-8")
     fn_block = _extract_function_body(text, "claim_next")
-    assert "FOR UPDATE SKIP LOCKED" in fn_block.upper() or "for update skip locked" in fn_block, (
+    assert "FOR UPDATE SKIP LOCKED" in fn_block.upper(), (
         "claim_next must use FOR UPDATE SKIP LOCKED"
     )
 
@@ -255,26 +235,24 @@ def test_requeue_event_allows_claimed_or_parked() -> None:
     """requeue_event must allow both 'claimed' and 'parked' states."""
     text = MIGRATION.read_text(encoding="utf-8")
     fn_block = _extract_function_body(text, "requeue_event")
-    assert "state = 'claimed'" in fn_block or "state = 'claimed'" in fn_block
-    assert "state = 'parked'" in fn_block or "state = 'parked'" in fn_block
+    assert "state = 'claimed'" in fn_block
+    assert "state = 'parked'" in fn_block
     # Must clear claim metadata on requeue
-    assert "claimed_at = null" in fn_block.lower() or "claimed_at = NULL" in fn_block
-    assert "claimed_by = null" in fn_block.lower() or "claimed_by = NULL" in fn_block
+    assert "claimed_at = null" in fn_block.lower()
+    assert "claimed_by = null" in fn_block.lower()
 
 
 # -- Indexes ----------------------------------------------------------------
 
 
-@pytest.mark.parametrize("index", MIGRATION_INDEXES)
-def test_migration_declares_index(index: str) -> None:
-    assert index in MIGRATION.read_text(encoding="utf-8"), f"index {index!r} missing from migration"
-
-
 def test_pending_index_exists_in_schema() -> None:
     """schema.sql must also declare the pending-events query index."""
     text = SCHEMA_MIRROR.read_text(encoding="utf-8")
-    assert "idx_events_pending" in text, "idx_events_pending missing from schema.sql"
-    assert "where state = 'pending'" in text.lower() or "WHERE state = 'pending'" in text, (
+    # Scope to the index statement itself: `where state = 'pending'` also
+    # appears inside claim_next, so a whole-file search cannot fail.
+    statement = re.search(r"create index[^;]*idx_events_pending[^;]*;", text, re.IGNORECASE)
+    assert statement, "idx_events_pending missing from schema.sql"
+    assert "where state = 'pending'" in statement.group(0).lower(), (
         "idx_events_pending must be partial on pending"
     )
 

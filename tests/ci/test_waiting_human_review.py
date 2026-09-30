@@ -24,6 +24,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 WORKFLOW_PATH = (
     Path(__file__).resolve().parents[2] / ".github" / "workflows" / "waiting-human-review.yml"
@@ -67,20 +68,6 @@ def test_label_with_no_request_is_red():
     assert reason == "label"
 
 
-def test_request_removed_is_green():
-    """review_request_removed: the reviewer no longer appears in the pending list."""
-    red, _ = evaluate([], [], [])
-    assert not red
-
-
-def test_review_submitted_clears_request():
-    """review_submitted: GitHub clears requested_reviewers for that user once their
-    review posts, and the workflow re-fetches PR state on the event — so a
-    submitted review with no other reviewer still pending reads green."""
-    red, _ = evaluate([], [], [])
-    assert not red
-
-
 def test_other_labels_do_not_trigger():
     red, _ = evaluate([], [], ["priority:high", "area:infrastructure"])
     assert not red
@@ -92,28 +79,50 @@ def test_label_and_request_both_present_still_red():
     assert reason == "review-requested"
 
 
-def test_workflow_file_exists():
-    assert WORKFLOW_PATH.exists(), "waiting-human-review.yml is missing"
+# --- Config dimension: assert against the parsed workflow, not raw file text.
+# The file's comments, step script and log lines all repeat the event and label
+# names, so a raw-text search stays green after the trigger itself is removed.
 
 
-def test_workflow_yaml_references_label_name():
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert LABEL_NAME in text, "workflow no longer references the waiting-human-review label"
+def _workflow() -> dict:
+    return yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+
+def _triggers() -> dict:
+    doc = _workflow()
+    # PyYAML (YAML 1.1) parses the bare key `on` as boolean True.
+    return doc["on"] if "on" in doc else doc[True]
+
+
+def test_workflow_script_compares_against_the_label_name():
+    scripts = [
+        step.get("with", {}).get("script", "")
+        for step in _workflow()["jobs"]["waiting-human-review"]["steps"]
+    ]
+    assert any(f"'{LABEL_NAME}'" in script for script in scripts), (
+        f"no step script references the label as the string literal '{LABEL_NAME}'"
+    )
 
 
 def test_workflow_yaml_triggers_on_required_events():
     """#1892 AC2: settles without a re-run needed by hand."""
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    for event in (
-        "opened",
-        "synchronize",
-        "ready_for_review",
-        "review_requested",
-        "review_request_removed",
-    ):
-        assert event in text, f"missing pull_request trigger type: {event}"
-    assert "pull_request_review" in text, "missing pull_request_review trigger (review submitted)"
-    assert "submitted" in text, "missing 'submitted' review type trigger"
+    triggers = _triggers()
+    pr_types = triggers["pull_request"]["types"]
+    missing = [
+        event
+        for event in (
+            "opened",
+            "synchronize",
+            "ready_for_review",
+            "review_requested",
+            "review_request_removed",
+        )
+        if event not in pr_types
+    ]
+    assert not missing, f"missing pull_request trigger type(s): {missing}"
+    assert "submitted" in triggers["pull_request_review"]["types"], (
+        "missing pull_request_review 'submitted' trigger (review submitted)"
+    )
 
 
 def test_workflow_yaml_triggers_on_label_toggle():
@@ -122,17 +131,20 @@ def test_workflow_yaml_triggers_on_label_toggle():
     with no other PR event leaves a stale status until an unrelated re-run,
     breaking AC2's "settles without a re-run needed by hand" promise for that
     path (plan-review tiebreak finding, planner run 1892-planrun-20260924)."""
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    for event in ("labeled", "unlabeled"):
-        assert event in text, f"missing pull_request trigger type: {event}"
+    pr_types = _triggers()["pull_request"]["types"]
+    missing = [event for event in ("labeled", "unlabeled") if event not in pr_types]
+    assert not missing, f"missing pull_request trigger type(s): {missing}"
 
 
 def test_workflow_job_id_matches_check_name():
     """#1892 AC5: the check name must match what #1893's branch-protection ruleset
     will reference, exactly — the job id IS the check name (no jobs.<id>.name
     override), same pattern as require-linked-issue in pr-body-check.yml."""
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "waiting-human-review:" in text, "job id must be 'waiting-human-review'"
+    jobs = _workflow()["jobs"]
+    assert "waiting-human-review" in jobs, "job id must be 'waiting-human-review'"
+    assert "name" not in jobs["waiting-human-review"], (
+        "a jobs.<id>.name override renames the check the ruleset requires"
+    )
 
 
 if __name__ == "__main__":

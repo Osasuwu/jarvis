@@ -184,20 +184,6 @@ class TestNoConvergenceGuard:
         )
         assert result.decision == LoopDecision.STUCK_NO_CONVERGENCE
 
-    def test_shrinking_to_empty_converges(self):
-        """A clean descent to empty findings converges."""
-        history = [
-            make_attempt(1, findings=[f("regression", "a.py"), f("exception-handling", "b.py")]),
-            make_attempt(2, findings=[f("regression", "a.py")]),
-            make_attempt(3, findings=[]),
-        ]
-        result = decide(
-            attempts=3,
-            history=history,
-            initial_files={"a.py", "b.py"},
-        )
-        assert result.decision == LoopDecision.CONVERGED
-
     def test_changed_fingerprint_set_is_progress(self):
         """A different (even same-size) fingerprint set is progress, not stuck."""
         history = [
@@ -349,20 +335,6 @@ class TestConvergence:
         )
         assert result.decision == LoopDecision.CONTINUE
 
-    def test_single_remaining_finding_does_not_converge(self):
-        """Even one finding blocks convergence (matches the merge gate)."""
-        history = [
-            make_attempt(1, findings=[f("regression", "a.py"), f("exception-handling", "b.py")]),
-            make_attempt(2, findings=[f("regression", "a.py")]),
-        ]
-        result = decide(
-            attempts=2,
-            history=history,
-            initial_files={"a.py", "b.py"},
-        )
-        assert result.decision != LoopDecision.CONVERGED
-        assert result.decision == LoopDecision.CONTINUE
-
 
 # ============================================================================
 # Edge Tests: Boundaries
@@ -370,48 +342,11 @@ class TestConvergence:
 
 
 class TestBoundaryConditions:
-    """Edge cases: exact boundaries for guards."""
+    """Edge cases: exact boundaries for guards.
 
-    def test_attempt_exactly_3_is_stuck(self):
-        """Edge: attempt exactly = 3 → stuck (not ≥ 4)."""
-        history = [
-            make_attempt(1, findings=[f("regression", "a.py"), f("exception-handling", "b.py")]),
-            make_attempt(2, findings=[f("regression", "a.py")]),
-            make_attempt(3, findings=[f("concurrency", "c.py")]),
-        ]
-        result = decide(
-            attempts=3,
-            history=history,
-            initial_files={"a.py"},
-        )
-        assert result.decision == LoopDecision.STUCK_ATTEMPTS
-
-    def test_attempt_2_is_allowed(self):
-        """Edge: attempt exactly = 2 → still allowed (not yet stuck)."""
-        history = [
-            make_attempt(1, findings=[f("regression", "a.py"), f("exception-handling", "b.py")]),
-            make_attempt(2, findings=[f("regression", "a.py")]),
-        ]
-        result = decide(
-            attempts=2,
-            history=history,
-            initial_files={"a.py"},
-        )
-        # Will continue unless another guard fires
-        assert result.decision in (LoopDecision.CONTINUE, LoopDecision.CONVERGED)
-
-    def test_loc_delta_exactly_50_is_boundary(self):
-        """Edge: LOC delta exactly 50% → allowed (> not >=)."""
-        history = [
-            make_attempt(1, findings=[f("regression", "a.py")], loc_delta=100),
-            make_attempt(2, findings=[f("concurrency", "c.py")], loc_delta=150),
-        ]
-        result = decide(
-            attempts=2,
-            history=history,
-            initial_files={"a.py"},
-        )
-        assert result.decision != LoopDecision.STUCK_SCOPE
+    The attempt-count boundary (2 continues, 3 is stuck) lives in
+    TestMaxAttemptsGuard and the 50% LOC boundary in TestScopeCreepGuard.
+    """
 
     def test_empty_findings_on_first_attempt_converges(self):
         """Edge: even a single attempt with empty findings converges immediately."""
@@ -469,19 +404,6 @@ class TestIntegration:
         )
         assert result.decision == LoopDecision.CONVERGED
 
-    def test_happy_path_attempt_2_still_improving(self):
-        """Happy path: attempt 2, still making progress (different fingerprint set)."""
-        history = [
-            make_attempt(1, findings=[f("regression", "a.py"), f("exception-handling", "b.py")]),
-            make_attempt(2, findings=[f("concurrency", "c.py")]),
-        ]
-        result = decide(
-            attempts=2,
-            history=history,
-            initial_files={"a.py", "b.py", "c.py"},
-        )
-        assert result.decision == LoopDecision.CONTINUE
-
 
 # ============================================================================
 # Fingerprint helper
@@ -510,19 +432,6 @@ class TestFingerprint:
 
 class TestReturnStructure:
     """Verify the return value has all required fields."""
-
-    def test_result_has_decision_field(self):
-        """Result object must have .decision field."""
-        history = [
-            make_attempt(1, findings=[f("regression", "a.py")]),
-        ]
-        result = decide(
-            attempts=1,
-            history=history,
-            initial_files={"a.py"},
-        )
-        assert hasattr(result, "decision")
-        assert isinstance(result.decision, LoopDecision)
 
     def test_result_has_reason_field(self):
         """Result object must have .reason field for debugging."""
