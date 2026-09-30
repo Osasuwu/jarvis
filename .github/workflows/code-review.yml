@@ -59,7 +59,7 @@ jobs:
         .claude/agents/*.md
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -154,7 +154,7 @@ jobs:
       - name: Run code review (Layer B)
         id: review
         if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true')
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # claude-code-action@v1 added an `allowed_bots` gate that hard-fails
@@ -382,7 +382,7 @@ jobs:
       # payload, not an archive.
       - name: Upload review execution log
         if: always() && steps.review.outputs.execution_file != ''
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.review.outputs.execution_file }}
