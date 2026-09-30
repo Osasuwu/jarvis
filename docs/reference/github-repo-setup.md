@@ -181,8 +181,23 @@ Closes #
 
 ## Testing
 
-- [ ] Unit/integration tests pass
-- [ ] CI is green
+<!--
+A pass count is not evidence.
+  - Each acceptance criterion: the test that goes red for it, a command's output, or
+    (one-off static facts only) reading.
+  - Every test added or changed appears in a line, one line per distinct mutation:
+    <production file>:<line> <mutation> → <tests it turns red> red
+    (or "no probe — …" / "not probed — …" where test-quality.md allows it)
+  - Every test deleted: the kept test and the mutation that reddens it, or why the
+    deleted one could not fail, or its "Never write" class.
+  - Tests touched: keep the "CI run" line below until the PR run's passed and skipped
+    counts have been read against main's, then replace it with the two pairs of numbers.
+  - No test touched: say so and delete the "CI run" line.
+-->
+
+-
+- CI run not checked for skips
+
 - [ ] Manual verification (if needed)
 
 ## Files Changed
@@ -191,6 +206,10 @@ Closes #
 |------|--------|
 | | |
 ```
+
+The Testing block asks for what [`test-quality.md`](test-quality.md) → *What the PR's
+`## Testing` section holds* defines; it carries no "tests pass" checkbox because a pass count
+was the evidence every weak test arrived with.
 
 The Risk Assessment tiers cross-reference the #1512 risk-assessment carve-out named in
 `~/.claude/reference/merge-gates.md` — keep the tier names (LOW/MEDIUM/HIGH/CRITICAL)
