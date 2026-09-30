@@ -209,7 +209,8 @@ A pass count is not evidence.
 
 The Testing block asks for what [`test-quality.md`](test-quality.md) → *What the PR's
 `## Testing` section holds* defines; it carries no "tests pass" checkbox because a pass count
-was the evidence every weak test arrived with.
+was the evidence every weak test arrived with. A repo that copies this template copies
+`test-quality.md` alongside it, or drops the lines that cite it.
 
 The Risk Assessment tiers cross-reference the #1512 risk-assessment carve-out named in
 `~/.claude/reference/merge-gates.md` — keep the tier names (LOW/MEDIUM/HIGH/CRITICAL)
