@@ -1,10 +1,10 @@
 name: Agent Dispatch
 
-# Fires once per issue, on the `agent:dispatch` label being added (never on
-# any other label, and never on unlabel/reopen/etc — `issues: labeled` fires
-# once per label-add event, and the job condition below narrows it further
-# to the one label this workflow reacts to, so a PR/other-label churn on the
-# same issue does not re-trigger a worker run).
+# The worker runs once per `agent:dispatch` label-add. The WORKFLOW still
+# starts on every label-add: `issues: labeled` has no label filter, so the
+# job condition below is what narrows it to the one label this workflow
+# reacts to. Other-label churn on the same issue produces a run whose only
+# job is skipped — never a worker run.
 on:
   issues:
     types: [labeled]
@@ -13,9 +13,24 @@ on:
 # after removing it to retry a failed run, per dispatch/SKILL.md's
 # recovery note) cancels an in-flight run for the same issue rather than
 # racing it.
+#
+# The group key depends on the label, not just the issue (#1936).
+# Workflow-level concurrency is resolved when the run is queued, BEFORE the
+# job `if` below is evaluated, so a group keyed on the issue number alone
+# takes in every label event on that issue: any label added mid-run would
+# cancel the in-flight worker and then skip its own job, and an
+# `agent:dispatch` applied in one call with other labels could itself be
+# cancelled as `pending` by a sibling event. Non-dispatch events therefore
+# get a group unique to their own run (`github.run_id`, the fallback GitHub's
+# concurrency docs use for the same purpose), which nothing else can ever
+# join — they can neither cancel nor be cancelled.
+#
+# Kept at workflow level rather than moved onto the job: whether a job-level
+# `concurrency` is applied before or after that job's `if` is not documented,
+# and this form does not depend on the answer.
 concurrency:
-  group: agent-dispatch-issue-${{ github.event.issue.number }}
-  cancel-in-progress: true
+  group: ${{ github.event.label.name == 'agent:dispatch' && format('agent-dispatch-issue-{0}', github.event.issue.number) || format('agent-dispatch-noop-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event.label.name == 'agent:dispatch' }}
 
 jobs:
   worker:
