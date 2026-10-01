@@ -93,8 +93,9 @@ jobs:
                and stop without opening a PR.
             6. Otherwise commit, push the branch, and open a PR whose body
                has `Closes #${{ github.event.issue.number }}` on its own
-               line and a filled-in Summary/Why/Risk Assessment/Testing
-               section per AGENTS.md's PR template.
+               line and every section of `.github/PULL_REQUEST_TEMPLATE.md`
+               filled in; the Testing section holds what
+               `docs/reference/test-quality.md` asks for.
 
             Never edit this workflow file, any other file under
             `.github/workflows/**`, anything under `.claude/hooks/**`, or
