@@ -40,6 +40,9 @@ Thumbs.DB
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/session-snapshots/
+# Personal rules file, never committed. While it exists, Claude Code skips its native
+# AGENTS.md read (#1955); see tests/ci/test_context_extraction_guard.py
+CLAUDE.local.md
 
 # env_sync / MCP bootstrap runtime artifacts (#1312)
 .claude/logs/
