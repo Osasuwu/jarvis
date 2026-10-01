@@ -65,6 +65,9 @@ _DOCS_ONLY_CRITERION = "docs-only"
 
 # Root markdown that is executable process, not documentation about it: an
 # agent reads these as rules, so a change to one is a behavior change.
+# `CLAUDE.md` stays although this repo has none since #1955: a root CLAUDE.md
+# that reappeared would shadow AGENTS.md and be read as rules, so it must still
+# count as behavior; the entry costs nothing while the file is absent.
 _NON_DOC_ROOT_MARKDOWN = frozenset({"AGENTS.md", "CLAUDE.md"})
 
 

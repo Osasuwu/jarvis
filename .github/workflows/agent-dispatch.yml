@@ -68,7 +68,7 @@ jobs:
 
             This runner has no user-level ~/.claude layer (no SOUL.md,
             no DOCTRINE.md, no memory tools) — only this repo's own
-            AGENTS.md / CLAUDE.md / .claude/settings.json are in scope
+            AGENTS.md / .claude/settings.json are in scope
             (decision a2d10d70-1282-45e1-a8be-b6bdbda92fa4). Read AGENTS.md
             first and follow its process rules as the sole instruction
             layer for this run.

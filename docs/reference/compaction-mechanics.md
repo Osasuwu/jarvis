@@ -40,6 +40,7 @@ Claude Code auto-compacts long sessions automatically as you approach the contex
 |-----------|------------------|--------------|
 | System prompt & output style | ✅ Unchanged | Built-in (never summarized) |
 | Project CLAUDE.md | ✅ Re-read | Auto-loaded from disk |
+| Project AGENTS.md (native read, no CLAUDE.md) | ❓ Undocumented | The memory docs state the guarantee for CLAUDE.md only; unverified for natively-read AGENTS.md (#1955) |
 | User-level rules (unscoped) | ✅ Re-read | Auto-loaded from disk |
 | MEMORY.md (auto-memory) | ✅ Re-injected | Auto-loaded from disk |
 | SessionStart `compact` matcher | ✅ Re-executed | Hook system (post-compaction) |
@@ -80,9 +81,9 @@ But it **cannot**:
 
 **Original solution (#1204/#1536, removed)**: `pre-compact-backup.py` used to keyword-scan CLAUDE.md files and re-inject a "Prohibiting Rules & Standing Orders" section into the snapshot. This duplicated a more reliable mechanism that had shipped five days earlier (#1417/#1418, see below) and was removed as dead weight (2026-08-25).
 
-**Current solution**: root `AGENTS.md` is loaded via a bare `@AGENTS.md` line in the project `CLAUDE.md` (#1417/#1418, rebuilt by #1791). A bare, top-level `@import` expands at prompt-assembly time and is never subject to compaction's summarization or the hook's own best-effort extraction — it simply reloads on every turn, including immediately after compaction. This is strictly more reliable than the old keyword-scan-into-snapshot approach: no heuristic matching, no dependency on the PreCompact hook running, no risk of the recovery payload's size budget dropping the section.
+**Current solution**: root `AGENTS.md` is read natively by Claude Code (>= v2.1.277) because the repo has no `CLAUDE.md` (#1955; until then it rode a bare `@AGENTS.md` line in a project `CLAUDE.md` shim, #1417/#1418, rebuilt by #1791). Project instruction files are assembled into the prompt at launch and are never subject to compaction's summarization or the hook's own best-effort extraction. **Open question:** the Claude Code memory docs promise re-read-after-`/compact` for project-root `CLAUDE.md`, and do not say whether a natively-read `AGENTS.md` takes the same path; #1955 did not verify it. If a rule is observed to vanish after compaction, that is the first suspect. This is strictly more reliable than the old keyword-scan-into-snapshot approach: no heuristic matching, no dependency on the PreCompact hook running, no risk of the recovery payload's size budget dropping the section.
 
-Rules that need to survive compaction belong in `AGENTS.md` (or another bare-`@import`ed file), not in prose elsewhere in CLAUDE.md.
+Rules that need to survive compaction belong in `AGENTS.md` (or another bare-`@import`ed file), not in prose elsewhere.
 
 ## Context layering is one-directional
 

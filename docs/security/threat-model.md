@@ -35,9 +35,9 @@ See `docs/security/mcp-audit.md` for per-server analysis. Summary:
 | Agent writes secret to memory | Medium | **Sprint 2: #159** |
 | Agent modifies protected files | Medium | **Sprint 2: #162** |
 | Agent corrupts git state (wrong branch, conflict) | Medium | **Sprint 2: #163** |
-| Agent scope creep (edits unrelated files) | Low | CLAUDE.md rules (soft) |
+| Agent scope creep (edits unrelated files) | Low | AGENTS.md rules (soft) |
 | Agent-to-agent data poisoning | Low | Not yet addressed (Federation & Delegation pillar) |
-| Agent infinite loop / resource waste | Low | Token budget awareness in CLAUDE.md |
+| Agent infinite loop / resource waste | Low | Token budget awareness in AGENTS.md |
 
 ### 3. External Integrations
 
