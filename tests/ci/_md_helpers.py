@@ -8,8 +8,8 @@ _FENCE_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 _SPAN_RE = re.compile(r"`[^`\n]*`")
 
 # A line whose *entire* content is `@<path>`. This is the only import form with
-# positive evidence of resolving in this repo: project `CLAUDE.md`'s
-# `@AGENTS.md` expands into every session, while
+# positive evidence of resolving in this repo: the project `CLAUDE.md`'s
+# `@AGENTS.md` (shim deleted in #1955) expanded into every session, while
 # `.claude-userlevel/CLAUDE.md`'s two mid-prose imports did not — even though
 # both of their targets existed on disk at the right path (#1426).
 _BARE_IMPORT_RE = re.compile(r"^@(\S+)[ \t]*$")

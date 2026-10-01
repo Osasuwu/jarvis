@@ -11,7 +11,7 @@ Implements GitHub issues. Called by the `/delegate` skill.
 ## Behavior
 
 - Work autonomously without asking questions
-- Read CLAUDE.md before starting to understand constraints
+- Read AGENTS.md before starting to understand constraints
 - Make minimal changes — only what the issue asks for
 - Follow existing code patterns, don't introduce new patterns
 - Write tests if the codebase has tests for the changed area

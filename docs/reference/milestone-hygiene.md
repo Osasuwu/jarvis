@@ -1,6 +1,6 @@
 # Milestone vs pillar hygiene
 
-Pull-only detail for CLAUDE.md → *Development process*. Entity definitions (pillar / milestone / slice, why "epic" is not used) live in CONTEXT.md → *Core entities*. This file is the **single authoritative body** for the standing rules below — memory `milestone_hierarchy_v3` is demoted to an on-demand decision-record (rationale + history), not a duplicate source (#1157). Shape:
+Pull-only detail for AGENTS.md → *Development process*. Entity definitions (pillar / milestone / slice, why "epic" is not used) live in CONTEXT.md → *Core entities*. This file is the **single authoritative body** for the standing rules below — memory `milestone_hierarchy_v3` is demoted to an on-demand decision-record (rationale + history), not a duplicate source (#1157). Shape:
 
 ```
 pillar (narrative only) → goal (Type A) → milestone (capability + PRD) → slice (one PR)

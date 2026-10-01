@@ -43,7 +43,7 @@ You (any device)
   |     |-- ~/.claude/projects/<project>/memory/    native memory (per-machine, file-based)
   |     |-- MCP servers registered via `claude mcp add --scope user` (github, obsidian, ...)
   |     |
-  |     |-- jarvis/CLAUDE.md       project rules + autonomy config
+  |     |-- jarvis/AGENTS.md       project rules (read natively by Claude Code)
   |     |-- jarvis/.claude/        project-scoped extras (e.g. /sprint-report)
   |     |
   |-- Telegram (via Claude Code Channels, optional)
@@ -119,7 +119,7 @@ Full capability detail, migration order, and bootstrap protocol: [docs/design/ja
 
 ```
 jarvis/
-  CLAUDE.md              <- agent rules (auto-loaded by Claude Code)
+  AGENTS.md              <- agent rules (read natively by Claude Code)
   config/
     SOUL.md              <- personality definition
     repos.conf           <- repos to scan

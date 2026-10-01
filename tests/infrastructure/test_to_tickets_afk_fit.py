@@ -223,7 +223,8 @@ def test_load_protected_paths_real_config_has_both_repos():
     # mcp-memory/** dropped in #1801 — the directory no longer exists,
     # the memory stack having been retired along with its Supabase tables.
     assert "supabase/**" in config["Osasuwu/jarvis"]["guarded"]
-    assert "CLAUDE.md" in config["Osasuwu/jarvis"]["hitl"]
+    # CLAUDE.md dropped in #1955 (file deleted); AGENTS.md is the rules file.
+    assert "AGENTS.md" in config["Osasuwu/jarvis"]["hitl"]
     assert any(
         p.startswith("redrobot/driver/") for p in config["SergazyNarynov/redrobot"]["guarded"]
     )
@@ -299,13 +300,13 @@ def test_real_config_jarvis_hitl_file_is_class_3():
     repo_root = Path(__file__).resolve().parents[2]
     config = load_protected_paths(repo_root / "config" / "protected-paths.json")
     verdict = classify_static_paths(
-        ["CLAUDE.md", "docs/foo.md"],
+        ["AGENTS.md", "docs/foo.md"],
         repo="Osasuwu/jarvis",
         config=config,
     )
     assert verdict.cls == 3
     assert verdict.label == "afk:3-human"
-    assert verdict.matched_files == ("CLAUDE.md",)
+    assert verdict.matched_files == ("AGENTS.md",)
 
 
 def test_real_config_jarvis_supabase_path_is_class_2():

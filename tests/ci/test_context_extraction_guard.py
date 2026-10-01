@@ -1,4 +1,4 @@
-"""Guard for #1791 — root AGENTS.md rebuild, CLAUDE.md collapsed to a bare import.
+"""Guard for #1791 / #1955 — root AGENTS.md is the sole project-rules file.
 
 History: #1417 extracted the old Invariants into `docs/context/invariants.md`,
 delivered by a bare `@import` line in root `CLAUDE.md` (bypassing the
@@ -6,25 +6,27 @@ SessionStart hook's budget-constrained assembler entirely — the assembler
 used to drop `project_context` in 47% of sessions, see CONTEXT.md → *Context
 delivery*). #1418 retired the second extracted file, `docs/context/glossary-index.md`.
 #1791 rebuilt the always-loaded half from scratch: a from-zero root `AGENTS.md`
-(≤100 lines, jarvis's process rules + exactly two invariants) replaces
-`invariants.md`, and `CLAUDE.md` collapses to a single bare `@AGENTS.md` line —
-still a bare `@import`, so the delivery mechanism this guard exists to pin is
-unchanged even though the target file is new.
+(<=100 lines, jarvis's process rules + exactly two invariants) replaces
+`invariants.md`, with `CLAUDE.md` collapsed to a bare `@AGENTS.md` shim.
+#1955 deleted that shim: Claude Code >= v2.1.277 reads `AGENTS.md` natively, but
+only when no `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` exists in the
+working directory or above it. A project-level file with the old name therefore
+does not just add to AGENTS.md — it silently replaces it for Claude Code, so
+every session would run without the rules while other agents (Codex, Cursor,
+Copilot, ...) still read them.
 
 `AGENTS.md` is also the cross-tool standard filename (Linux Foundation AAIF;
-read by Codex, OpenCode, Cursor, Copilot, Gemini CLI, Zed, Amp) — unlike the
-old `invariants.md`, no other tool needs a duplicate file to find these rules.
+read by Codex, OpenCode, Cursor, Copilot, Gemini CLI, Zed, Amp).
 
 Checks pinned here:
-  - root AGENTS.md exists, is <=100 lines, and does not leak session-mechanism
+  - no tracked-or-not `CLAUDE.md` / `.claude/CLAUDE.md` at the repo root that
+    would shadow AGENTS.md (root AGENTS.md missing is caught by the two
+    content checks below, which cannot run without it)
+  - root AGENTS.md is <=100 lines and does not leak session-mechanism
     vocabulary that has no business in a cross-tool-readable file
-  - CLAUDE.md's entire content is the single bare line `@AGENTS.md`
   - the four #1791 deletion targets (`docs/context/invariants.md`,
     `.claude/rules/*.md`, `.github/AGENTS.md`, `.github/copilot-instructions.md`)
     are gone
-  - `scripts/session-context.py` no longer defines the retired assembler path
-    (`_load_project_context`) — the whole point of #1417 is that this content
-    no longer rides the budget-constrained push
 """
 
 from __future__ import annotations
@@ -33,7 +35,13 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CLAUDE_MD_PATH = REPO_ROOT / "CLAUDE.md"
+# Project-level files that make Claude Code skip its native AGENTS.md read (#1955).
+# `CLAUDE.local.md` also shadows it but is gitignored and per-developer, so it is
+# not a repo invariant and not checked here.
+SHADOWING_RULES_FILES = (
+    REPO_ROOT / "CLAUDE.md",
+    REPO_ROOT / ".claude" / "CLAUDE.md",
+)
 AGENTS_MD_PATH = REPO_ROOT / "AGENTS.md"
 INVARIANTS_MD_PATH = REPO_ROOT / "docs" / "context" / "invariants.md"
 CLAUDE_RULES_DIR = REPO_ROOT / ".claude" / "rules"
@@ -42,7 +50,7 @@ COPILOT_INSTRUCTIONS_PATH = REPO_ROOT / ".github" / "copilot-instructions.md"
 
 # Session-mechanism vocabulary that must not leak into the cross-tool-readable
 # AGENTS.md — these terms are jarvis-instance-internal (MCP tool names, this
-# operator's memory backend, sandcastle infra) and belong in CLAUDE.md/CONTEXT.md,
+# operator's memory backend, sandcastle infra) and belong in CONTEXT.md,
 # never in the file Codex/Cursor/Copilot/etc. read directly.
 BANNED_TOKEN_PATTERN = re.compile(
     r"mcp__memory|memory_recall|record_decision|session-context|jarvis-oss|"
@@ -69,13 +77,14 @@ class TestAgentsMd:
         )
 
 
-class TestClaudeMdIsBareImport:
-    def test_claude_md_content_is_exactly_bare_agents_import(self):
-        text = CLAUDE_MD_PATH.read_text(encoding="utf-8")
-        assert text.strip("\n") == "@AGENTS.md", (
-            "root CLAUDE.md must contain exactly the single bare line `@AGENTS.md` "
-            f"— found: {text!r}. #1791 collapsed CLAUDE.md down to this one import; "
-            "any other content belongs in AGENTS.md, CONTEXT.md, or docs/reference/*.md."
+class TestAgentsMdIsSoleRulesFile:
+    def test_no_claude_md_shadows_agents_md(self):
+        present = [str(p.relative_to(REPO_ROOT)) for p in SHADOWING_RULES_FILES if p.exists()]
+        assert not present, (
+            f"{present} exist(s) — Claude Code reads AGENTS.md natively only when no "
+            "CLAUDE.md / .claude/CLAUDE.md exists, so this file replaces AGENTS.md for "
+            "every Claude Code session instead of adding to it. #1955 deleted the "
+            "`@AGENTS.md` shim; put rules in AGENTS.md, CONTEXT.md, or docs/reference/*.md."
         )
 
 

@@ -1,6 +1,6 @@
 # Development process details
 
-Pull-only detail for CLAUDE.md → *Development process*.
+Pull-only detail for AGENTS.md → *Development process*.
 
 ## Design RFC / proposal / debate
 

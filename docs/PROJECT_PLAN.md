@@ -17,7 +17,7 @@
 | Active sprint scope | [GitHub milestones](https://github.com/Osasuwu/jarvis/milestones) |
 | Decisions log | Memory (`memory_recall` / `memory_get`) |
 | Daily process / branching / PR rules | [`.github/github-process-runbook.md`](../.github/github-process-runbook.md) |
-| Project conventions for AI agents | [`CLAUDE.md`](../CLAUDE.md) |
+| Project conventions for AI agents | [`AGENTS.md`](../AGENTS.md) |
 
 ## Out of scope (architecture-level)
 

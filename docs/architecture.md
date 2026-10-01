@@ -19,7 +19,7 @@ Since EPIC #335 (2026-04-23), Jarvis is **federated** to user level: the SOUL, t
 │  ~/.claude/settings.json ← hooks (SessionStart, ...)  │
 │  ~/.claude.json          ← MCP registrations (user)   │
 │                                                       │
-│  <project>/CLAUDE.md     ← project rules              │
+│  <project>/AGENTS.md     ← project rules (native read)│
 │  <project>/.claude/      ← project-specific skills    │
 │                            + agents (e.g. coding.md)  │
 │                                                       │
@@ -50,7 +50,7 @@ There is no automated propagation to `~/.claude/`. User-level skills have a sing
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| Project init | `CLAUDE.md` | Session rules specific to the jarvis project |
+| Project rules | `AGENTS.md` | Session rules specific to the jarvis project; Claude Code reads it natively (no `CLAUDE.md` in the tree, #1955) |
 | Project skills | `.claude/skills/sprint-report/` | Only skill that isn't universal (redrobot release flow) |
 | Project subagents | `.claude/agents/coding.md` | Project-scoped coding agent definition |
 | Empty hooks | `.claude/settings.json` (`{}`) | Reserved for jarvis-only hooks if ever needed |
@@ -177,8 +177,7 @@ jarvis/
 │   ├── settings.json        ← PreToolUse/SessionStart hook registrations
 │   ├── agents/coding.md     ← Project-scoped coding subagent
 │   └── skills/sprint-report/  ← Only non-universal skill
-├── CLAUDE.md                ← Jarvis-project session rules (@AGENTS.md import)
-├── AGENTS.md                ← Process rules (cross-tool standard)
+├── AGENTS.md                ← Process rules (cross-tool standard; Claude Code reads it natively)
 ├── .github/workflows/       ← CI
 ├── .env.example
 └── pyproject.toml
