@@ -3,16 +3,14 @@
 Two fresh sessions start from here. Each one is self-contained. Pick one per session, and do not run both in the
 same session.
 
-The `docs/research/…` paths below are in jarvis-private on branch `claude/skill-survey-grill-implement`, which is
-not on master yet. The `decisions.md` file is
-`~/.claude/projects/C--Users-petrk-GitHub-jarvis-private/memory/decisions.md`; it is machine-local, so on another
-device read this file instead.
+The `docs/research/…` paths below are in this repo. `decisions.md` is the operator's decision journal; it is
+machine-local and not published, so on another device read this file instead.
 
 ## Session A — AFK orchestration (jarvis milestone 71)
 
 **Goal:** one orchestration contract that starts the right skill by conditions: implement, plan, research, and
 anything else that runs unattended. Interactive skills should fit the contract, not fight it. The user wants this
-done once: "чтобы 4 раз не переделывать автоматику".
+done once, so that the automation is not rebuilt a fourth time.
 
 **Order:**
 1. Run #1957 (retrospective of the 8 designs) and #1958 (external research, 9 topics) in parallel. Use `/research`
@@ -37,7 +35,7 @@ done once: "чтобы 4 раз не переделывать автоматик
   The current lane's `agent-dispatch` runs: 1 success, 1 failure, 54 cancelled, 222 skipped. #1809 (the quota
   baseline) has not started. A rule is proposed and must be decided: no new infrastructure until the current lane
   has passed N real runs.
-- **Inflexibility is structural.** The user observed: "любое достаточно крупное изменение очень туго идёт". One
+- **Inflexibility is structural.** The user observed that any large enough change goes through very slowly. One
   contract (labels, `## Plan`, risk line, merge policy) is restated in prose across about 7 skills and several
   workflows. Every change has to touch all of them, and they drift: `status:owner-queue` has 3 meanings, and three
   labels referenced in skills exist in no repo. Research topic 6 (one source of truth) exists for this. Treat it as
@@ -90,10 +88,6 @@ done once: "чтобы 4 раз не переделывать автоматик
 
 ## Loose ends outside both sessions
 
-- Branch `claude/skill-survey-grill-implement` holds the research docs and this handoff. Its jarvis-private PR
-  stays in draft until the public part is published.
-- Docs placement decision, 2026-10-01:
-  - The briefs and the 02/03 evidence move to public jarvis `docs/research/`, with the user's quotes paraphrased.
-    Once published, the paths above change to jarvis paths.
-  - The 01 audits are in jarvis-private `evidence/` (done on this branch).
-  - Show the user the diff before publishing, because it is irreversible.
+- Docs placement, decided 2026-10-01: the research is published here with the user's quotes paraphrased; the 01
+  session audits stay in jarvis-private `evidence/`. The staging copy in jarvis-private
+  (`claude/skill-survey-grill-implement`, draft PR 6) is removed once this lands.

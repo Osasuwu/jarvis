@@ -4,6 +4,9 @@ Date: 2026-09-30. Status: **research done, no direction approved, design not loc
 is the input to the `/grill` session that locks the design; it is not the design. Evidence lives
 beside it in [`grill-skill-redesign-2026-09-30/`](./grill-skill-redesign-2026-09-30/).
 
+> Published here 2026-10-01 from the operator repo. 01 is not published; the user's quotes from
+> it are paraphrased in English.
+
 ## The job the skill has to keep doing
 
 Take a plan that is not yet safe to build and turn it into acceptance criteria a fresh agent can
@@ -18,7 +21,7 @@ said, in words, they will not read.
 
 | # | File | What it is |
 |---|---|---|
-| 01 | jarvis-private `evidence/grill-skill-redesign-2026-09-30/01-session-audit.md` (private: local transcripts) | Every `/grill` invocation in the local transcripts of one device, 2026-07-21 → 09-30: 113 invocations in 104 session files (65 typed by the user, 48 by the model), roughly 96–100 substantive grills; 23 runs deep-read, 29 more skimmed. |
+| 01 | `01-session-audit.md` — *not published* (audits local session transcripts; kept in the operator repo) | Every `/grill` invocation in the local transcripts of one device, 2026-07-21 → 09-30: 113 invocations in 104 session files (65 typed by the user, 48 by the model), roughly 96–100 substantive grills; 23 runs deep-read, 29 more skimmed. |
 | 02 | `02-external-evidence.md` | The skill's own thirteen external citations checked against their sources, plus 2025–26 evidence on seven practices the skill encodes, each claim with URL and direct quote. |
 | 03 | `03-citation-audit.md` | Independent fresh-context check of 02: about 255 atomic claims in 115 rows — 79 supported, 20 supported with a caveat, 10 overstated, 1 number misread, 1 wrong source, 4 unverifiable, 0 quotes not found (164 of 165 quotations verbatim at the cited URL). Where 02 and 03 disagree, this brief follows 03. |
 
@@ -49,14 +52,14 @@ found" statements are negative-search claims that 03 did not audit; the deep-rea
    recommended". The 12-cluster cap was exceeded in 4 of 4 full-tier locks (18, 23, 18, 23
    clusters). The ban on blanket acceptance (`SKILL.md:145`) was satisfied by recording "all 12
    agree as recommended" as twelve individual dispositions. In the one run with 59 clusters the
-   premise-breaking item was found by the agent after triage, not by any critic. The user, twice:
-   «без шансов, я не буду читать все 192 пункта, это слишком много», «у меня нет времени и
-   желания читать весь вывод критиков и отвечать на каждый пункт». (01 §Q2, §Q3.)
+   premise-breaking item was found by the agent after triage, not by any critic. The user said
+   twice, in paraphrase, that they would not read all 192 items, and that they had neither the
+   time nor the will to read the whole critic output and answer every item. (01 §Q2, §Q3.)
 
 3. **Two of the three Phase 1 questions do not do anything.** On the 88 runs after the gate
    existed: cadence — 53 of 53 tool answers and 9 of 9 text answers chose the default. Time
    budget — 19 of 19 short-budget runs overran ("Quick (~10 min)" → 20 and 22 active minutes;
-   "быстрый" → 140 minutes wall, about 48 of them fact-finding before the first round). The
+   "quick" → 140 minutes wall, about 48 of them fact-finding before the first round). The
    budget answer selects no different procedure, so it cannot be honoured. The gate was skipped
    in 8 runs, silently in 5. Two clean references exist: one round of four questions plus one
    critic in 19 minutes; twelve questions, one critic, criteria locked in 47 minutes. (01 §Q1,
@@ -65,8 +68,8 @@ found" statements are negative-search claims that 03 did not audit; the deep-rea
 4. **Compaction is the normal case and the grill's state lives only in context.** 363
    compactions across 99 of 113 runs (median 2, p90 7, max 26). In 10 of 23 sampled runs a
    compaction happened before the first question was asked. Observed losses: eight option sets
-   and a process rule in one run («потерялось аж 8 наборов вариантов»), the verbatim critic text
-   in another. Lock files and raw verdicts are written to the session scratchpad; one spec stayed
+   and a process rule in one run (the user noticed that eight option sets had been lost), the
+   verbatim critic text in another. Lock files and raw verdicts are written to the session scratchpad; one spec stayed
    there, and one follow-up issue cites a scratchpad path. Saving verbatim critic output was
    blocked twice by the secret-scanner hook and broke on heredoc quoting twice. (01 §Q4, §Q5.)
 
@@ -82,11 +85,12 @@ found" statements are negative-search claims that 03 did not audit; the deep-rea
 
 6. **The user wants to decide on facts, and says so.** 216 of 392 parsed answers (55%, a lower
    bound) are the option labelled Recommended; in three runs 20/20, 16/17 and 21/21. Real user
-   input arrived as reframes and requests for context, not as option picks. On record:
-   «лучшим вариантом будет тебе предложить лучшее решение, прогнать критиков и только там моё
-   мнение будет иметь какой-то вес, потому что я смогу отталкиваться от фактов, а не мнения»;
-   «Какие рекомендации? У тебя больше знаний по этой теме»; «мне нужно удостовериться, что я
-   помню свой изначальный дизайн»; «Вход в контекст должен быть сильнее.» Frontier rounds
+   input arrived as reframes and requests for context, not as option picks. On record, in
+   paraphrase: the best option is for the agent to propose the best solution and run the critics
+   first, because only then does the user's opinion carry weight, resting on facts rather than
+   opinion; asked for a recommendation, the user replied that the agent knows more about the
+   topic; the user needed to check that they still remembered their original design; and the
+   entry into context should be stronger. Frontier rounds
    themselves hold: the old one-question-at-a-time form took 3.5–5 hours of wall time for seven
    questions in two runs. (01 §Q2, §Q3.)
 
@@ -101,7 +105,7 @@ found" statements are negative-search claims that 03 did not audit; the deep-rea
    last successful call on 2026-09-07. `SKILL.md` still cites seven UUIDs as the authority for
    its own rules and makes "verifiable bullets + decision UUIDs" the condition for removing
    `needs-grill`. The label was removed in 5 runs and promised but not removed in 3. An ADR was
-   written once in 113 runs («я и забыл, что grill пишет adr»). `CONTEXT.md` was edited in 11.
+   written once in 113 runs, and the user remarked they had forgotten the grill writes ADRs. `CONTEXT.md` was edited in 11.
    Follow-ups were filed with raw `gh issue create` in 8 runs. What does happen: the issue body
    is rewritten in 45 runs. Three sampled runs executed the whole terminal sequence. (01 §Q1,
    §Q5, §Q7.)
@@ -118,7 +122,7 @@ found" statements are negative-search claims that 03 did not audit; the deep-rea
 
 10. **Two embedded gates fire on the wrong thing or not at all.** The experiment-discipline
     checklist is "carried verbatim into the round" and was rejected as inapplicable in 3 runs
-    («Мы гриллим редизайн, а не готовим эксперимент»); it was useful in one run that was an
+    (in the user's words, paraphrased: this is a redesign grill, not an experiment); it was useful in one run that was an
     experiment. The research-pass gate is stated in 26 of 113 runs against 69 that reached a
     critic, blocked none, and names Firecrawl (`SKILL.md:79`). (01 §Q1.)
 
@@ -170,8 +174,8 @@ found" statements are negative-search claims that 03 did not audit; the deep-rea
     verbatim in 64 of 76 sampling prompts. (02 Q3; 03 defect 2; 01 §Q1.)
 
 14. **Mechanics that do not work as written.** `model: fable` in frontmatter applies "for the
-    rest of the current turn"; the user switched models by hand in four runs («на grill
-    переключилась модель на fable?»). The description has no "when to use" clause. The body says
+    rest of the current turn"; the user switched models by hand in four runs, once asking
+    whether the grill had switched the model to fable. The description has no "when to use" clause. The body says
     "two phases" and has four. `AskUserQuestion` carried most of the questions (200 calls, 518
     questions) and is not mentioned anywhere in the skill; it is denied in `dontAsk` mode. Three
     sibling files exceed 100 lines without a table of contents; no evaluation exists for the

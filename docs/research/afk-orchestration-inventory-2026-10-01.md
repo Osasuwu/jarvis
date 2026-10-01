@@ -1,6 +1,6 @@
 # AFK orchestration — leftovers inventory (2026-10-01)
 
-Read-only subagent inventory, verbatim. Spot-verified: agent-dispatch run counts (1 success, 1 failure, 54 cancelled, 222 skipped).
+Read-only subagent inventory, verbatim except three redactions for publication (a local path, a private repo's details, a local key file). Spot-verified: agent-dispatch run counts (1 success, 1 failure, 54 cancelled, 222 skipped).
 
 AFK/orchestration leftovers inventory, read-only, compiled 2026-10-01. No files, labels, comments or GitHub state were changed.
 
@@ -86,7 +86,7 @@ Status uses the brief's values. Most items are `live`; `stale` means the premise
 
 **jarvis-private:** no issues. PRs 1–5 are all merged.
 
-**redrobot:** issues are disabled; it is a fork of SergazyNarynov/redrobot, last pushed 2026-06-24.
+**redrobot:** private fork with issues disabled, last pushed 2026-06-24.
 
 ### Closed in the last ~6 months: not-planned, superseded or half-done (jarvis unless noted)
 
@@ -206,12 +206,10 @@ Status uses the brief's values. Most items are `live`; `stale` means the premise
 ### jarvis-private
 - `skills-tests.yml` only. No review bot; merges are manual.
 
-### redrobot (fork, self-hosted runners, dormant since 2026-06-24)
-- **event-dispatch.yml** posts to Supabase `events` "for the Jarvis autonomous-loop orchestrator". Recent runs are skipped.
-- **owner-queue-guard.yml** is still present.
-- Also: pr-merged, parent-notify, project-sync (targets the upstream repo), weekly-report, weekly-hardware-report, hardware-lifecycle, ci, code-review, issue-schema-check, issue-domain-label-sync, pr-checks, security.
+### redrobot (private fork, dormant since 2026-06-24)
+- *[Redacted for publication: the workflow list of a private repo.]* It still carries `owner-queue-guard.yml` and a Supabase event-dispatch workflow.
 
-### User-level skills (`C:/Users/petrk/GitHub/jarvis-private/skills/`)
+### User-level skills (jarvis-private `skills/`)
 - **/dispatch v4.0.0** (applies `agent:dispatch`). Five-condition gate at `dispatch/SKILL.md:41-62`:
   - condition 0: repo match, citing #1651 and M58;
   - condition 1: no `needs-*` label;
@@ -229,7 +227,6 @@ Status uses the brief's values. Most items are `live`; `stale` means the premise
 - Directories with no registered task:
   - `jarvis-autonomous-watchdog` (May AFK tick; calls the retired `mcp__memory__*` tools);
   - `weekly-self-improve` (Saturday self-improvement → PR).
-- `~/.claude/daemon/pipe.key` is also present.
 
 ---
 

@@ -1,7 +1,7 @@
 # Interactive `/implement` — locked acceptance criteria (2026-10-01)
 
 Grill rounds 1–3 + Phase 3 dispositions D1–D6. Raw critic verdict: [`04-critic-raw.md`](./04-critic-raw.md) (S1–S7).
-Decision journal: `decisions.md` entries "`/implement` grill, round 1/2/3", "Phase 3 pivot", "AC-lock".
+Decision journal (operator-local, not published): `decisions.md` entries "`/implement` grill, round 1/2/3", "Phase 3 pivot", "AC-lock".
 
 Scope: the **interactive** skill only. The AFK half (`implement-afk`, auto-pickup, planner, headless gates) is
 designed in the jarvis milestone "AFK orchestration". ACs marked **[interim]** sit on one of the four coupling

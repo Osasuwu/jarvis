@@ -4,6 +4,11 @@ Date: 2026-09-30. Status: **research done, no direction approved, design not loc
 is the input to the `/grill` session that locks the design; it is not the design. Evidence lives
 beside it in [`implement-skill-redesign-2026-09-30/`](./implement-skill-redesign-2026-09-30/).
 
+> Published here 2026-10-01 from the operator repo. 01 is not published; the user's quotes from
+> it are paraphrased in English. The grill locked the interactive design on 2026-10-01: see
+> [`05-locked-acs.md`](./implement-skill-redesign-2026-09-30/05-locked-acs.md) and the raw
+> critic verdict in [`04-critic-raw.md`](./implement-skill-redesign-2026-09-30/04-critic-raw.md).
+
 ## The job the skill has to keep doing
 
 Take one GitHub issue, by bare number, from "open" to "reviewable PR" with nobody watching: check
@@ -17,7 +22,7 @@ not trade that for ceremony.
 
 | # | File | What it is |
 |---|---|---|
-| 01 | jarvis-private `evidence/implement-skill-redesign-2026-09-30/01-session-audit.md` (private: local transcripts) | Every `/implement` execution in the local transcripts of one device, 2026-07-22 → 09-30: 365 distinct executions (the earlier index's 663 rows were inflated by compaction replays), 262 of them work runs, 257 with a PR; 42 deep-read. |
+| 01 | `01-session-audit.md` — *not published* (audits local session transcripts; kept in the operator repo) | Every `/implement` execution in the local transcripts of one device, 2026-07-22 → 09-30: 365 distinct executions (the earlier index's 663 rows were inflated by compaction replays), 262 of them work runs, 257 with a PR; 42 deep-read. |
 | 02 | `02-external-evidence.md` | The skill's own four external citations checked against their sources, plus 2025–26 evidence on eight practices the skill encodes, each claim with URL and direct quote. |
 | 03 | `03-citation-audit.md` | Independent fresh-context check of all 186 claims in 02: 151 supported, 29 supported with a caveat, 5 overstated, 1 wrong source, 0 quotes not found. Where 02 and 03 disagree, this brief follows 03. |
 
@@ -54,8 +59,8 @@ evidence), audit numbers come from a subagent's scan and were not re-counted by 
    same person in the same window. `/grill` follows in the same session in 60 of 72, and in 15
    the grill span then does the implementation itself. 38 issues are never re-submitted to
    `/implement`. One trigger ("public API / contract") accounts for 54 of 72. The exit itself is
-   cheap (median 6 tool calls). User reactions on record: "это tier:1-auto задача, какой grill?",
-   "grill не нужен, решение лёгкое", "запусти /grill но быстро" twice. (01 §Q3.)
+   cheap (median 6 tool calls). User reactions on record, paraphrased: this is a tier-1 auto task, why a grill;
+   no grill needed, the decision is easy; and, twice, run the grill but quickly. (01 §Q3.)
 
 4. **The merge rule keys on a label that half the PRs do not carry.** §7.5 lets the authoring
    session merge LOW and MEDIUM. 129 of 257 PR bodies state no risk level; 59 of those were
