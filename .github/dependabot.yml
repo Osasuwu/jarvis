@@ -4,17 +4,28 @@ updates:
   # Dependabot updates the ranges in pyproject.toml; uv.lock is regenerated
   # automatically by dependabot-lockfile.yml on each dependabot push. CI
   # verifies parity with `uv lock --check` in the lockfile-check job.
+  #
+  # Monthly + grouped (#1964): a Dependabot PR is untrusted for the code-gate
+  # (its review is a maintainer `workflow_dispatch`, see
+  # docs/reference/github-repo-setup.md §3), so each PR costs a manual review.
+  # One grouped PR per ecosystem per month keeps that cost bounded.
   - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     target-branch: main
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
 
   # GitHub Actions
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     target-branch: main
+    groups:
+      github-actions:
+        patterns:
+          - "*"
