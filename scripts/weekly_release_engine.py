@@ -329,9 +329,14 @@ def trust_ramp_state(prior_releases: list[dict]) -> str:
     applies the rule to whatever release history is handed to it.
 
     Rule: the first 3 releases for a repo are drafts published by the
-    operator. Once the 3 most-recent releases were each published without
-    a post-publish edit, the skill auto-publishes going forward (threshold
-    lowered 4 -> 3 once the routine had proven itself, #1761).
+    operator. Once the 3 most-recent releases are all published (none still
+    a pending draft), the skill auto-publishes going forward (threshold
+    lowered 4 -> 3 once the routine had proven itself, #1971).
+
+    The `edited_after_publish` guard is honoured here but currently inert:
+    the gather adapter always supplies False, since the GitHub releases API
+    exposes no post-publish-edit signal. In practice the ramp gates on
+    published status alone — accepted by the owner for #1971.
     `prior_releases` is ordered most-recent-first; each entry needs
     `published: bool` and `edited_after_publish: bool`.
     """
