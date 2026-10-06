@@ -143,10 +143,19 @@ jobs:
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
             # Mechanical backstop for the prompt's "never edit" ask above —
             # this job's own workflow/hooks/settings, plus the real T2 set
-            # from `.claude/hooks/protected-files.py`, are Edit/Write-denied
-            # here so the worker can't self-modify or blind its own guard
-            # even on a bad turn. Path-scoped, not a whole-tool deny, so
-            # normal implementation edits elsewhere stay unaffected.
+            # from `.claude/hooks/protected-files.py`, are Edit-denied here
+            # so the worker can't self-modify or blind its own guard even on
+            # a bad turn. Path-scoped, not a whole-tool deny, so normal
+            # implementation edits elsewhere stay unaffected.
+            #
+            # `Edit(path)` is the only path rule Claude Code checks for
+            # writes, and it covers every built-in file-editing tool (Write
+            # and NotebookEdit included). A `Write(path)` rule is accepted
+            # but never consulted, and only prints a startup warning, so
+            # there are none here (#1976). What these rules do NOT reach is
+            # a subprocess that opens files itself — a Python script under
+            # `pytest`, say — so they bind the agent's own tool calls, not
+            # everything that runs in its shell.
             #
             # The Bash entries below catch the common spellings of a
             # force-push/history-rewrite (`git push --force`/`-f`/
@@ -166,7 +175,7 @@ jobs:
             # pushes to its own fresh `claude/issue-N-*` branch, so even a
             # successful force-push/amend here is blast-radius-limited to
             # a branch nobody else has based work on.
-            --disallowed-tools "Edit(./.github/workflows/**)" "Write(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Write(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Write(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Write(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Write(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Write(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Write(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Write(./scripts/principal.py)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git push --force-with-lease:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
+            --disallowed-tools "Edit(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git push --force-with-lease:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
 
       # #1806 AC2: the trial run's PR must land via auto-merge, not a human
       # click. Nothing in this repo enabled auto-merge after #1796 culled the
