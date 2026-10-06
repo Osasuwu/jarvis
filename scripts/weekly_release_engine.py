@@ -156,15 +156,20 @@ def format_goal_section(goals: list[dict]) -> str:
     """0/1 active goal (with movement) -> narrative prose; >=2 -> a
     🎯-anchored split, one bullet per goal. Goals with no movement in the
     window (`no_movement=True`) are omitted entirely from either format —
-    the section is a progress note, not a goal inventory."""
+    the section is a progress note, not a goal inventory.
+
+    Russian like every other structural section (format_retraction_section,
+    format_window_disclosure) — release bodies are Russian-primary; a
+    `lang=ru,en` repo gets its English via the agent-authored `<details>`
+    block, not from these formatters (#1761)."""
     moved = [g for g in goals if not g.get("no_movement")]
     if not moved:
         return ""
     if len(moved) <= 1:
         g = moved[0]
         progress = g.get("progress_note") or g.get("title", "")
-        return f"This week's focus was **{g.get('title', g.get('slug', ''))}**: {progress}"
-    lines = ["## 🎯 Goals"]
+        return f"В фокусе недели — **{g.get('title', g.get('slug', ''))}**: {progress}"
+    lines = ["## 🎯 Цели"]
     for g in moved:
         note = g.get("progress_note") or ""
         lines.append(f"- 🎯 **{g.get('title', g.get('slug', ''))}** — {note}".rstrip(" —"))
@@ -267,10 +272,14 @@ def format_window_disclosure(window_start: str, window_end: str, truncated: bool
     actually capped). Otherwise a one-line disclosure of the covered period,
     structural like format_retraction_section's heading — never passed
     through lint_release_notes (it cites no PR/issue, it states the window
-    itself, which the caller already trusts as gathered fact)."""
+    itself, which the caller already trusts as gathered fact).
+
+    Renders dates only: the window bounds arrive as full ISO-8601 timestamps
+    (`2026-08-31T13:15:09.775515+00:00`), which is noise in reader-facing
+    text (#1761)."""
     if not truncated:
         return ""
-    return f"_Покрывает период с {window_start} по {window_end}._"
+    return f"_Покрывает период с {window_start[:10]} по {window_end[:10]}._"
 
 
 # -- Draft-aware anchor window (AC11) ----------------------------------------
@@ -320,21 +329,30 @@ def compute_window(
 # -- Trust ramp (AC10) --------------------------------------------------------
 
 
+TRUST_RAMP_RELEASES = 3
+
+
 def trust_ramp_state(prior_releases: list[dict]) -> str:
     """ "draft" or "auto". Read live from the GitHub releases API by the
     caller (no local state, per the issue text) — this function only
     applies the rule to whatever release history is handed to it.
 
-    Rule: the first 4 releases for a repo are drafts published by the
-    operator. Once the 4 most-recent releases were each published without
-    a post-publish edit, the skill auto-publishes going forward.
+    Rule: the first 3 releases for a repo are drafts published by the
+    operator. Once the 3 most-recent releases are all published (none still
+    a pending draft), the skill auto-publishes going forward (threshold
+    lowered 4 -> 3 once the routine had proven itself, #1971).
+
+    The `edited_after_publish` guard is honoured here but currently inert:
+    the gather adapter always supplies False, since the GitHub releases API
+    exposes no post-publish-edit signal. In practice the ramp gates on
+    published status alone — accepted by the owner for #1971.
     `prior_releases` is ordered most-recent-first; each entry needs
     `published: bool` and `edited_after_publish: bool`.
     """
-    if len(prior_releases) < 4:
+    if len(prior_releases) < TRUST_RAMP_RELEASES:
         return "draft"
-    last_four = prior_releases[:4]
-    if all(r.get("published") and not r.get("edited_after_publish") for r in last_four):
+    recent = prior_releases[:TRUST_RAMP_RELEASES]
+    if all(r.get("published") and not r.get("edited_after_publish") for r in recent):
         return "auto"
     return "draft"
 
