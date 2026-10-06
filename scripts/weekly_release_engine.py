@@ -156,15 +156,20 @@ def format_goal_section(goals: list[dict]) -> str:
     """0/1 active goal (with movement) -> narrative prose; >=2 -> a
     🎯-anchored split, one bullet per goal. Goals with no movement in the
     window (`no_movement=True`) are omitted entirely from either format —
-    the section is a progress note, not a goal inventory."""
+    the section is a progress note, not a goal inventory.
+
+    Russian like every other structural section (format_retraction_section,
+    format_window_disclosure) — release bodies are Russian-primary; a
+    `lang=ru,en` repo gets its English via the agent-authored `<details>`
+    block, not from these formatters (#1761)."""
     moved = [g for g in goals if not g.get("no_movement")]
     if not moved:
         return ""
     if len(moved) <= 1:
         g = moved[0]
         progress = g.get("progress_note") or g.get("title", "")
-        return f"This week's focus was **{g.get('title', g.get('slug', ''))}**: {progress}"
-    lines = ["## 🎯 Goals"]
+        return f"В фокусе недели — **{g.get('title', g.get('slug', ''))}**: {progress}"
+    lines = ["## 🎯 Цели"]
     for g in moved:
         note = g.get("progress_note") or ""
         lines.append(f"- 🎯 **{g.get('title', g.get('slug', ''))}** — {note}".rstrip(" —"))
@@ -267,10 +272,14 @@ def format_window_disclosure(window_start: str, window_end: str, truncated: bool
     actually capped). Otherwise a one-line disclosure of the covered period,
     structural like format_retraction_section's heading — never passed
     through lint_release_notes (it cites no PR/issue, it states the window
-    itself, which the caller already trusts as gathered fact)."""
+    itself, which the caller already trusts as gathered fact).
+
+    Renders dates only: the window bounds arrive as full ISO-8601 timestamps
+    (`2026-08-31T13:15:09.775515+00:00`), which is noise in reader-facing
+    text (#1761)."""
     if not truncated:
         return ""
-    return f"_Покрывает период с {window_start} по {window_end}._"
+    return f"_Покрывает период с {window_start[:10]} по {window_end[:10]}._"
 
 
 # -- Draft-aware anchor window (AC11) ----------------------------------------

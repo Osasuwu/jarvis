@@ -42,3 +42,16 @@ def test_no_movement_goals_are_omitted_even_in_split_mode():
     ]
     text = format_goal_section(goals)
     assert "Stale personal goal" not in text
+
+
+def test_goal_section_prose_is_russian_like_the_rest_of_the_body():
+    # #1761: release bodies are Russian-primary; no English template text.
+    one = format_goal_section([{"slug": "g1", "title": "Релизы", "progress_note": "S1"}])
+    assert one == "В фокусе недели — **Релизы**: S1"
+    two = format_goal_section(
+        [
+            {"slug": "g1", "title": "A", "progress_note": "x"},
+            {"slug": "g2", "title": "B", "progress_note": "y"},
+        ]
+    )
+    assert two.splitlines()[0] == "## 🎯 Цели"
