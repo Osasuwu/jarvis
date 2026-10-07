@@ -64,7 +64,7 @@ def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
 _DOCS_ONLY_CRITERION = "docs-only"
 
 # Root markdown that is executable process, not documentation about it: an
-# agent reads these as rules, so a change to one is a behavior change.
+# agent reads these as rules, so changing one is a behavior change.
 # `CLAUDE.md` stays although this repo has none since #1955: a root CLAUDE.md
 # that reappeared would shadow AGENTS.md and be read as rules, so it must still
 # count as behavior; the entry is free while the file is absent.
