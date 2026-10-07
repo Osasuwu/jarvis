@@ -37,7 +37,7 @@ class ParsedPlan:
 
 # Public: the heading/next-heading section-scoping recipe consumed by
 # `## Plan` section replacement logic (formerly agents.plan_section,
-# demolished with reactive-core in #1802).
+# removed with reactive-core in #1802).
 HEADING_RE = re.compile(r"^##\s*Plan\s*$", re.MULTILINE)
 NEXT_HEADING_RE = re.compile(r"^#{1,6}(?:\s|$)", re.MULTILINE)
 _HEADING_RE = HEADING_RE
