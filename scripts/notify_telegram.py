@@ -20,8 +20,7 @@ Usage::
 
 from __future__ import annotations
 
-import json  # TEMP-1911
-X = {  "a":1,"b" :2 }
+import json
 import os
 import sys
 import urllib.error
