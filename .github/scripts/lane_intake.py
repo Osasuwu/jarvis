@@ -1,0 +1,180 @@
+"""Intake gate for the AFK lane: decide, before the worker starts, whether to dispatch.
+
+Runs from the `intake` job of `.github/workflows/agent-dispatch.yml` on an
+`agent:dispatch` label event (decisions D6, D8, D9 in docs/decisions/2026-Q4.md).
+The label is a human's go signal, but the issue body is attacker-reachable text
+the worker will follow, so the gate binds the signal to the exact body the human
+saw and refuses anything already claimed, finished or blocked.
+
+On a refusal it leaves exactly one issue comment naming the rule and the worker
+does not start. On a pass it removes `agent:dispatch` and sets
+`status:in-progress`. Either way it writes `pass=true|false` to `GITHUB_OUTPUT`.
+The lane never applies a class label itself: `afk:1-auto` / `afk:2-plan` come
+from a human or an interactive skill.
+
+Rules run in a fixed order and the first failure is the only one reported.
+
+Stdlib only: the job needs no dependency install.
+"""
+
+import json
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
+
+DISPATCH = "agent:dispatch"
+IN_PROGRESS = "status:in-progress"
+CLASS_LABELS = ("afk:1-auto", "afk:2-plan")
+HUMAN_ONLY = "afk:3-human"
+IN_FLIGHT = (IN_PROGRESS, "status:review", "status:rework-in-progress")
+# The machine user the lane's own writes come from (D1); any edit of the body by it
+# after a human wrote it means the lane rewrote its own input.
+DEFAULT_BOT_LOGIN = "osasuwu-bot"
+
+FACTS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      userContentEdits(first: 100) { nodes { editor { login } } }
+      closedByPullRequestsReferences(first: 5, includeClosedPrs: false) { nodes { number } }
+    }
+  }
+}
+"""
+
+
+def _body_changed(facts, payload_body, bot):
+    if (facts["body"] or "") != (payload_body or ""):
+        return (
+            "body-changed",
+            "issue body changed after `agent:dispatch` was applied; re-apply the label to"
+            " dispatch the current body",
+        )
+
+
+def _bot_edited(facts, payload_body, bot):
+    if bot in facts["editors"]:
+        return "bot-edited", f"issue body carries an edit by `{bot}`"
+
+
+def _unclassified(facts, payload_body, bot):
+    labels = facts["labels"]
+    if any(name in labels for name in CLASS_LABELS):
+        return None
+    if HUMAN_ONLY in labels:
+        return (
+            "unclassified",
+            f"labelled `{HUMAN_ONLY}`, which is never dispatched; it needs `afk:1-auto` or"
+            " `afk:2-plan`",
+        )
+    return "unclassified", "no `afk:1-auto` or `afk:2-plan` label; classify the issue first"
+
+
+def _closed(facts, payload_body, bot):
+    if facts["state"] != "open":
+        return "closed", "issue is closed"
+
+
+def _claimed_by_pr(facts, payload_body, bot):
+    if facts["closing_prs"]:
+        return "claimed-by-pr", f"open PR #{facts['closing_prs'][0]} already closes this issue"
+
+
+def _in_flight(facts, payload_body, bot):
+    for name in IN_FLIGHT:
+        if name in facts["labels"]:
+            return "in-flight-status", f"issue carries `{name}`"
+
+
+def _blocked(facts, payload_body, bot):
+    # A missing summary is unknown, not zero: fail closed.
+    if facts.get("blocked_by", 1) != 0:
+        return "blocked", "issue has an open blocker"
+
+
+RULES = (_body_changed, _bot_edited, _unclassified, _closed, _claimed_by_pr, _in_flight, _blocked)
+
+
+def check(facts, payload_body, bot=DEFAULT_BOT_LOGIN):
+    """Return None to dispatch, else `(rule_name, message)` for the first rule that fails."""
+    for rule in RULES:
+        refusal = rule(facts, payload_body, bot)
+        if refusal:
+            return refusal
+    return None
+
+
+def _request(method, path, body=None):
+    req = urllib.request.Request(
+        f"https://api.github.com/{path}",
+        method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={
+            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(req) as resp:
+        raw = resp.read()
+    return json.loads(raw) if raw else None
+
+
+def fetch_facts(repo, number):
+    """Read the issue as it is now, not as the `labeled` event described it."""
+    issue = _request("GET", f"repos/{repo}/issues/{number}")
+    owner, name = repo.split("/", 1)
+    data = _request(
+        "POST",
+        "graphql",
+        {"query": FACTS_QUERY, "variables": {"owner": owner, "name": name, "number": int(number)}},
+    )
+    if data.get("errors"):
+        raise RuntimeError(f"GraphQL lookup failed: {data['errors']}")
+    node = data["data"]["repository"]["issue"]
+    summary = issue.get("issue_dependencies_summary") or {}
+    facts = {
+        "body": issue.get("body"),
+        "state": issue["state"],
+        "labels": [label["name"] for label in issue.get("labels", [])],
+        "editors": [
+            (edit.get("editor") or {}).get("login") for edit in node["userContentEdits"]["nodes"]
+        ],
+        "closing_prs": [pr["number"] for pr in node["closedByPullRequestsReferences"]["nodes"]],
+    }
+    if "blocked_by" in summary:
+        facts["blocked_by"] = summary["blocked_by"]
+    return facts
+
+
+def _remove_label(repo, number, name):
+    try:
+        _request("DELETE", f"repos/{repo}/issues/{number}/labels/{urllib.parse.quote(name)}")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+
+def main():
+    repo = os.environ["GITHUB_REPOSITORY"]
+    number = os.environ["ISSUE_NUMBER"]
+    bot = os.environ.get("LANE_BOT_LOGIN", DEFAULT_BOT_LOGIN)
+    refusal = check(fetch_facts(repo, number), os.environ.get("PAYLOAD_BODY"), bot)
+    if refusal:
+        rule, message = refusal
+        _request(
+            "POST",
+            f"repos/{repo}/issues/{number}/comments",
+            {"body": f"Lane intake refused dispatch: `{rule}`. {message}."},
+        )
+    else:
+        _request("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [IN_PROGRESS]})
+        _remove_label(repo, number, DISPATCH)
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+        out.write(f"pass={'false' if refusal else 'true'}\n")
+    print(f"#{number}: {'refused ' + refusal[0] if refusal else 'dispatched'}")
+
+
+if __name__ == "__main__":
+    main()

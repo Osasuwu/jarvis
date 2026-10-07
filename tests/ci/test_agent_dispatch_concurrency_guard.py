@@ -15,11 +15,16 @@ on an issue joined the group:
 Neither errors. The measured trace was 53 ``cancelled`` runs out of 223, every
 one a non-dispatch label event cancelled by a sibling from the same label
 burst. The fix makes the group key depend on the label: dispatch events share
-a per-issue group, every other event gets a group unique to its own run.
+one group, every other event gets a group unique to its own run.
+
+#2005 (D15, F7) widened the shared group from per-issue to per-repo and moved
+to ``queue: max`` with no ``cancel-in-progress``: the default ``queue: single``
+cancels the older pending run, so a batch of dispatches would lose its middle
+run with no artifact.
 
 The invariant pinned here is the one the workflow has to hold, stated without
-reference to how the key is spelled: **a run joins the per-issue group if and
-only if its worker job runs.** The tests evaluate the expressions actually
+reference to how the key is spelled: **a run joins the dispatch group if and
+only if its intake job runs** (the worker is gated on intake's output). The tests evaluate the expressions actually
 written in the workflow file (``evaluate`` below covers the subset of GitHub's
 expression syntax they use), so a rewrite that keeps the behaviour passes and
 one that drops the label from the key fails.
@@ -123,6 +128,7 @@ def event(label: str, issue: int, run_id: int) -> dict[str, object]:
     return {
         "github.event.label.name": label,
         "github.event.issue.number": issue,
+        "github.repository": "Osasuwu/jarvis",
         "github.run_id": run_id,
     }
 
@@ -143,22 +149,24 @@ def group_of(concurrency: dict, ctx: dict[str, object]) -> str:
     return str(evaluate(concurrency["group"], ctx))
 
 
-class TestDispatchRunsShareOneGroupPerIssue:
+class TestDispatchRunsShareOneGroupPerRepo:
     def test_relabel_lands_in_the_same_group(self, concurrency):
         # The documented retry: remove `agent:dispatch`, add it again. The
-        # second run must find the first one in its group to cancel it.
+        # second run must find the first one in its group to queue behind it.
         first = group_of(concurrency, event(DISPATCH_LABEL, issue=1936, run_id=100))
         second = group_of(concurrency, event(DISPATCH_LABEL, issue=1936, run_id=200))
         assert first == second
 
-    def test_relabel_cancels_the_in_flight_worker(self, concurrency):
-        ctx = event(DISPATCH_LABEL, issue=1936, run_id=200)
-        assert evaluate(concurrency["cancel-in-progress"], ctx) is True
+    def test_pending_dispatches_queue_instead_of_cancelling(self, concurrency):
+        # `queue: single` (the default) cancels the older pending run; `queue: max`
+        # keeps them all. `cancel-in-progress: true` is a validation error beside it.
+        assert concurrency.get("queue") == "max"
+        assert "cancel-in-progress" not in concurrency
 
-    def test_different_issues_do_not_share_a_group(self, concurrency):
+    def test_different_issues_share_the_repo_group(self, concurrency):
         a = group_of(concurrency, event(DISPATCH_LABEL, issue=180, run_id=100))
         b = group_of(concurrency, event(DISPATCH_LABEL, issue=1806, run_id=200))
-        assert a != b
+        assert a == b
 
 
 class TestOtherLabelsCannotTouchAWorker:
@@ -186,27 +194,28 @@ class TestOtherLabelsCannotTouchAWorker:
         other = group_of(concurrency, event("bug", issue=7, run_id=1936))
         assert other != worker
 
-    @pytest.mark.parametrize("label", OTHER_LABELS)
-    def test_other_label_does_not_cancel_in_progress(self, concurrency, label):
-        ctx = event(label, issue=1936, run_id=200)
-        assert evaluate(concurrency["cancel-in-progress"], ctx) is False
-
 
 class TestGroupAndJobConditionAgree:
     @pytest.mark.parametrize("label", [DISPATCH_LABEL, *OTHER_LABELS])
-    def test_run_joins_worker_group_iff_worker_job_runs(self, workflow, concurrency, label):
-        # The label literal lives in two places (the job `if` and the group
-        # key). If they drift, either the worker runs unguarded or a skipped
-        # run cancels it.
+    def test_run_joins_worker_group_iff_intake_job_runs(self, workflow, concurrency, label):
+        # The label literal lives in two places (the intake job `if` and the
+        # group key). If they drift, either intake runs unguarded or a skipped
+        # run holds the queue.
         ctx = event(label, issue=1936, run_id=200)
-        worker_runs = bool(_evaluate_expression(str(workflow["jobs"]["worker"]["if"]), ctx))
+        worker_runs = bool(_evaluate_expression(str(workflow["jobs"]["intake"]["if"]), ctx))
         worker_group = group_of(concurrency, event(DISPATCH_LABEL, issue=1936, run_id=100))
         assert (group_of(concurrency, ctx) == worker_group) is worker_runs
 
-    def test_worker_job_declares_no_group_of_its_own(self, workflow):
+    def test_worker_runs_only_after_intake_passes(self, workflow):
+        worker = workflow["jobs"]["worker"]
+        assert worker["needs"] == "intake"
+        assert worker["if"] == "needs.intake.outputs.pass == 'true'"
+
+    @pytest.mark.parametrize("job", ["intake", "worker"])
+    def test_job_declares_no_group_of_its_own(self, workflow, job):
         # A second, job-level group keyed on the issue would bring the same
         # bug back through a side door.
-        assert "concurrency" not in workflow["jobs"]["worker"]
+        assert "concurrency" not in workflow["jobs"][job]
 
 
 class TestGuardDetectsTheOriginalBug:

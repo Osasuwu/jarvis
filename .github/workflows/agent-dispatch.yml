@@ -1,40 +1,74 @@
 name: Agent Dispatch
 
-# The worker runs once per `agent:dispatch` label-add. The WORKFLOW still
-# starts on every label-add: `issues: labeled` has no label filter, so the
-# job condition below is what narrows it to the one label this workflow
-# reacts to. Other-label churn on the same issue produces a run whose only
-# job is skipped — never a worker run.
+# The worker runs once per `agent:dispatch` label-add, and only after the
+# `intake` job lets the issue through. The WORKFLOW still starts on every
+# label-add: `issues: labeled` has no label filter, so the job conditions
+# below narrow it to the one label this workflow reacts to. Other-label churn
+# on the same issue produces a run whose jobs are all skipped — never a worker
+# run.
 on:
   issues:
     types: [labeled]
 
-# One worker per issue at a time; a second `agent:dispatch` re-label (e.g.
-# after removing it to retry a failed run, per dispatch/SKILL.md's
-# recovery note) cancels an in-flight run for the same issue rather than
-# racing it.
+# One worker per host repo at a time (D15, F7 in docs/decisions/2026-Q4.md):
+# the group is per repository, and `queue: max` keeps up to 100 pending runs
+# instead of the default `queue: single`, which cancels the older pending run
+# — a three-issue batch would lose its middle run with no artifact. A retry
+# (removing `agent:dispatch` and re-applying it, per dispatch/SKILL.md's
+# recovery note) therefore waits its turn rather than cancelling the run in
+# flight. `queue: max` cannot be combined with `cancel-in-progress: true`.
 #
-# The group key depends on the label, not just the issue (#1936).
+# The group key depends on the label, not just the repo (#1936).
 # Workflow-level concurrency is resolved when the run is queued, BEFORE the
-# job `if` below is evaluated, so a group keyed on the issue number alone
-# takes in every label event on that issue: any label added mid-run would
-# cancel the in-flight worker and then skip its own job, and an
-# `agent:dispatch` applied in one call with other labels could itself be
-# cancelled as `pending` by a sibling event. Non-dispatch events therefore
-# get a group unique to their own run (`github.run_id`, the fallback GitHub's
-# concurrency docs use for the same purpose), which nothing else can ever
-# join — they can neither cancel nor be cancelled.
+# job `if` below is evaluated, so a group keyed on the repo alone would make
+# every label event on any issue wait behind a running worker. Non-dispatch
+# events therefore get a group unique to their own run (`github.run_id`, the
+# fallback GitHub's concurrency docs use for the same purpose), which nothing
+# else can ever join — they can neither queue behind nor block a worker.
 #
 # Kept at workflow level rather than moved onto the job: whether a job-level
 # `concurrency` is applied before or after that job's `if` is not documented,
 # and this form does not depend on the answer.
 concurrency:
-  group: ${{ github.event.label.name == 'agent:dispatch' && format('agent-dispatch-issue-{0}', github.event.issue.number) || format('agent-dispatch-noop-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event.label.name == 'agent:dispatch' }}
+  group: ${{ github.event.label.name == 'agent:dispatch' && format('agent-dispatch-{0}', github.repository) || format('agent-dispatch-noop-{0}', github.run_id) }}
+  queue: max
 
 jobs:
-  worker:
+  # Deterministic gate in front of the worker (D6, D8, D9): refuses unless the
+  # issue body is the one the human labelled, a class label is on it, and
+  # nothing already claims it. A refusal leaves one issue comment naming the
+  # rule and the worker never starts; a pass swaps `agent:dispatch` for
+  # `status:in-progress`. Rules and rationale: .github/scripts/lane_intake.py.
+  #
+  # Default GITHUB_TOKEN with no checkout of the issue's content: the job
+  # runs repo code from the default branch only, never anything the issue body
+  # supplies, and its writes are a comment and two labels.
+  intake:
     if: github.event.label.name == 'agent:dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    outputs:
+      pass: ${{ steps.intake.outputs.pass }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Run lane intake
+        id: intake
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PAYLOAD_BODY: ${{ github.event.issue.body }}
+        run: python3 .github/scripts/lane_intake.py
+
+  worker:
+    needs: intake
+    if: needs.intake.outputs.pass == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -77,9 +111,11 @@ jobs:
                title,body,labels,milestone` — read the full issue body,
                including any `## Decisions` / `## Plan` section.
             2. Preflight per AGENTS.md: confirm nobody already claimed this
-               issue (assignee, `status:in-progress`, an open PR, an
-               existing `claude/issue-${{ github.event.issue.number }}-*`
-               branch). If claimed, stop and do nothing.
+               issue (assignee, an open PR, an existing
+               `claude/issue-${{ github.event.issue.number }}-*` branch).
+               The intake job already set `status:in-progress` for this
+               run; that label is not a claim by someone else. If claimed,
+               stop and do nothing.
             3. Branch from `main`:
                `claude/issue-${{ github.event.issue.number }}-<slug>`.
             4. Implement every acceptance-criteria bullet. Run the repo's
