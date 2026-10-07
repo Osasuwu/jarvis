@@ -41,7 +41,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **`needs-human`** — AFK escalation label, applied by the lane's post-step (never the LLM); intake refuses it.
 - **N-run gate** — 10 runs past intake, ≥6 merged untouched, by 2026-11-18, before the lane grows.
 - **Dispatchable issue** — write-access author, classified `afk:1-auto`/`afk:2-plan`, live body equal to the `labeled` payload body.
-- **Lane intake** — deterministic label-keyed refusal job replacing `/dispatch`'s gate (#1959); refuses unclassified, claimed, in-flight or blocked issues.
+- **Lane intake** — refusal job replacing `/dispatch`'s gate (#1959); refuses unclassified, claimed, in-flight or blocked issues.
 - **In-flight (dispatch dedup)** — historical, orphaned post-#1802/#1803; superseded by lane intake's live claim checks.
 - **AFK-fit checklist** — Four-question gate at slice creation deciding the `sandcastle` label.
 - **Strategic-ideation lane (C15)** — Strategy-generation arm: produces non-memory improvement proposals; owner-gated.
@@ -150,7 +150,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **`needs-human`** — escalation label (never an assignee), applied by an `always()` post-step on any no-PR ending or by the red-check watcher, with a `run_id` comment and @-mention (D3); the worker has no writable token (D4).
 - **N-run gate** — first 10 runs past intake (≥3 per host, oldest-first), ≥6 merged without human code edits; fail or deadline freezes the lane (D13). Until then only lane-defect fixes, attack-path controls and deletions are built.
 - **Dispatchable issue** — write-access author, classified `afk:1-auto`/`afk:2-plan` (D6), live body equal to the `labeled` payload body (D9); labels come from a human or interactive `/to-tickets` / `/file-issue` / `/triage`, never the bot.
-- **Lane intake** — reusable-workflow job replacing `/dispatch` (#1959); refuses with a comment on `needs-*`, missing AC, `afk:3-human`, an unlocked plan (D5), or a closed/claimed/in-flight/blocked issue (D8); on pass sets `status:in-progress`, removes `agent:dispatch` (D14). **Planner** runs only interactively; plans publish via `python -m agents.plan_lock publish`.
+- **Lane intake** — job replacing `/dispatch` (#1959); refuses on `needs-*`, missing AC, `afk:3-human`, a missing, malformed or edited `afk:2-plan` plan (D5), `afk:2-plan` outside a `LANE_CLASS2_AFK` host (D17), or a closed/claimed/in-flight/blocked issue (D8); on pass sets `status:in-progress`, removes `agent:dispatch` (D14). **Planner** runs only interactively; plans publish via `python -m agents.plan_lock publish`.
 
 ### Workflow vocabulary
 

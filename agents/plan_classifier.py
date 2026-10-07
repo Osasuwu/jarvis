@@ -2,15 +2,15 @@
 :func:`label_for` per #1707).
 
 Deep module, narrow interface: :func:`classify` is the single entry point
-consumed by four call sites (interactive lane, drain, container pick,
-CI diff-gate) — classification logic lives here once, not re-derived
+consumed by three call sites (interactive lane, drain, container pick) —
+classification logic lives here once, not re-derived
 per caller. Every threshold, glob, and criterion comes from a
 :class:`~agents.plan_review_config.PlanReviewConfig` — nothing here is
 hardcoded.
 
 Classification is two-point per decision `d34dd65a`: the same
 :func:`classify` call is used ex-ante (at admission, from an estimated
-change-set) and ex-post (on the actual diff after the CI diff-gate runs).
+change-set) and ex-post (on the actual diff, by the `risk-tier` check).
 
 :func:`classify` returns an ordinal ``1 | 2 | 3`` — not a ``class:N``
 string. :func:`label_for` is the single place that maps the ordinal to
@@ -48,9 +48,9 @@ def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
     Area = the top-level path component (directory, or the bare filename
     for a top-level file like `.mcp.json`) — the same unit
     `config/plan_review.yaml` documents for `min_prod_areas`. Shared by
-    every caller that needs to derive `prod_areas` from a path list (the CI
-    diff-gate from a real diff, the interactive lane from an estimate) —
-    one implementation, not a copy per caller.
+    every caller that needs to derive `prod_areas` from a path list (a real
+    diff, or the interactive lane's estimate) — one implementation, not a
+    copy per caller.
     """
     areas = set()
     for path in paths:
@@ -86,8 +86,8 @@ def _is_documentation_path(path: str) -> bool:
 def derive_mechanical_criteria(paths: tuple[str, ...]) -> tuple[str, ...]:
     """Criteria inferable from the paths alone (#1818).
 
-    `mechanical_criteria` has no producer in either lane — the CI diff-gate's
-    envelope carries no such key and `/implement` §3b passes none — so the
+    `mechanical_criteria` has no production producer — `/implement` §3b passes
+    none — so the
     exempt short-circuit in :func:`classify` was unreachable in production and
     a documentation-only change classified on raw thresholds. Deriving here,
     inside the one entry point that already holds both config and paths, fixes
@@ -153,7 +153,7 @@ def classify_task_row(config: PlanReviewConfig, row: dict[str, Any]) -> int:
     """Named class-2 bundle policy, readable per task row (AC7).
 
     The single entry point every consumer (interactive lane, drain,
-    container pick, CI diff-gate) calls against a ``task_queue``-shaped
+    container pick) calls against a ``task_queue``-shaped
     dict — same ``scope_files`` key convention as the reactive-core modules
     this classified for before they were demolished in #1802. Callers never
     re-derive the threshold conditions themselves; they read a task row and
