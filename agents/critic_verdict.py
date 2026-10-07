@@ -89,7 +89,7 @@ def _check_source_quote(source_path: object, source_quote: object) -> None:
     if not isinstance(source_quote, str) or not source_quote.strip():
         raise InvalidVerdictError("objection citing a decision missing 'source_quote'")
     try:
-        # Text mode reads with universal newlines, so the file side is LF.
+        # Text mode reads with universal newlines, so the on-disk side is LF.
         text = Path(source_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         raise InvalidVerdictError(f"source_path {source_path!r} is not readable: {exc}") from exc
