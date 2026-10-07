@@ -8,6 +8,18 @@ This file **grows organically** through `/grill` sessions — every time an impl
 
 ---
 
+**Section index** — this file is large and pull-only; read the one section you need, not the whole file (find it with `grep -n '^## ' CONTEXT.md`). One line per `##` section:
+
+- **Glossary** — read when a repo-specific term, flag, skill or mechanism name is unfamiliar; its `### Index` lists every term.
+- **Invariants** — read when you need the pointer to where the always-loaded invariants live (they are in `AGENTS.md`).
+- **Architectural shape** — read when you need to know what lives where in the repo, devices and paths, or the key flows.
+- **How to grow this file** — read when you are about to add or trim an entry here.
+- **Initial seeding rationale** — read when you wonder why the glossary is deliberately incomplete.
+
+**Research reports live in this repo's `docs/research/` and nowhere else.** `/research` and `/grill` sessions started from any other repo or directory must look here, not in their own tree.
+
+---
+
 ## Glossary
 
 Terms used across the codebase. Definitions are domain-meaningful, not implementation-detail. If a term doesn't carry weight beyond "the obvious" — don't add it.
