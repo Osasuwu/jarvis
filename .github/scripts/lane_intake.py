@@ -12,20 +12,33 @@ does not start. On a pass it removes `agent:dispatch` and sets
 The lane never applies a class label itself: `afk:1-auto` / `afk:2-plan` come
 from a human or an interactive skill.
 
+An `afk:2-plan` issue is dispatched only when its `## Plan` section verifies
+(`agents.plan_lock.verify_lock`, D5) and only in a host that sets
+`LANE_CLASS2_AFK=true` — class 2 runs AFK in the lane's home repo until the
+N-run gate passes (D17), so every other host is refused before the plan is read.
+
 Rules run in a fixed order and the first failure is the only one reported.
 
-Stdlib only: the job needs no dependency install.
+Stdlib plus `agents/plan_lock.py`, itself stdlib-only: the job needs no
+dependency install, only a sparse checkout of `.github/scripts` and `agents`.
 """
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from agents.plan_lock import MalformedPlanError, verify_lock  # noqa: E402
 
 DISPATCH = "agent:dispatch"
 IN_PROGRESS = "status:in-progress"
 CLASS_LABELS = ("afk:1-auto", "afk:2-plan")
+PLAN_CLASS = "afk:2-plan"
 HUMAN_ONLY = "afk:3-human"
 IN_FLIGHT = (IN_PROGRESS, "status:review", "status:rework-in-progress")
 # The machine user the lane's own writes come from (D1); any edit of the body by it
@@ -44,7 +57,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 """
 
 
-def _body_changed(facts, payload_body, bot):
+def _body_changed(facts, payload_body, bot, class2_host):
     if (facts["body"] or "") != (payload_body or ""):
         return (
             "body-changed",
@@ -53,12 +66,12 @@ def _body_changed(facts, payload_body, bot):
         )
 
 
-def _bot_edited(facts, payload_body, bot):
+def _bot_edited(facts, payload_body, bot, class2_host):
     if bot in facts["editors"]:
         return "bot-edited", f"issue body carries an edit by `{bot}`"
 
 
-def _unclassified(facts, payload_body, bot):
+def _unclassified(facts, payload_body, bot, class2_host):
     labels = facts["labels"]
     if any(name in labels for name in CLASS_LABELS):
         return None
@@ -71,35 +84,78 @@ def _unclassified(facts, payload_body, bot):
     return "unclassified", "no `afk:1-auto` or `afk:2-plan` label; classify the issue first"
 
 
-def _closed(facts, payload_body, bot):
+def _class2_host(facts, payload_body, bot, class2_host):
+    if PLAN_CLASS in facts["labels"] and not class2_host:
+        return (
+            "class2-host",
+            f"`{PLAN_CLASS}` runs AFK only in the lane's home repo until the N-run gate passes;"
+            " this host does not set `LANE_CLASS2_AFK`",
+        )
+
+
+def _plan_lock(facts, payload_body, bot, class2_host):
+    if PLAN_CLASS not in facts["labels"]:
+        return None
+    try:
+        intact = verify_lock(facts["body"] or "")
+    except MalformedPlanError as exc:
+        if exc.reason == "missing_heading":
+            return (
+                "plan-missing",
+                "no `## Plan` section; publish one with `python -m agents.plan_lock publish`",
+            )
+        return (
+            "plan-malformed",
+            f"the `## Plan` section is malformed ({exc.reason}); publish it with"
+            " `python -m agents.plan_lock publish`",
+        )
+    if not intact:
+        return (
+            "plan-edited",
+            "the `## Plan` lock does not match its steps: the plan was edited after the critic"
+            " panel; re-run the panel and republish",
+        )
+
+
+def _closed(facts, payload_body, bot, class2_host):
     if facts["state"] != "open":
         return "closed", "issue is closed"
 
 
-def _claimed_by_pr(facts, payload_body, bot):
+def _claimed_by_pr(facts, payload_body, bot, class2_host):
     if facts["closing_prs"]:
         return "claimed-by-pr", f"open PR #{facts['closing_prs'][0]} already closes this issue"
 
 
-def _in_flight(facts, payload_body, bot):
+def _in_flight(facts, payload_body, bot, class2_host):
     for name in IN_FLIGHT:
         if name in facts["labels"]:
             return "in-flight-status", f"issue carries `{name}`"
 
 
-def _blocked(facts, payload_body, bot):
+def _blocked(facts, payload_body, bot, class2_host):
     # A missing summary is unknown, not zero: fail closed.
     if facts.get("blocked_by", 1) != 0:
         return "blocked", "issue has an open blocker"
 
 
-RULES = (_body_changed, _bot_edited, _unclassified, _closed, _claimed_by_pr, _in_flight, _blocked)
+RULES = (
+    _body_changed,
+    _bot_edited,
+    _unclassified,
+    _class2_host,
+    _plan_lock,
+    _closed,
+    _claimed_by_pr,
+    _in_flight,
+    _blocked,
+)
 
 
-def check(facts, payload_body, bot=DEFAULT_BOT_LOGIN):
+def check(facts, payload_body, bot=DEFAULT_BOT_LOGIN, class2_host=False):
     """Return None to dispatch, else `(rule_name, message)` for the first rule that fails."""
     for rule in RULES:
-        refusal = rule(facts, payload_body, bot)
+        refusal = rule(facts, payload_body, bot, class2_host)
         if refusal:
             return refusal
     return None
@@ -160,7 +216,10 @@ def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     number = os.environ["ISSUE_NUMBER"]
     bot = os.environ.get("LANE_BOT_LOGIN", DEFAULT_BOT_LOGIN)
-    refusal = check(fetch_facts(repo, number), os.environ.get("PAYLOAD_BODY"), bot)
+    class2_host = os.environ.get("LANE_CLASS2_AFK") == "true"
+    refusal = check(
+        fetch_facts(repo, number), os.environ.get("PAYLOAD_BODY"), bot, class2_host=class2_host
+    )
     if refusal:
         rule, message = refusal
         _request(

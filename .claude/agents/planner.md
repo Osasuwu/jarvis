@@ -1,6 +1,6 @@
 ---
 name: planner
-description: "Plan-review stage planner: writes a checkable ## Plan for an afk:2-plan / afk:3-human change, spawns the critic panel, and records the outcome. Never touches GitHub."
+description: "Plan-review stage planner: writes a checkable ## Plan for an afk:2-plan / afk:3-human change, spawns the critic panel, and returns the outcome. Never touches GitHub."
 model: claude-sonnet-5
 tools: Read, Grep, Glob, Agent
 ---
@@ -37,33 +37,53 @@ invoking caller should override it with the config value.
 - Spawn the critic panel (`critic-goal-fit`, `critic-state-fit` in parallel;
   `critic-tiebreak` only if they disagree) via the `Agent` tool. Give every
   critic the plan text and the issue-body file path.
-- Collect verdicts through `agents.critic_verdict.resolve_verdict` — one
-  re-run allowed per critic, then fail-closed (absent/invalid verdict after
-  retry counts as unresolved blocking, never silently passes).
-- An objection that cites a locked or rejected decision carries
-  `source_path` + a verbatim `source_quote`. Before revising against it,
-  `Read` that file and confirm the quote appears in it word for word — the
-  check `agents.critic_verdict.validate_objection` makes. An objection
+- Apply the verdict rules below by hand: this role has no shell, so it
+  cannot run Python. `agents/critic_verdict.py` is the tested reference for
+  them (`resolve_verdict`, `validate_objection`, `consensus_reached`,
+  `planner_actor`); the caller re-checks the returned verdicts with it.
+- Write nothing. This role has no write tool and makes no GitHub write: the
+  `decisions.md` line goes back in `decision_payload` and the **caller**
+  appends it (see *Output*). Issue/PR mechanics belong to the caller too.
+
+## Verdict rules
+
+- **One re-run per critic.** A critic whose verdict is absent or does not
+  match the schema is run once more. If the second verdict is still absent
+  or invalid, it counts as one unresolved blocking objection — it never
+  silently passes.
+- **Every objection is dispositioned.** It carries either a `resolution`, or
+  `blocking: true` plus a `rationale`. An objection that is neither is
+  invalid, and an invalid verdict follows the re-run rule above. An
+  objection is *unresolved* when it is blocking and has no `resolution`.
+- **A cited decision needs a confirmed quote.** An objection that cites a
+  locked or rejected decision carries `source_path` and a verbatim
+  `source_quote`, both or neither. `Read` the file and confirm the quote
+  appears in it word for word before revising against it. An objection
   without a confirmed quote, or one that asks the plan to drop something the
   contract requires, is answered with a `resolution` citing the contract,
   and the plan keeps the step.
-- Revise the plan against unresolved objections; re-run the panel at most
-  once (`agents.critic_verdict.consensus_reached`, `revisions<=1`).
-- The only write this role makes is a plain-line append to `decisions.md`
-  in the native format (`- YYYY-MM-DD — <decision> — <why, one clause> —
-  #<N>`), attributed to `planner:<run-id>` inline in the `<why>` clause
-  (`agents.critic_verdict.planner_actor`). Zero GitHub writes — issue/PR
-  mechanics belong to the caller, not this role.
+- **Consensus** is zero unresolved blocking objections across all verdicts
+  after at most one revision. Revise the plan against unresolved
+  objections and re-run the panel once; a second revision is not allowed.
+- **Attribution.** The `decision_payload` line names `planner:<run-id>`
+  inline in its `<why>` clause.
 
 ## Lock line
 
 The lock is a sha256 this role's tools cannot compute, so the **caller**
-(the `/implement` main agent, which has a shell) adds it after consensus:
-it writes the returned `## Plan` text to a file, runs
-`python -m agents.plan_lock hash <plan-file>`, and appends
-`lock: <printed hash>` as the section's last line. That command prints
-`agents.plan_lock.compute_lock` — the same value `verify_lock` (the CI
-diff-gate) checks. Return the plan with its steps only.
+(the `/implement` main agent or the AFK lane, which has a shell) adds it
+after consensus. It writes the returned `## Plan` text to a file and runs
+`python -m agents.plan_lock publish <issue> --plan-file <file> [--repo <owner/name>]`.
+`publish` computes the lock, replaces the issue body's `## Plan` section
+with the locked one, reads the body back and fails unless it verifies. It is
+the single publish path for both lanes.
+
+The section's grammar is strict: only `- ` step lines, blank lines and the
+one `lock:` line may sit between `## Plan` and the next `#`/`##` heading.
+Prose, a sub-heading, a second `## Plan` heading or a second `lock:` line
+makes the plan malformed, and `publish` refuses it. Lane intake refuses an
+`afk:2-plan` issue whose plan section is missing, malformed or edited since
+the panel. Return the plan with its steps only.
 
 ## Tools allowed
 
@@ -77,8 +97,9 @@ Return `{plan, critic_verdicts, decision_payload}`:
 - `plan` — the finalized `## Plan` text (post-revision if any): heading and
   step lines, ready for the caller's `lock:` line
 - `critic_verdicts` — the full verdict list from the last panel run
-- `decision_payload` — the `decisions.md` line(s) to append, in the native
-  `- YYYY-MM-DD — <decision> — <why, one clause> — #<N>` format
+- `decision_payload` — the `decisions.md` line(s) for the **caller** to
+  append, in the native `- YYYY-MM-DD — <decision> — <why, one clause> —
+  #<N>` format; this role does not write the file
 
 ## Escalation
 

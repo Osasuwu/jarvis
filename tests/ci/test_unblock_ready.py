@@ -387,3 +387,118 @@ def test_an_unlabel_promotes_only_an_issue_that_was_once_blocked():
     assert unblock_ready.plan_unlabeled(_issue(["task"])) == (["status:ready"], [])
     never = {"state": "open", "labels": [], "issue_dependencies_summary": {"blocked_by": 0}}
     assert unblock_ready.plan_unlabeled(never) == ([], [])
+
+
+# --- reconcile: the scheduled pass for blockers closed in another repo (#1981) ---
+
+
+def _listed(number, labels=("task",), open_blockers=0, total_blockers=1, is_pr=False):
+    """An item as `GET /issues?state=open` returns it."""
+    item = {
+        "number": number,
+        "state": "open",
+        "labels": [{"name": n} for n in labels],
+        "issue_dependencies_summary": {
+            "blocked_by": open_blockers,
+            "total_blocked_by": total_blockers,
+        },
+    }
+    if is_pr:
+        item["pull_request"] = {"url": f"https://api.github.com/repos/owner/repo/pulls/{number}"}
+    return item
+
+
+def test_reconcile_promotes_an_issue_whose_every_blocker_has_closed():
+    assert unblock_ready.plan_reconcile(_listed(1)) == (["status:ready"], [])
+
+
+@pytest.mark.parametrize(
+    "issue",
+    [
+        _listed(1, open_blockers=1),
+        _listed(1, labels=("task", "status:in-progress")),
+        _listed(1, labels=("task", "status:hardware-pending")),
+        _listed(1, labels=("task", "needs-grill")),
+        _listed(1, total_blockers=0),
+        _listed(1, is_pr=True),
+    ],
+    ids=["open-blocker", "status-label", "hardware-status", "needs-label", "never-blocked", "pr"],
+)
+def test_reconcile_adds_nothing_to_an_issue_that_is_not_freshly_unblocked(issue):
+    assert unblock_ready.plan_reconcile(issue) == ([], [])
+
+
+def test_reconcile_leaves_an_issue_that_already_carries_ready_alone():
+    assert unblock_ready.plan_reconcile(_listed(1, labels=("status:ready",))) == ([], [])
+
+
+def _reconcile_api(pages, calls):
+    """Stub `_api` for a reconcile: `pages` is the open-issue listing, keyed by page.
+
+    A single issue's GET answers from the same data, as the real endpoint does.
+    """
+    by_number = {i["number"]: i for items in pages.values() for i in items}
+
+    def fake_api(method, path, body=None):
+        calls.append((method, path, body))
+        if method == "POST":
+            return None
+        if "/issues?" in path:
+            return pages.get(int(path.rsplit("page=", 1)[1]), [])
+        return by_number[int(path.rsplit("/issues/", 1)[1])]
+
+    return fake_api
+
+
+def test_reconcile_labels_each_freshly_unblocked_issue_and_nothing_else(monkeypatch):
+    calls = []
+    pages = {
+        1: [
+            _listed(10),
+            _listed(11, open_blockers=1),
+            _listed(12, labels=("task", "status:review")),
+            _listed(13, is_pr=True),
+            _listed(14, total_blockers=0),
+        ]
+    }
+    monkeypatch.setattr(unblock_ready, "_api", _reconcile_api(pages, calls))
+    unblock_ready.reconcile("owner/repo")
+    writes = [(m, p, b) for m, p, b in calls if m != "GET"]
+    assert writes == [("POST", "repos/owner/repo/issues/10/labels", {"labels": ["status:ready"]})]
+
+
+def test_reconcile_pages_through_a_full_page_of_open_issues(monkeypatch):
+    calls = []
+    pages = {1: [_listed(n, total_blockers=0) for n in range(100)], 2: [_listed(500)]}
+    monkeypatch.setattr(unblock_ready, "_api", _reconcile_api(pages, calls))
+    unblock_ready.reconcile("owner/repo")
+    writes = [(m, p) for m, p, _ in calls if m != "GET"]
+    assert writes == [("POST", "repos/owner/repo/issues/500/labels")]
+
+
+def test_reconcile_replans_from_a_fresh_read_before_writing(monkeypatch):
+    # The listing is a snapshot: by the time the pass reaches #10 a PR event may
+    # have moved it to review. The write must follow the labels as they are now.
+    calls = []
+    listing = {1: [_listed(10)]}
+    api = _reconcile_api(listing, calls)
+
+    def racing_api(method, path, body=None):
+        if method == "GET" and path.endswith("/issues/10"):
+            return _listed(10, labels=("task", "status:review"))
+        return api(method, path, body)
+
+    monkeypatch.setattr(unblock_ready, "_api", racing_api)
+    unblock_ready.reconcile("owner/repo")
+    assert [c for c in calls if c[0] == "POST"] == []
+
+
+def test_main_runs_the_reconcile_mode(monkeypatch):
+    calls = []
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("MODE", "reconcile")
+    monkeypatch.setattr(unblock_ready, "_api", _reconcile_api({1: [_listed(10)]}, calls))
+    unblock_ready.main()
+    assert [(m, p) for m, p, _ in calls if m == "POST"] == [
+        ("POST", "repos/owner/repo/issues/10/labels")
+    ]
