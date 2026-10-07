@@ -36,12 +36,14 @@ concurrency:
 jobs:
   # Deterministic gate in front of the worker (D6, D8, D9): refuses unless the
   # issue body is the one the human labelled, a class label is on it, and
-  # nothing already claims it. A refusal leaves one issue comment naming the
+  # nothing already claims it; an `afk:2-plan` issue also needs a `## Plan`
+  # whose lock verifies (D5). A refusal leaves one issue comment naming the
   # rule and the worker never starts; a pass swaps `agent:dispatch` for
   # `status:in-progress`. Rules and rationale: .github/scripts/lane_intake.py.
   #
   # Default GITHUB_TOKEN with no checkout of the issue's content: the job
-  # runs repo code from the default branch only, never anything the issue body
+  # runs repo code from the default branch only (the gate script and
+  # `agents/plan_lock.py`, which it imports), never anything the issue body
   # supplies, and its writes are a comment and two labels.
   intake:
     if: github.event.label.name == 'agent:dispatch'
@@ -56,7 +58,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            agents
 
       - name: Run lane intake
         id: intake
@@ -64,6 +68,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           PAYLOAD_BODY: ${{ github.event.issue.body }}
+          # `afk:2-plan` runs AFK in this repo only until the N-run gate passes (D17);
+          # a host repo that copies this workflow leaves the flag unset and is refused.
+          LANE_CLASS2_AFK: "true"
         run: python3 .github/scripts/lane_intake.py
 
   # The worker holds no token that can write (D4). Its GITHUB_TOKEN is
