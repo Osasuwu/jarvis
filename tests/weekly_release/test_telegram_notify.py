@@ -31,11 +31,20 @@ def test_send_posts_subject_and_body_to_the_owner_chat():
         calls.append((url, json.loads(data)))
         return {"ok": True}
 
-    send("Published release: o/r v0.5.0", "https://x/y", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "42"}, post)
+    send(
+        "Published release: o/r v0.5.0",
+        "https://x/y",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "42"},
+        post,
+    )
     assert calls == [
         (
             "https://api.telegram.org/bottok/sendMessage",
-            {"chat_id": "42", "text": "Published release: o/r v0.5.0\n\nhttps://x/y", "disable_web_page_preview": True},
+            {
+                "chat_id": "42",
+                "text": "Published release: o/r v0.5.0\n\nhttps://x/y",
+                "disable_web_page_preview": True,
+            },
         )
     ]
 

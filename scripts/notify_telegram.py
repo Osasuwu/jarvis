@@ -76,7 +76,9 @@ def resolve_env(environ: Mapping[str, str], env_file: Path | None) -> dict[str, 
 def credentials(env: Mapping[str, str]) -> tuple[str, str]:
     token = (env.get(TOKEN_KEY) or "").strip()
     chat_id = next((env[k].strip() for k in CHAT_KEYS if (env.get(k) or "").strip()), "")
-    missing = [name for name, val in ((TOKEN_KEY, token), ("/".join(CHAT_KEYS), chat_id)) if not val]
+    missing = [
+        name for name, val in ((TOKEN_KEY, token), ("/".join(CHAT_KEYS), chat_id)) if not val
+    ]
     if missing:
         raise NotifyError(f"telegram credentials not set: {', '.join(missing)}")
     return token, chat_id
