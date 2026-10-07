@@ -139,6 +139,11 @@ actions), which merge only through the review-blind admin-merge carve-out in
 `~/.claude/reference/merge-gates.md`, backed by a fresh-session `/code-review` posted against
 the final SHA.
 
+A review dispatched at a PR that does not exist, is closed or merged, or whose head has moved fails the
+`prepare` step with a message naming which; dispatch again after the final push, with that push's
+`head_sha`. A push mid-run supersedes the run (its evidence is bound to the old SHA), and the red
+`evidence-none` message says so.
+
 **Dependabot caveat.** A Dependabot-triggered `pull_request_target` / `workflow_run` run gets
 Dependabot secrets, not Actions or environment secrets, so the verdict job may fail to mint
 the App token for those PRs. That is fail-closed (check stays pending); use the maintainer
