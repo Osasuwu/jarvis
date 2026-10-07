@@ -66,7 +66,7 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 
 | Gate (check name) | Workflow | What it blocks |
 |---|---|---|
-| `code-gate` | `code-review.yml` | Code-gate: Layer A (deterministic checks) + Layer B (tiered LLM review) — fails closed on a `{blocking: true, findings: [...]}` verdict or a missing/malformed one |
+| `code-gate` | `code-gate-verdict.yml` (evidence from `code-review.yml`) | "Review evidence" rule, see below — red unless a SHA-bound non-blocking review artifact exists or the diff is all cosmetic |
 | `require-linked-issue` | `pr-body-check.yml` | PR body has no `Closes #N`/`Refs #N`, no `[no-issue]` marker, no `refactor:` prefix, no `priority:critical` hotfix bypass |
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
@@ -94,6 +94,56 @@ review request (N>1) or the `waiting-human-review` label applied directly (solo-
 — fails this required check and cannot merge, including via auto-merge. The retired
 `status:owner-queue` label used to be the advisory version of this same hold; draft status
 remains the manual hold for a PR that isn't ready for auto-merge to evaluate at all.
+
+### The `code-gate` rule: "Review evidence" (#1964)
+
+Two workflows, split so a PR can never change the rule that judges it:
+
+- **`code-review.yml` produces evidence, decides nothing.** The review job checks out the *base*
+  SHA only; PR head content is fetched through the API into `.pr-head/`. The reviewer's sole
+  write grant is `Edit(./.review/findings.json)`. Deterministic base steps then validate the
+  findings, enforce `blocking ⇔ findings non-empty`, check the tree is clean, stamp `sha` /
+  `base_ref`, and upload `review-evidence.json` (90-day retention). Skip paths (draft, fork,
+  Dependabot without dispatch, cosmetic-only) upload `status: skipped`. The reviewer gets one
+  retry; concurrency group `code-review-<pr>` cancels a superseded run. The PR comment is for
+  humans only and is never parsed.
+- **`code-gate-verdict.yml` decides.** Triggered by `pull_request_target` and by a `workflow_run`
+  hook on "Code Review", it runs from the default branch, checks out only `.github/scripts`
+  there, and never touches PR code. The `osasuwu-ci` GitHub App (key in the
+  `code-gate-verdict` environment, restricted to the default branch) posts the `code-gate`
+  check run; branch protection binds `code-gate` to that App's `app_id` (and `gitleaks` to
+  15368), so no other workflow can satisfy the gate by creating a same-named check.
+
+`code-gate` is **green iff**:
+
+1. at least one successful `code-review.yml` run bound to the evaluated head SHA carries a valid
+   non-blocking artifact, **and** no bound run is blocking or missing its artifact (`skipped`
+   artifacts are ignored; the worst result sticks); **or**
+2. every changed file is cosmetic.
+
+Run provenance: a `pull_request` run counts only if its `pull_requests[]` contains this PR with
+the default branch as base; a `workflow_dispatch` run counts only if it ran on the default
+branch and its `run-name` is `Code review PR #<n> @ <40-hex sha>`. The artifact's `sha` and
+`base_ref` must match the evaluated SHA and the current base.
+
+**Cosmetic allow-list** (read from the default branch): `docs/**` with extension `md`, `png`,
+`jpg`, `gif`, `webp` excluding `docs/reference/**`; root `README.md`, `SECURITY.md`,
+`LICENSE*`, `THIRD_PARTY_LICENSES`; `png`/`jpg`/`gif`/`webp` anywhere. Everything else is code.
+Renames and deletes are judged on both paths.
+
+**Always red, never skipped:** draft PRs ("draft"); fork and Dependabot PRs until a maintainer
+dispatches the review (`workflow_dispatch` with `pr_number` + `head_sha`, run in the
+`untrusted-review` environment — red message carries the remediation); and PRs touching the
+gate machinery (`code-review.yml`, `code-gate-verdict.yml`, `code_gate_verdict.py`, local
+actions), which merge only through the review-blind admin-merge carve-out in
+`~/.claude/reference/merge-gates.md`, backed by a fresh-session `/code-review` posted against
+the final SHA.
+
+**Dependabot caveat.** A Dependabot-triggered `pull_request_target` / `workflow_run` run gets
+Dependabot secrets, not Actions or environment secrets, so the verdict job may fail to mint
+the App token for those PRs. That is fail-closed (check stays pending); use the maintainer
+dispatch path or Dependabot-scoped copies of the App secrets. Automated Dependabot review is
+deferred (#1979); patch-id carry-forward of evidence across rebases is parked (#1978).
 
 **Branch protection** wires these check names into
 `Settings → Branches → Branch protection rules` (or `gh api -X PUT
@@ -125,7 +175,9 @@ Adding a new repo to this file should never require touching skill logic — it'
 ## 5. Dependabot config
 
 `.github/dependabot.yml` — one `updates` entry per ecosystem the repo actually uses (jarvis:
-`pip` and `github-actions`), each on a weekly Monday schedule:
+`pip` and `github-actions`), each monthly and grouped into one PR per ecosystem (#1964: a
+Dependabot PR is untrusted for `code-gate` and costs a manual review dispatch, so the cadence
+is kept low):
 
 ```yaml
 version: 2
@@ -133,16 +185,22 @@ updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     target-branch: main
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     target-branch: main
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 ```
 
 **Gotcha**: `target-branch` must match the repo's actual default branch, not `main`

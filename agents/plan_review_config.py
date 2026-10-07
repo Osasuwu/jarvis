@@ -79,12 +79,16 @@ _REQUIRED_MODELS_KEYS = ("planner", "critic")
 _DEFAULT_LOCK_MAX_AGE_DAYS = 14
 
 
-def load_plan_review_config(path: Path) -> PlanReviewConfig:
+def load_plan_review_config(path: str | Path) -> PlanReviewConfig:
     """Load and validate the plan-review classification config.
+
+    ``path`` may be a ``str`` or a ``Path`` (#1983: the /implement plan step
+    passes a plain string).
 
     Raises ``FileNotFoundError`` if ``path`` does not exist, ``ValueError``
     if the file is missing a required key or is on a stale schema version.
     """
+    path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"plan-review config not found: {path}")
 
