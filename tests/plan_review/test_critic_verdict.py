@@ -4,6 +4,8 @@ resolution, and consensus (issue #1686 AC3, AC6, AC7, AC8).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agents.critic_verdict import (
@@ -69,6 +71,58 @@ def test_validate_verdict_no_objections_has_no_unresolved_blocking() -> None:
 def test_validate_verdict_missing_critic_raises() -> None:
     with pytest.raises(InvalidVerdictError):
         validate_verdict({"objections": []})
+
+
+# #1984: an objection citing a locked/rejected decision carries source_path +
+# a verbatim source_quote; a quote that is not in that file rejects it. The
+# fixture mirrors the #1982 incident: the record says extending the file set
+# was *rejected*, the critic claimed the record forbade including the files.
+
+_DECISIONS = (
+    "## 2026-10-06 code-gate redesign\n"
+    "- Lock 4: the always-red file set is the workflow plus its script.\n"
+    "  Rejected alternative: narrowing the set to drop code-gate-verdict.yml.\n"
+)
+
+
+def _cited(path: Path, quote: str | None) -> dict:
+    return {
+        "description": "plan contradicts Lock 4",
+        "blocking": True,
+        "rationale": "the record says so",
+        "source_path": str(path),
+        "source_quote": quote,
+    }
+
+
+def test_decision_citation_with_verbatim_quote_passes(tmp_path: Path) -> None:
+    record = tmp_path / "decisions.md"
+    record.write_text(_DECISIONS, encoding="utf-8")
+    quote = "Rejected alternative: narrowing the set to drop code-gate-verdict.yml."
+
+    obj = validate_objection(_cited(record, quote))
+
+    assert obj.source_path == str(record)
+    assert obj.source_quote == quote
+    assert obj.is_unresolved() is True
+
+
+def test_decision_citation_with_non_verbatim_quote_is_rejected(tmp_path: Path) -> None:
+    record = tmp_path / "decisions.md"
+    record.write_text(_DECISIONS, encoding="utf-8")
+    paraphrase = "Lock 4: the always-red set must not include code-gate-verdict.yml."
+
+    with pytest.raises(InvalidVerdictError, match="not a verbatim substring"):
+        validate_objection(_cited(record, paraphrase))
+
+
+@pytest.mark.parametrize("quote", [None, "", "   "])
+def test_decision_citation_without_a_quote_is_rejected(tmp_path: Path, quote: str | None) -> None:
+    record = tmp_path / "decisions.md"
+    record.write_text(_DECISIONS, encoding="utf-8")
+
+    with pytest.raises(InvalidVerdictError, match="missing 'source_quote'"):
+        validate_objection(_cited(record, quote))
 
 
 # AC7: absent or schema-invalid verdict, after exactly one re-run, is treated
