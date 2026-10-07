@@ -11,7 +11,13 @@ from __future__ import annotations
 
 import pytest
 
-from agents.plan_classifier import ChangeSet, classify, classify_task_row, label_for
+from agents.plan_classifier import (
+    ChangeSet,
+    classify,
+    classify_task_row,
+    label_for,
+    prod_areas_from_paths,
+)
 from agents.plan_review_config import (
     Class2Thresholds,
     Class3Criteria,
@@ -112,8 +118,8 @@ def test_classify_task_row_is_the_named_policy_entry_point() -> None:
     """AC7: one named bundle every consumer calls, not ad-hoc re-derived
     conditions per caller. classify_task_row() reads a task_queue-shaped
     dict (``scope_files`` per the repo's existing convention) instead of
-    each of the four consumers (interactive lane, drain, container pick,
-    CI diff-gate) hand-rolling ChangeSet construction."""
+    each of the three consumers (interactive lane, drain, container pick)
+    hand-rolling ChangeSet construction."""
     row = {
         "scope_files": ["mcp-memory/server.py"],
         "churn_lines": 5,
@@ -144,8 +150,8 @@ def test_label_for(cls, expected_label) -> None:
 
 # --- docs-only derivation (#1818) -------------------------------------------
 #
-# `mechanical_criteria` is populated by no production caller — neither the CI
-# diff-gate's jq envelope nor `/implement` §3b passes one — so the exempt
+# `mechanical_criteria` is populated by no production caller — `/implement`
+# §3b passes none — so the exempt
 # short-circuit above was dead code in prod and a docs-only PR spanning two
 # top-level areas got hard-blocked (PR #1817). classify() now derives the
 # criterion from paths when, and only when, the caller supplied none.
@@ -209,3 +215,26 @@ def test_empty_path_set_derives_nothing() -> None:
     be read as documentation."""
     change = ChangeSet(paths=(), churn_lines=500, prod_areas=0, mechanical_criteria=())
     assert classify(_CFG, change) == 2
+
+
+# --- prod_areas_from_paths ---------------------------------------------------
+
+
+def test_prod_areas_counts_distinct_top_level_dirs() -> None:
+    assert prod_areas_from_paths(("agents/foo.py", "scripts/bar.py")) == 2
+
+
+def test_prod_areas_excludes_tests() -> None:
+    assert prod_areas_from_paths(("agents/foo.py", "tests/test_foo.py")) == 1
+
+
+def test_prod_areas_dedupes_same_top_level_dir() -> None:
+    assert prod_areas_from_paths(("agents/a.py", "agents/b.py")) == 1
+
+
+def test_prod_areas_groups_nested_paths_by_their_top_level_dir() -> None:
+    assert prod_areas_from_paths(("agents/x/a.py", "agents/y/b.py")) == 1
+
+
+def test_prod_areas_top_level_file_counts_as_its_own_area() -> None:
+    assert prod_areas_from_paths((".mcp.json",)) == 1
