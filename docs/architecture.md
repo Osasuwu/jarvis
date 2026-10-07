@@ -183,4 +183,4 @@ jarvis/
 └── pyproject.toml
 ```
 
-There is no installer and no `.mcp.json` anywhere in this layout. MCP servers are registered per-device directly against Claude Code with `claude mcp add --scope user <name> ...`; a fresh device gets the SOUL/skills/hooks by copying the files above into `~/.claude/` by hand.
+There is no installer and no `.mcp.json` anywhere in this layout. MCP servers are registered per-device directly against Claude Code with `claude mcp add --scope user <name> ...`; a fresh device gets the SOUL/skills/hooks by copying the files above into `~/.claude/` manually.
