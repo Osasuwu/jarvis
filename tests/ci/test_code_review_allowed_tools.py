@@ -35,6 +35,13 @@ read verbs (`git show`/`git blame`/`git log`/`git fetch`) are superseded by
 the wholesale `Bash(git:*)` grant; this guard now also pins the
 `--disallowed-tools` mutating-verb list so the denylist can't silently thin
 out the same way the old allowlist did.
+
+#1964 EVIDENCE PRODUCER: the reviewer no longer posts a PR comment; its only
+output is the findings file, written with `Edit(./.review/findings.json)`. That
+is the one path-scoped write grant the harness consults (jarvis#1976: a
+`Write(path)` rule is never matched, so an unscoped `Write` was the only way
+to write anything — and it could write anywhere). `gh pr comment` is denied so
+the review has exactly one output channel.
 """
 
 from __future__ import annotations
@@ -43,6 +50,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LIVE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
@@ -57,6 +65,9 @@ LIVE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
 # individually would just re-create the whack-a-mole this rebuild exists to
 # end; `test_git_wholesale_grant_present` below pins the wholesale grant
 # instead.
+FINDINGS_PATH = ".review/findings.json"
+FINDINGS_GRANT = f"Edit(./{FINDINGS_PATH})"
+
 REQUIRED_TOOLS = (
     # Native file-reading tools — the reviewer prose steers it to Read/Grep/
     # Glob instead of Bash `cat`/`grep`/`find`. Dropping any re-opens the
@@ -78,15 +89,9 @@ REQUIRED_TOOLS = (
     # (`echo "=== …" ; gh pr view …`) denies the whole compound even though
     # `gh pr view` is allowlisted. This was an observed denial on PR #1226.
     "Bash(echo:*)",
-    # #971: the reviewer composes the verdict body with the Write tool at
-    # /tmp/code-review-comment.md and posts via `gh pr comment --body-file`,
-    # so no shell string-interpretation touches review prose (backticks,
-    # $(...), $VAR would otherwise be evaluated under bash -c). Dropping this
-    # grant denies the Write in the headless runner and the post step degrades
-    # back to shell-assembled bodies. Granted UNSCOPED (`Write`, not
-    # `Write(//tmp/**)`): the `//tmp/**` glob failed to match `/tmp/...` on
-    # the Linux runner, denying the verdict Write.
-    "Write",
+    # #1964: the findings file is the reviewer's only output. `Edit(path)` is the
+    # one write rule the harness path-scopes (#1976).
+    FINDINGS_GRANT,
 )
 
 # #1850: the wholesale grants the denylist rebuild introduced. These replace
@@ -116,6 +121,8 @@ REQUIRED_DISALLOWED = (
     "Bash(gh pr create:*)",
     "Bash(gh pr lock:*)",
     "Bash(gh pr unlock:*)",
+    # #1964: the PR comment is for humans and not produced by this job.
+    "Bash(gh pr comment:*)",
     "Bash(gh issue create:*)",
     "Bash(gh issue edit:*)",
     "Bash(gh issue close:*)",
@@ -243,10 +250,9 @@ def test_plugin_marketplace_inputs_retired() -> None:
 # reviewer not to compose that shape. This pins the instruction so a prompt
 # rewrite can't drop it and silently re-open the blind-review class.
 PROMPT_SHELL_RULES = (
-    "SHELL SHAPE",
     "NEVER clone the repo",
     "NEVER redirect command output to a file",
-    "/tmp/code-review-comment.md, via the Write tool",
+    f"The ONLY file you may write is `{FINDINGS_PATH}`",
 )
 
 
@@ -256,5 +262,25 @@ def test_prompt_forbids_scratch_file_shapes() -> None:
         assert rule in text, (
             f"code-review prompt lost the #1887 shell-shape rule {rule!r} — without "
             f"it the reviewer composes redirect/clone/mkdir calls, every one is "
-            f"denied by prefix matching, and the gate fails closed on a blind review."
+            f"denied by prefix matching, and the review produces no findings."
         )
+
+
+@pytest.mark.parametrize("path", [LIVE_WORKFLOW], ids=["live"])
+def test_only_write_grant_is_the_findings_file(path: Path) -> None:
+    """#1964/#1976: an unscoped `Write` or bare `Edit` lets the reviewer — an LLM
+    reading attacker-controlled text — write anywhere in the workspace. The one
+    write grant is `Edit(./.review/findings.json)`."""
+    for block in _allowed_tools_blocks(path):
+        entries = block.split(",")
+        writers = [e for e in entries if e.split("(")[0] in ("Write", "Edit", "MultiEdit")]
+        assert writers == [FINDINGS_GRANT], (
+            f"{path.name}: write-capable grants must be exactly [{FINDINGS_GRANT!r}], got {writers}"
+        )
+
+
+def test_findings_path_in_job_env_matches_the_edit_grant() -> None:
+    """The job seeds, validates and uploads $FINDINGS; the reviewer may edit only
+    the granted path. Two artifacts that must agree (#1964)."""
+    spec = yaml.safe_load(LIVE_WORKFLOW.read_text(encoding="utf-8"))
+    assert spec["jobs"]["review"]["env"]["FINDINGS"] == FINDINGS_PATH
