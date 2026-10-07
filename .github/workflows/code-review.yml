@@ -184,8 +184,10 @@ jobs:
           allowed_bots: "*"
           prompt: |
             You are Layer B of a two-layer code-review gate (#1816). Layer A
-            (ruff, exit-code only) already caught syntax/style/dead-code/bare-
-            except/mutable-default-arg mechanically — do NOT re-report those.
+            is the separate `ruff` check (.github/workflows/ruff.yml, exit-code
+            only: `ruff check` rule groups F/B/E722 + `ruff format --check`);
+            it covers syntax/unused-code/bare-except/mutable-default-arg/format
+            mechanically — do NOT re-report those.
             Your job is the class of defect that requires judgment, not a
             deterministic tool: git-blame/log context, cross-file reasoning,
             comparing the diff against the issue's stated intent.
