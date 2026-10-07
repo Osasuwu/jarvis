@@ -30,7 +30,7 @@ classifiers = [
 # tests/ci/test_dependency_bounds_guard.py fails closed if a bare `>=`-only
 # spec is reintroduced here.
 dependencies = [
-  "python-dotenv>=1.2.3,<2",
+  "python-dotenv>=1.2.4,<2",
 ]
 
 [project.optional-dependencies]
@@ -51,7 +51,7 @@ full = [
 dev = [
   "pytest>=9.1.1,<10",
   "pytest-asyncio>=1.4.0,<2",
-  "ruff>=0.16.8,<1",
+  "ruff>=0.16.10,<1",
 ]
 
 [project.urls]
