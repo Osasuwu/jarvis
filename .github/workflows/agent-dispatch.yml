@@ -66,34 +66,51 @@ jobs:
           PAYLOAD_BODY: ${{ github.event.issue.body }}
         run: python3 .github/scripts/lane_intake.py
 
+  # The worker holds no token that can write (D4). Its GITHUB_TOKEN is
+  # read-only and the bot PAT never enters this job, so a push, a PR, a comment
+  # or a label attempt from here fails at GitHub rather than at a prompt rule.
+  # What it leaves behind is data: `lane-out/work.bundle` (its commits) and
+  # `lane-out/pr-body.md` (its PR description), handed to the `publish` job as
+  # an artifact. Nothing the worker produces is executed downstream.
   worker:
     needs: intake
     if: needs.intake.outputs.pass == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+      contents: read
+      issues: read
+      pull-requests: read
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
+      # `lane-out/` is the worker's hand-off directory. It sits in the workspace
+      # because headless Write is scoped there, and it is excluded from git so
+      # the worker's `git add` cannot sweep its own PR description into a commit.
+      - name: Prepare the hand-off directory
+        run: |
+          mkdir -p lane-out
+          echo "lane-out/" >> .git/info/exclude
+
       - name: Run unattended worker
         uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Fine-grained PAT (contents/issues/pull-requests write, scoped to
-          # this repo, <=1y expiry — rotation tracked in issue #1810), NOT
-          # the default GITHUB_TOKEN: commits/pushes authored with the
-          # default token do not trigger other workflows (GitHub's own
-          # loop-prevention), so `review`/`pytest`/auto-merge would never
-          # fire on the worker's own PR. A PAT-authored push is a normal
-          # external actor as far as Actions is concerned, so downstream CI
-          # runs like it would for a human push (#1805).
-          github_token: ${{ secrets.AGENT_DISPATCH_PAT }}
+          # The default GITHUB_TOKEN, read-only through the job's `permissions`
+          # above. The worker needs to read the issue and the repo, nothing
+          # more: every write (branch push, PR, review request, labels) is done
+          # by the `publish` job as osasuwu-bot with AGENT_DISPATCH_PAT, a
+          # classic `repo` PAT whose rotation is tracked in #1810. That PAT is
+          # never given to this job (D4).
+          #
+          # Assumes claude-code-action in agent mode needs no write scope of
+          # its own on this token (no tracking comment, no branch creation). If
+          # a run shows otherwise, the fallback is the narrowest write the
+          # action asks for, not the PAT.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             Implement GitHub issue #${{ github.event.issue.number }} in
             ${{ github.repository }}, end to end, unattended. Nobody is
@@ -106,6 +123,11 @@ jobs:
             (decision a2d10d70-1282-45e1-a8be-b6bdbda92fa4). Read AGENTS.md
             first and follow its process rules as the sole instruction
             layer for this run.
+
+            This run has READ-ONLY access to GitHub: you cannot push,
+            open a PR, comment, or edit labels, and must not try. A later
+            job publishes your work from two files you leave in
+            `lane-out/` (already created, git-ignored).
 
             1. `gh issue view ${{ github.event.issue.number }} --json
                title,body,labels,milestone` — read the full issue body,
@@ -123,15 +145,17 @@ jobs:
                before moving on.
             5. If genuinely blocked — ambiguous scope, an acceptance
                criterion contradicts the codebase, or the change needs a
-               human decision — do NOT guess. Comment the specific blocker
-               on the issue, assign it to the repo owner
-               (`gh issue edit ${{ github.event.issue.number }} --add-assignee "${{ github.repository_owner }}"`),
-               and stop without opening a PR.
-            6. Otherwise commit, push the branch, and open a PR whose body
-               has `Closes #${{ github.event.issue.number }}` on its own
-               line and every section of `.github/PULL_REQUEST_TEMPLATE.md`
-               filled in; the Testing section holds what
-               `docs/reference/test-quality.md` asks for.
+               human decision — do NOT guess. Write the specific blocker
+               to `lane-out/escalation.md`, make no commits, and stop.
+            6. Otherwise commit on your branch — do not push — and write
+               the PR description to `lane-out/pr-body.md`: every section
+               of `.github/PULL_REQUEST_TEMPLATE.md` filled in, the
+               Testing section holding what
+               `docs/reference/test-quality.md` asks for, a line
+               `Closes #${{ github.event.issue.number }}` on its own, and
+               a line `Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>` under
+               the Risk Assessment heading. The risk tier decides whether
+               a human is asked to review, so state it honestly.
 
             Never edit this workflow file, any other file under
             `.github/workflows/**`, anything under `.claude/hooks/**`, or
@@ -148,11 +172,19 @@ jobs:
           claude_args: |
             # Headless: any tool not listed here is denied outright, same
             # rationale as code-review.yml's allowlist — no human to approve
-            # a mid-run permission prompt. Covers the full implement loop:
-            # read/search, edit, git, gh issue/PR mechanics, and this repo's
-            # lint/test commands. CI/hook/secret config paths stay a step-5
-            # escalation, never an unattended edit (mechanically Edit/Write-
-            # denied below).
+            # a mid-run permission prompt. Covers the implement loop:
+            # read/search, edit, local git, `gh` reads, and this repo's
+            # lint/test commands. There is no push, `gh pr create` or `gh
+            # issue edit/comment` here: the token cannot do them, and the
+            # `publish` job does. CI/hook/secret config paths stay a step-5
+            # escalation, never an unattended edit (mechanically Edit-denied
+            # below).
+            #
+            # Pinned model (F3, a fixed axis of the lane's evaluation per
+            # D13): without it the action follows its own default, so a change
+            # of that default would silently change what a lane run measures.
+            # Changing it is a deliberate edit here.
+            --model claude-sonnet-5-5
             #
             # --max-turns 100 (#1846): the trial run (#1806, issue #1844 →
             # PR #1845) did correct, right-scoped work — 8/8 check-runs
@@ -176,7 +208,7 @@ jobs:
             # this PR, since this workflow file only takes effect for future
             # `issues: labeled` runs once it's on `main`.
             --max-turns 100
-            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
+            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git switch:*),Bash(git add:*),Bash(git commit:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
             # Mechanical backstop for the prompt's "never edit" ask above —
             # this job's own workflow/hooks/settings, plus the real T2 set
             # from `.claude/hooks/protected-files.py`, are Edit-denied here
@@ -193,29 +225,99 @@ jobs:
             # `pytest`, say — so they bind the agent's own tool calls, not
             # everything that runs in its shell.
             #
-            # The Bash entries below catch the common spellings of a
-            # force-push/history-rewrite (`git push --force`/`-f`/
-            # `--force-with-lease`, `git commit --amend`, `git reset
-            # --hard`) that a worker turning genuinely wrong is likely to
-            # type. They are NOT a hard security boundary: `Bash(...:*)`
-            # is a literal prefix match, so a differently-ordered or
-            # differently-spelled command (a refspec force-push like `git
-            # push origin +HEAD:main`, or a flag placed after a positional
-            # arg like `git commit -am "wip" --amend`) is not caught by
-            # any finite list of prefixes, and no such list ever will be.
-            # This is deliberately defense-in-depth, not the backstop:
-            # the actual hard boundary is that `main` has branch
-            # protection with `allow_force_pushes: false` server-side, so
-            # nothing this worker's shell does can force-push or rewrite
-            # history on the branch that matters. This worker only ever
-            # pushes to its own fresh `claude/issue-N-*` branch, so even a
-            # successful force-push/amend here is blast-radius-limited to
-            # a branch nobody else has based work on.
-            --disallowed-tools "Edit(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git push --force-with-lease:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
+            # The Bash entries are defense-in-depth, not the boundary:
+            # `Bash(...:*)` is a literal prefix match and no finite list
+            # catches every spelling. The hard boundary is the read-only
+            # token (a push fails at GitHub whatever the shell types) plus,
+            # in `publish`, the exact branch name it pushes. `git push` is
+            # denied anyway so a wasted attempt does not burn turns.
+            --disallowed-tools "Edit(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Bash(git push:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
+
+      # Hand the worker's commits to `publish` as a bundle. Runs even when the
+      # worker step failed (a timeout after the last commit still has work to
+      # publish), holds no secret, and runs git with hooks off: the workspace is
+      # the worker's, so nothing in it is trusted to run.
+      - name: Bundle the worker's commits
+        if: always()
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          mkdir -p lane-out
+          base="origin/${DEFAULT_BRANCH}"
+          ahead=$(git -c core.hooksPath=/dev/null rev-list --count "${base}..HEAD")
+          if [ "$ahead" -gt 0 ]; then
+            git -c core.hooksPath=/dev/null bundle create lane-out/work.bundle "${base}..HEAD"
+          else
+            echo "::notice::The worker made no commits; nothing to bundle."
+          fi
+
+      - name: Upload the hand-off
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lane-out
+          path: lane-out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Every GitHub write of the lane (D1, D4, D10, D14), as osasuwu-bot with
+  # AGENT_DISPATCH_PAT — a classic `repo` PAT, rotation tracked in #1810. Its
+  # authorship is the reason it is a PAT and not GITHUB_TOKEN: commits and PRs
+  # created with the default token do not trigger other workflows (GitHub's own
+  # loop-prevention), so `code-review`/`pytest`/auto-merge would never fire on
+  # the lane's own PR (#1805). The PAT has no `workflow` scope, so a branch that
+  # touches `.github/workflows/**` is rejected at the push.
+  #
+  # This job never runs anything the worker wrote. It checks out the default
+  # branch fresh (no `ref`), takes the worker's output as inert files, and runs
+  # `.github/scripts/lane_publish.py` from that checkout: fetch the bundle into
+  # exactly `claude/issue-N-<run_id>`, push that one ref, open the PR with
+  # `Closes #N`, ask the operator to review only on a HIGH/CRITICAL `Risk:` line
+  # (D10), and move the issue to `status:review` (D14).
+  publish:
+    needs: [intake, worker]
+    # `always()` so a worker that timed out after committing is still
+    # published; the intake output keeps a refused or skipped run out.
+    if: always() && needs.intake.outputs.pass == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # `persist-credentials: false`: the token the checkout would otherwise
+      # leave in .git/config overrides the PAT credential helper, and the push
+      # would go out as github-actions with no write access. Full history so
+      # the bundle's prerequisite commits are present.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A worker that failed before the upload step leaves no artifact; the
+      # script then finds no bundle, publishes nothing, and the no-PR step
+      # below fails the run.
+      - name: Download the worker's hand-off
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        continue-on-error: true
+        with:
+          name: lane-out
+          path: lane-out
+
+      - name: Publish the worker's branch
+        id: publish
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_ID: ${{ github.run_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          LANE_REVIEWER: ${{ github.repository_owner }}
+        run: python3 .github/scripts/lane_publish.py
 
       # #1806 AC2: the trial run's PR must land via auto-merge, not a human
       # click. Nothing in this repo enabled auto-merge after #1796 culled the
-      # 14 workflows (the old #891 enable-job went with them), so the worker
+      # 14 workflows (the old #891 enable-job went with them), so the lane
       # ran to `gh pr create` and its PR then parked forever — the third
       # clause of AC2 was unreachable by construction.
       #
@@ -223,29 +325,26 @@ jobs:
       # prompt: queueing auto-merge is a fixed mechanical consequence of "a
       # PR now exists", and an LLM that drops that instruction on a bad turn
       # leaves the PR parked with no signal that anything is wrong. The
-      # allowlist above also stays as tight as it is — no `gh pr merge` is
-      # handed to the agent's shell.
+      # worker is not handed `gh pr merge` either.
       #
       # `--auto` QUEUES the merge; it does not bypass anything. GitHub holds
       # the PR until every required check on `main` (code-gate,
-      # require-linked-issue, pytest, gitleaks) reports green, and a blocking
-      # code-review verdict keeps it queued indefinitely. What this removes is
-      # the human click *after* the gates pass, which is the entire point of
-      # the unattended lane.
+      # require-linked-issue, pytest, gitleaks, waiting-human-review) reports
+      # green, so a HIGH/CRITICAL PR with a pending review request stays
+      # queued until a human looks. What this removes is the human click
+      # *after* the gates pass, which is the point of the unattended lane.
       #
-      # `if: always()` so a worker that opened its PR and then hit the 45-min
-      # timeout still gets its PR queued.
+      # `if: always()` so the step still runs, and still fails loudly, when the
+      # publish step above did not get as far as a PR.
       #
-      # No PR (the worker escalated per step 5, or stopped at the step-2
-      # preflight) fails the step on purpose (#1927). The worker's comment and
-      # assignee change go out under AGENT_DISPATCH_PAT, which is the owner's
-      # own account, and GitHub never notifies a user about their own
-      # activity. A green run here would leave the escalation with no signal
-      # at all. A red run triggers GitHub's native failed-workflow
-      # notification to the triggering actor, i.e. whoever applied
-      # `agent:dispatch`.
+      # No PR (the worker escalated per step 5, stopped at the step-2
+      # preflight, or the publish step failed) fails the step on purpose
+      # (#1927): a green run would leave the escalation with no signal at all,
+      # and a red run triggers GitHub's native failed-workflow notification to
+      # the triggering actor, i.e. whoever applied `agent:dispatch`. Reporting
+      # an escalation back on the issue is #2011.
       #
-      # PAT, not GITHUB_TOKEN, for the same reason as the worker step: the
+      # PAT, not GITHUB_TOKEN, for the same reason as the publish step: the
       # eventual merge commit lands on `main` as a normal external actor, so
       # push-triggered workflows fire on it.
       - name: Queue auto-merge on the worker's PR
@@ -253,15 +352,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
           GH_REPO: ${{ github.repository }}
-          PR_BRANCH_PREFIX: claude/issue-${{ github.event.issue.number }}
+          # The exact branch `lane_publish.py` pushed. Matched whole, or with a
+          # `-<slug>` suffix: a bare prefix test on "claude/issue-180" would
+          # also match issue 1806's branch and silently queue the wrong PR.
+          PR_BRANCH_PREFIX: claude/issue-${{ github.event.issue.number }}-${{ github.run_id }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          # Match the worker's branch exactly, or with a `-<slug>` suffix. The
-          # trailing `-` matters: a bare prefix test on "claude/issue-180"
-          # would also match issue 1806's branch and silently queue the wrong
-          # PR.
-          #
           # `gh` output is collected into a variable before awk sees it:
           # piping gh straight into an awk that `exit`s on the first match
           # SIGPIPEs gh, and `pipefail` would turn that into a spurious step
@@ -272,7 +369,7 @@ jobs:
           pr=$(awk -F'\t' -v p="$PR_BRANCH_PREFIX" \
                  '$1 == p || index($1, p "-") == 1 { print $2; exit }' <<< "$raw")
           if [ -z "$pr" ]; then
-            echo "::error::No PR from the worker for issue #${ISSUE_NUMBER}: it escalated or stopped at preflight. Read the issue comments."
+            echo "::error::No PR from the worker for issue #${ISSUE_NUMBER}: it escalated, stopped at preflight, or the publish step failed. Read lane-out/escalation.md in the run's artifacts and the publish step log."
             exit 1
           fi
           gh pr merge "$pr" --squash --auto

@@ -70,7 +70,9 @@ def workflow() -> dict:
 
 @pytest.fixture(scope="module")
 def automerge_step(workflow: dict) -> dict:
-    steps = workflow["jobs"]["worker"]["steps"]
+    # The step lives in the `publish` job (#2007): the worker holds no write token,
+    # so arming auto-merge is the bot's post-step, not the worker job's.
+    steps = workflow["jobs"]["publish"]["steps"]
     for step in steps:
         if step.get("name") == STEP_NAME:
             return step
@@ -130,6 +132,11 @@ class TestStepShape:
             "prefix must track the branch name the worker prompt tells the agent to create"
         )
         assert "github.event.issue.number" in prefix
+
+    def test_branch_prefix_is_scoped_to_this_run(self, automerge_step):
+        # `lane_publish.py` pushes `claude/issue-<N>-<run_id>`; a re-dispatch of the
+        # same issue must not arm the earlier run's still-open PR instead.
+        assert automerge_step["env"]["PR_BRANCH_PREFIX"].endswith("-${{ github.run_id }}")
 
 
 class TestNoPrFailsLoud:
