@@ -24,7 +24,7 @@ See `docs/security/mcp-audit.md` for per-server analysis. Summary:
 | Secret exfiltration via bash | High | PreToolUse bash danger scanner (8 patterns) |
 | Secret exfiltration via memory_store | Medium | **Sprint 2: #159** |
 | Prompt injection via firecrawl/web | Medium | Claude instruction hierarchy |
-| Prompt injection via GitHub issues | Medium | None (trusted input assumed) |
+| Prompt injection via GitHub issues | Medium | AFK lane intake (#2005): worker refused unless the issue body equals the `labeled` payload body and carries no `osasuwu-bot` edit (D9); refused when unclassified, closed, claimed by a PR, in flight or blocked (D8). Worker without a write token (D4) is committed but not yet enforced (#1966) |
 | Data corruption via memory writes | Medium | Soft delete with 30-day retention (#160) |
 | Obsidian vault data exposure | Low | Local only, no network |
 
@@ -88,7 +88,7 @@ Key flows to protect:
 | Agent breaks git state | Medium | Low | Medium | Mitigated (rollback #163) |
 | Prompt injection via web scrape | Low | Medium | Low | Accepted (Claude instruction hierarchy) |
 | Supply chain attack via dependency | Low | High | Medium | Partial (Dependabot) |
-| Prompt injection via GitHub issue | Low | Medium | Low | Accepted (trusted repo) |
+| Prompt injection via GitHub issue | Low | Medium | Low | Partial (intake gate #2005; no-token worker D4 pending #1966) |
 | Agent-to-agent poisoning | Low | Medium | Low | Deferred (Federation & Delegation pillar) |
 
 ## Mitigations Summary
@@ -114,6 +114,7 @@ Key flows to protect:
 - [x] Git history (revert commits)
 
 ### Accepted Risks
-- **Prompt injection via web/issues**: Claude's instruction hierarchy (system > user > tool output) is the defense. No additional mitigation planned unless incidents occur.
+- **Prompt injection via web**: Claude's instruction hierarchy (system > user > tool output) is the defense. No additional mitigation planned unless incidents occur.
+- **Prompt injection via GitHub issues**: the AFK lane intake gate narrows it (see Attack Surface); until the no-token worker (D4, #1966) lands, a body the human labelled and approved is still trusted input.
 - **Single-user assumption**: No RLS, no multi-tenant isolation. Acceptable for solo project.
 - **Agent-to-agent poisoning**: Deferred to Federation & Delegation pillar when multi-agent architecture is designed.
