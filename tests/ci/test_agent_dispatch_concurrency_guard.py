@@ -211,7 +211,7 @@ class TestGroupAndJobConditionAgree:
         assert worker["needs"] == "intake"
         assert worker["if"] == "needs.intake.outputs.pass == 'true'"
 
-    @pytest.mark.parametrize("job", ["intake", "worker"])
+    @pytest.mark.parametrize("job", ["intake", "worker", "publish"])
     def test_job_declares_no_group_of_its_own(self, workflow, job):
         # A second, job-level group keyed on the issue would bring the same
         # bug back through a side door.
