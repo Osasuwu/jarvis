@@ -22,7 +22,15 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Convergence target** — `findings == []` (code-gate #1816, supersedes the old `n_critical==0 AND n_major<=2`); gates human-merge readiness in code review. No-convergence guard fires on an unchanged finding-fingerprint set across two blocking attempts, not a stalled count.
 - **Merge-gate failure axis** — fail-CLOSED (false-FAILING, visible) vs fail-OPEN (false-PASSING, invisible, dangerous).
 - **Readiness axis** — Scalar AFK-ready vs HITL-required; measured by pre-dispatch gate at dispatch time.
-- **Pre-dispatch gate** — Five-condition check (`/dispatch` v4.0.0, post-#1793): repo match, no `needs-*`, AC section, decision reference, not `afk:3-human`. Detail below is current; historical `sandcastle`-label mechanism retired for `/dispatch`.
+- **Canon AFK lane** — jarvis `agent-dispatch.yml` on `claude-code-action`, GitHub-hosted; the one unattended implementation path (#1960 grill, `docs/decisions/2026-Q4.md`). The jarvis-oss lane is not canon.
+- **Worker identity** — the AFK worker writes to GitHub as a GitHub App installation token, never as the operator; no Workflows permission (#1966).
+- **Risk tier** — LOW/MEDIUM/HIGH/CRITICAL computed by the required `risk-tier` check from the diff (machinery paths + `plan_classifier` ordinal); the PR's `Risk:` line can raise it, never lower it. HIGH/CRITICAL → the check stays red until a human with write access approves; `waiting-human-review` is visibility only.
+- **`needs-human`** — escalation marker the AFK worker sets when blocked (with a `run_id` comment); never an assignee. Intake refuses it like any `needs-*`.
+- **Host repo** — a repo whose issues the canon lane runs on, via a thin caller of the jarvis reusable workflow: jarvis, like-current-song; others only after the N-run gate.
+- **N-run gate** — 10 real runs across host repos (≥3 per repo), each ending in an artifact, ≥6 merged without human code edits; until it passes only lane-defect fixes, attack-path controls and deletions are built.
+- **Dispatchable issue** — authored by a write-access user, body unchanged since `agent:dispatch` was applied (worker reads the label-event snapshot; intake checks `lastEditedAt`); anything else is refused with a comment. `agent:dispatch` is applied by a human or, as their last step in an interactive session, by `/to-tickets` / `/file-issue` / `/triage` — never by an unattended run.
+- **Planner** — `planner.md` + critic panel, run only interactively to write the `plan_lock`-format `## Plan` of an `afk:2-plan` issue; never invoked by the AFK lane (#1573 holds the open question).
+- **Lane intake** — deterministic job in the reusable lane workflow that replaces `/dispatch` and its pre-dispatch gate (#1960): a routing table keyed by label; today one row (implementation): no `needs-*`, `## Acceptance criteria` present, no `afk:3-human`, `afk:2-plan` only with a `## Plan` that passes `plan_lock.verify_lock`, dispatchable-issue check. Refuses with a comment. The long "Pre-dispatch gate" entry below is historical, removed by #1959.
 - **In-flight (dispatch dedup)** — historical only, orphaned post-#1802/#1803: `task_queue`'s dedup index and `check_in_flight`'s open-PR/branch heuristic both had their only consumer (the reactive-core dispatcher) demolished; current `/dispatch` performs no in-flight/dedup check.
 - **AFK-fit checklist** — Four-question gate at slice creation deciding the `sandcastle` label.
 - **Strategic-ideation lane (C15)** — Strategy-generation arm: produces non-memory improvement proposals; owner-gated.
@@ -59,7 +67,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Type 2 trigger** — User/orchestrator intent-shaped prompt matched to skill description.
 - **Type 3 trigger** — Mid-task self-trigger by model; not designed for (ADR-0001).
 - **3 devices** — Lenovo laptop, desktop, MacBook; different usernames, never device-pinned.
-- **Workshop PC** — Sole routine host for all Jarvis routines; SPOF with gap canary via the status-digest cron.
+- **Workshop PC** — Sole routine host for local Jarvis routines (not the AFK lane, which is GitHub-hosted); SPOF with gap canary via the status-digest cron.
 - **JARVIS_HOME** — Env var resolved at install time to absolute repo root; use in templated configs.
 - **~/.claude/** — User-level config: a stub `CLAUDE.md` importing from the operator's private dotfiles repo, plus junctions (`skills/`, `reference/`) into that repo's clone. Edit in the clone and commit there.
 - **Drop lottery** — Hook-inject sections compete for the assembly budget; `@import` content is exempt.
