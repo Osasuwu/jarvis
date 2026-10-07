@@ -4,11 +4,16 @@ for the ``## Plan`` section (issue #1685).
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from agents.plan_lock import (
     MalformedPlanError,
     canonicalize_plan,
+    compute_lock,
     hash_plan,
     parse_plan,
     verify_lock,
@@ -136,3 +141,36 @@ def test_verify_lock_stable_across_crlf_lf() -> None:
 def test_verify_lock_raises_malformed_plan_error_on_bad_plan() -> None:
     with pytest.raises(MalformedPlanError, match="absent_lock_line"):
         verify_lock("## Plan\n\n- step one\n")
+
+
+# ── CLI: python -m agents.plan_lock hash <plan-file> (#1984) ─────────────────
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_cli_hash_prints_the_lock_the_lock_check_accepts(tmp_path: Path) -> None:
+    """The CLI's output is the value verify_lock (the CI diff-gate's check)
+    accepts for the same plan — no second recipe. The fixture carries the
+    placeholder lock line the #1982 planner emitted; the hash ignores it."""
+    plan = (
+        "## Plan\n\n"
+        "- Add the CLI entry point\n"
+        "- Assumption: `agents/plan_lock.py` defines `verify_lock`\n\n"
+        "lock: PENDING-plan_lock.hash_plan\n"
+    )
+    plan_file = tmp_path / "plan.md"
+    plan_file.write_text(plan, encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "agents.plan_lock", "hash", str(plan_file)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    lock = result.stdout.strip()
+    assert lock == compute_lock(plan)
+    locked = plan.replace("lock: PENDING-plan_lock.hash_plan", f"lock: {lock}")
+    assert verify_lock(locked) is True

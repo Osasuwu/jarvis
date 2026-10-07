@@ -103,6 +103,34 @@ def test_thresholds_are_read_from_config_not_hardcoded(tmp_path: Path) -> None:
     assert cfg.models.critic == "custom-critic-model"
 
 
+def test_str_path_loads_same_config_as_path(tmp_path: Path) -> None:
+    """Issue #1983: the /implement plan step passes the config path as a plain
+    string; the loader must accept it and return what the Path form returns."""
+    custom = tmp_path / "plan_review.yaml"
+    custom.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "v2",
+                "class_2": {
+                    "shared_surface_globs": ["only/this/**"],
+                    "churn_threshold": 12345,
+                    "min_prod_areas": 7,
+                },
+                "exempt": {"mechanical_criteria": ["only-exempt-criterion"]},
+                "class_3": {"mechanical_criteria": ["only-hitl-criterion"]},
+                "models": {"planner": "custom-planner-model", "critic": "custom-critic-model"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from_str = load_plan_review_config(str(custom))
+
+    assert from_str == load_plan_review_config(custom)
+    assert from_str.class_2.churn_threshold == 12345
+    assert from_str.models.critic == "custom-critic-model"
+
+
 def test_missing_models_key_raises(tmp_path: Path) -> None:
     """Issue #1686 AC9: planner/critic model floors must come from config —
     a config file without them is invalid, not silently defaulted."""
