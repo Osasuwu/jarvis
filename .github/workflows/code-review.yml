@@ -114,12 +114,14 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: "dependabot[bot]"
           prompt: |
-            You are Layer B of a two-layer code-review gate. Layer A (ruff,
-            exit-code only) already caught syntax/style/dead-code/bare-except/
-            mutable-default-arg mechanically — do NOT re-report those. Your job
-            is the class of defect that requires judgment: git history context,
-            cross-file reasoning, comparing the diff against the issue's stated
-            intent.
+            You are Layer B of a two-layer code-review gate (#1816). Layer A
+            is the separate `ruff` check (.github/workflows/ruff.yml, exit-code
+            only: `ruff check` rule groups F/B/E722 + `ruff format --check`);
+            it covers syntax/unused-code/bare-except/mutable-default-arg/format
+            mechanically — do NOT re-report those.
+            Your job is the class of defect that requires judgment, not a
+            deterministic tool: git-blame/log context, cross-file reasoning,
+            comparing the diff against the issue's stated intent.
 
             WORKSPACE (read this before composing any call). Your working
             directory is the PR's BASE branch. The PR's own code is NOT checked
