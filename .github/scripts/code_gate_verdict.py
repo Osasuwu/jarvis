@@ -475,6 +475,8 @@ def snapshot_review_target(api, repo, number, expected_head_sha, event_name):
         if exc.code == 404:
             raise DispatchTargetError(f"PR #{number} does not exist in {repo}") from exc
         raise
+    except RuntimeError as exc:  # the head moved while the files were being read
+        raise DispatchTargetError(str(exc)) from exc
     if event_name == "workflow_dispatch":
         if pr.get("merged"):
             raise DispatchTargetError(f"PR #{number} is merged; there is nothing to review")

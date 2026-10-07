@@ -1,5 +1,5 @@
 {
-  "_about": "Real GitHub API payloads captured 2026-10-07 from Osasuwu/jarvis (#1978 L6), trimmed to the fields the gate reads; head_commit/actor (emails, logins) dropped. Entries marked _derived are NOT captured: the first real artifact expiry is 2026-10-09 (90-day retention), so that one is a real response with `expired` flipped.",
+  "_about": "Real GitHub API payloads captured 2026-10-07 from Osasuwu/jarvis (#1978 L6), trimmed to the fields the gate reads; actor and head_commit dropped (the fork and PR author handles are kept: public, and the fork shape needs them). Entries marked _derived are NOT captured: the first real artifact expiry is 2026-10-09 (90-day retention), so that one is a real response with `expired` flipped.",
   "fork_head": {
     "_source": "canary run 37661571121 on fork PR #2020 (DaNi64j/jarvis, head canary/code-gate-5-fork)",
     "run": {

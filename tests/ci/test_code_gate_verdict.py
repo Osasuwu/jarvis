@@ -6,6 +6,7 @@ files) and every expected value is a literal worked out from the locked design,
 not read back from the module.
 """
 
+import argparse
 import importlib.util
 import json
 import urllib.error
@@ -931,6 +932,52 @@ def test_a_pull_request_run_for_a_since_merged_pr_is_not_a_dispatch_error():
     assert pr["number"] == PR
 
 
+def test_a_head_moving_mid_read_is_a_named_dispatch_error():
+    heads = iter([SHA, OTHER_SHA])
+
+    class Moving(FakeApi):
+        def __call__(self, method, path, body=None):
+            if path == "repos/o/r/pulls/7":
+                return _pr(head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}})
+            return []
+
+    with pytest.raises(gate.DispatchTargetError, match="PR head moved while its files"):
+        _target(Moving())
+
+
+def _prepare_env(monkeypatch, tmp_path, **overrides):
+    summary = tmp_path / "summary.md"
+    env = {
+        "GITHUB_REPOSITORY": "o/r",
+        "GH_TOKEN": "t",
+        "PR_NUMBER": "7",
+        "EVENT_NAME": "workflow_dispatch",
+        "EXPECTED_HEAD_SHA": SHA,
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    env.update(overrides)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    return summary
+
+
+def test_prepare_on_a_closed_pr_fails_the_step_with_an_annotation_and_a_summary(
+    monkeypatch, tmp_path, capsys
+):
+    summary = _prepare_env(monkeypatch, tmp_path)
+    api = _target_api(_pr(state="closed", merged=False))
+    monkeypatch.setattr(gate, "Api", lambda token: api)
+    code = gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
+    assert code == 1
+    assert (
+        "::error::PR #7 is closed; reopen it before dispatching a review" in capsys.readouterr().err
+    )
+    assert summary.read_text("utf-8") == (
+        "**Review not run:** PR #7 is closed; reopen it before dispatching a review\n"
+    )
+
+
 def test_a_pull_request_run_aborts_on_a_moved_head_like_a_dispatch():
     with pytest.raises(gate.DispatchTargetError, match="the head moved"):
         _target(
@@ -943,21 +990,25 @@ def test_a_pull_request_run_aborts_on_a_moved_head_like_a_dispatch():
 
 def test_no_evidence_message_covers_a_head_superseded_mid_run():
     got = _ev([])
-    assert "superseded" in got.message
-    assert "new head" in got.message
+    assert got.code == "evidence-none"
+    assert (
+        "superseded: wait for the run on the new head, or dispatch again with the new head_sha"
+        in got.message
+    )
 
 
 def test_no_evidence_message_covers_dispatch_before_the_final_push():
     got = _ev([])
-    assert "after the final push" in got.message
-    assert "head_sha" in got.message
+    assert got.code == "evidence-none"
+    assert "Dispatch after the final push, with that push's head_sha" in got.message
 
 
 def test_untrusted_dispatch_message_says_to_dispatch_after_the_final_push():
     pr = _pr(changed_files=1, head={"sha": SHA, "repo": {"full_name": "stranger/jarvis"}})
     got = _eval(pr, _files("src/a.py"), [])
-    assert "after the final push" in got.message
-    assert "head_sha" in got.message
+    assert got.code == "untrusted-needs-dispatch"
+    assert "Dispatch after the final push" in got.message
+    assert "the head_sha must be the one pushed last" in got.message
 
 
 # --- real-API fixtures (#1978 L6) -----------------------------------------
