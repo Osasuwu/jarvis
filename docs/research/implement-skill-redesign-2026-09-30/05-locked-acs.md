@@ -44,9 +44,14 @@ older copy on `claude/skill-survey-grill-implement`.
 
 ## Plan and labels [interim — coupling points 3, 4]
 
-- [ ] **AC4 — plan (D1).** If the issue has a locked `## Plan`, follow it; otherwise follow the ACs. Never invoke
-      a planner. `afk:3-human` issues are allowed interactively. The skill carries **no** headless rules
-      (`plan_required` exit, `afk:3-human` refusal) — those move to the orchestration milestone.
+- [ ] **AC4 — plan (D1, amended 2026-10-07).** If the issue has a locked `## Plan`, follow it. Otherwise, in a
+      repo that ships `.claude/agents/planner.md` and `config/plan_review.yaml`, `evaluate_trigger` decides:
+      `requires_plan` → spawn the `planner`, check critic verdicts fail-closed, lock with
+      `python -m agents.plan_lock hash` and append the locked plan to the issue body; an unresolved objection
+      ends `blocked — plan objection`. Every other case follows the ACs. `afk:3-human` issues are allowed
+      interactively. The skill carries **no** headless rules (`plan_required` exit, `afk:3-human` refusal) —
+      those move to the orchestration milestone. *Amended:* the original "never invoke a planner" was reversed
+      by the user — an interactive class-2 change in jarvis would otherwise get no plan at all.
 
 ## Process
 
