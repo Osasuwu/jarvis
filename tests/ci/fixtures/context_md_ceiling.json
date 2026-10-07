@@ -1,0 +1,14 @@
+{
+  "_meta": {
+    "title": "CONTEXT.md byte ceiling (#1985)",
+    "description": "Anti-regrowth ratchet on CONTEXT.md as a whole file. It is pull-only, but a pull-only file still gets read whole when nothing narrows the read: a /grill run read it together with a 202 KB research doc and compacted 3 times before Phase 1 (retro 2026-10-07). tests/ci/test_context_md_ceiling_guard.py fails when the file exceeds the ceiling below.",
+    "mechanism": "Same mechanism as the push-surface ratchet (#1273, tests/ci/fixtures/push_surface_ceilings.json + a tests/ci guard test, later retired by #1800): the guard reads the ceiling only from this file, so raising it is impossible without editing it in the same PR. Regrowth is a reviewable act.",
+    "unit": "UTF-8 bytes of Path.read_text(encoding='utf-8'), which normalizes CRLF to LF. NOT `wc -c`: a Windows checkout with autocrlf counts the CRLF bytes and reads about 250 bytes higher than the CI runner.",
+    "margin": "Measured 69,207 bytes when set (2026-10-07, after adding the section index, research pointer and correcting the stale Push/pull split wording); ceiling 70,350 = +1,143 bytes (about 1.7%). Small on purpose: room for a few glossary entries, not for a new section.",
+    "raising": "Prefer trimming (How to grow this file, rule 4) or moving a section to docs/reference/*.md. If the content must stay, raise the ceiling here in the same PR and say why in the PR body."
+  },
+  "context_md": {
+    "path": "CONTEXT.md",
+    "bytes": 70350
+  }
+}
