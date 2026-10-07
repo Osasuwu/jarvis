@@ -1,5 +1,6 @@
 name: Code Review
 
+# Code-gate canary 4/7: a comment-only edit here must still read as gate machinery.
 # Produces review EVIDENCE only; it never decides anything. The `code-gate`
 # check is posted by code-gate-verdict.yml (base-pinned, run from the default
 # branch) from the `review-evidence` artifact uploaded here. Rule: "Review
