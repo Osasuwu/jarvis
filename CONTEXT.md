@@ -71,7 +71,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Type 1 trigger** — Event/cron-driven skill invocation in fresh session without model deciding.
 - **Type 2 trigger** — User/orchestrator intent-shaped prompt matched to skill description.
 - **Type 3 trigger** — Mid-task self-trigger by model; not designed for (ADR-0001).
-- **3 devices** — Lenovo laptop, desktop, MacBook; different usernames, never device-pinned.
+- **3 devices** — desktop, laptop, Workshop PC (all Windows); different usernames, never device-pinned.
 - **Workshop PC** — Sole routine host for all Jarvis routines; SPOF with gap canary via the status-digest cron.
 - **JARVIS_HOME** — Env var resolved at install time to absolute repo root; use in templated configs.
 - **~/.claude/** — User-level config: a stub `CLAUDE.md` importing from the operator's private dotfiles repo, plus junctions (`skills/`, `reference/`) into that repo's clone. Edit in the clone and commit there.
@@ -201,7 +201,7 @@ Durable behavior rules live in three tiers, each a backstop for the one above, s
 
 ### Devices & paths
 
-- **3 devices** — owner runs Jarvis on Lenovo laptop, desktop, MacBook. Different usernames, different paths. Anything device-pinned is a bug.
+- **3 devices** — owner runs Jarvis on desktop, laptop and Workshop PC, all Windows. Different usernames, different paths. Anything device-pinned is a bug.
 - **Workshop PC = sole routine host.** Robot connection became network-mediated, so Workshop runs 24/7 as the residency for Jarvis's remaining scheduled routines (status-digest, intel, verify) via the `create_scheduled_task` MCP. **Historical, retired with the reactive-core demolition (#1802):** `wake_driver`, the AFK sandcastle launch path, and the `memory-consolidation-weekly`/`memory-evolve-weekly` jobs no longer exist — their source files are gone, only stale `.pyc` remain. Centralising the surviving routines on one host still removes per-device cron-dedup and eliminates double-dispatch. SPOF tradeoff: Workshop offline = routines pause; the status-digest gap on next SessionStart is the canary. Decision `1b7ff8d1` (2026-05-26).
 - **JARVIS_HOME** — env var resolved at install time to the absolute repo root. Use this in templated configs, never hardcode `C:\Users\...`.
 - **`~/.claude/`** — user-level Claude Code config. The `install.ps1 -Apply` sync was retired in #1800, and the in-repo `.claude-userlevel/skills/` mirror in #1923: user-level skills, `CLAUDE.md`, `SOUL.md` and `reference/` live only in the operator's private dotfiles repo, wired into `~/.claude/` per device (stub `@import`s + junctions) per [`docs/setup.md`](docs/setup.md).
