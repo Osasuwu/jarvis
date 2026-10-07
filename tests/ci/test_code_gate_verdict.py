@@ -719,8 +719,10 @@ class FakeApi:
         self.calls.append((method, path, body))
         if method != "GET":
             return {}
-        for prefix, value in self.responses.items():
+        # longest matching prefix wins, so 'pulls/7/files' is never answered as 'pulls/7'
+        for prefix in sorted(self.responses, key=len, reverse=True):
             if path.startswith(prefix):
+                value = self.responses[prefix]
                 if isinstance(value, Exception):
                     raise value
                 return value
@@ -895,7 +897,28 @@ def test_dispatch_for_a_nonexistent_pr_names_the_cause():
     api = FakeApi({"repos/o/r/pulls/7": _http_error(404)})
     with pytest.raises(gate.DispatchTargetError) as exc:
         _target(api)
-    assert str(exc.value) == "PR #7 does not exist in o/r"
+    assert str(exc.value) == (
+        "PR #7 was not found in o/r: no such pull request "
+        "(an issue number is not one), or the token cannot see it"
+    )
+
+
+def test_a_404_on_the_file_list_is_not_reported_as_a_missing_pr():
+    api = FakeApi(
+        {
+            "repos/o/r/pulls/7": _pr(state="open", merged=False),
+            "repos/o/r/pulls/7/files": _http_error(404),
+        }
+    )
+    with pytest.raises(urllib.error.HTTPError):
+        _target(api)
+
+
+def test_a_merged_pr_is_refused_before_its_files_are_paged():
+    api = _target_api(_pr(state="closed", merged=True))
+    with pytest.raises(gate.DispatchTargetError):
+        _target(api)
+    assert [path for _, path, _ in api.calls] == ["repos/o/r/pulls/7"]
 
 
 def test_dispatch_for_a_merged_pr_names_the_cause():
@@ -914,7 +937,7 @@ def test_dispatch_for_a_superseded_head_names_both_shas():
     with pytest.raises(gate.DispatchTargetError) as exc:
         _target(_target_api(_pr(state="open", merged=False)), expected=OTHER_SHA)
     assert str(exc.value) == (
-        f"PR #7 head is {SHA}, this dispatch was for {OTHER_SHA}: "
+        f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: "
         "the head moved, dispatch again with the new head_sha"
     )
 
@@ -938,11 +961,27 @@ def test_a_head_moving_mid_read_is_a_named_dispatch_error():
     class Moving(FakeApi):
         def __call__(self, method, path, body=None):
             if path == "repos/o/r/pulls/7":
-                return _pr(head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}})
+                return _pr(
+                    state="open",
+                    merged=False,
+                    head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}},
+                )
             return []
 
-    with pytest.raises(gate.DispatchTargetError, match="PR head moved while its files"):
+    with pytest.raises(gate.DispatchTargetError) as exc:
         _target(Moving())
+    assert str(exc.value) == (
+        "PR #7 changed while its files were being read: "
+        "the head moved, dispatch again with the new head_sha"
+    )
+
+
+def test_a_runtime_error_from_the_snapshot_is_not_a_dispatch_error():
+    api = FakeApi({"repos/o/r/pulls/7": _pr(state="open", merged=False)})
+    api.responses["repos/o/r/pulls/7/files"] = RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom") as exc:
+        _target(api)
+    assert not isinstance(exc.value, gate.DispatchTargetError)
 
 
 def _prepare_env(monkeypatch, tmp_path, **overrides):
@@ -962,27 +1001,80 @@ def _prepare_env(monkeypatch, tmp_path, **overrides):
     return summary
 
 
-def test_prepare_on_a_closed_pr_fails_the_step_with_an_annotation_and_a_summary(
-    monkeypatch, tmp_path, capsys
+def _moving_api():
+    heads = iter([SHA, OTHER_SHA])
+
+    class Moving(FakeApi):
+        def __call__(self, method, path, body=None):
+            if path == "repos/o/r/pulls/7":
+                return _pr(
+                    state="open",
+                    merged=False,
+                    head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}},
+                )
+            return []
+
+    return Moving()
+
+
+@pytest.mark.parametrize(
+    ("make_api", "expected_head", "message"),
+    [
+        (
+            lambda: _target_api(_pr(state="closed", merged=False)),
+            SHA,
+            "PR #7 is closed; reopen it before dispatching a review",
+        ),
+        (
+            lambda: FakeApi({"repos/o/r/pulls/7": _http_error(404)}),
+            SHA,
+            "PR #7 was not found in o/r: no such pull request "
+            "(an issue number is not one), or the token cannot see it",
+        ),
+        (
+            lambda: _target_api(_pr(state="open", merged=False)),
+            OTHER_SHA,
+            f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: "
+            "the head moved, dispatch again with the new head_sha",
+        ),
+        (
+            _moving_api,
+            SHA,
+            "PR #7 changed while its files were being read: "
+            "the head moved, dispatch again with the new head_sha",
+        ),
+    ],
+    ids=["closed", "nonexistent", "superseded-head", "moved-mid-read"],
+)
+def test_prepare_fails_the_step_with_an_annotation_and_a_summary(
+    monkeypatch, tmp_path, capsys, make_api, expected_head, message
 ):
-    summary = _prepare_env(monkeypatch, tmp_path)
-    api = _target_api(_pr(state="closed", merged=False))
+    summary = _prepare_env(monkeypatch, tmp_path, EXPECTED_HEAD_SHA=expected_head)
+    api = make_api()
     monkeypatch.setattr(gate, "Api", lambda token: api)
     code = gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
     assert code == 1
-    assert (
-        "::error::PR #7 is closed; reopen it before dispatching a review" in capsys.readouterr().err
-    )
-    assert summary.read_text("utf-8") == (
-        "**Review not run:** PR #7 is closed; reopen it before dispatching a review\n"
-    )
+    assert f"::error::{message}" in capsys.readouterr().err
+    assert summary.read_text("utf-8") == f"**Review not run:** {message}\n"
 
 
-def test_a_pull_request_run_aborts_on_a_moved_head_like_a_dispatch():
-    with pytest.raises(gate.DispatchTargetError, match="the head moved"):
+def test_prepare_lets_an_unrelated_api_failure_propagate(monkeypatch, tmp_path):
+    _prepare_env(monkeypatch, tmp_path)
+    api = FakeApi({"repos/o/r/pulls/7": _http_error(500)})
+    monkeypatch.setattr(gate, "Api", lambda token: api)
+    with pytest.raises(urllib.error.HTTPError):
+        gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
+
+
+def test_a_pull_request_run_on_a_moved_head_is_not_told_to_dispatch():
+    with pytest.raises(gate.DispatchTargetError) as exc:
         _target(
             _target_api(_pr(state="open", merged=False)), expected=OTHER_SHA, event="pull_request"
         )
+    assert str(exc.value) == (
+        f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: "
+        "the head moved, the run on the new head reviews it"
+    )
 
 
 # --- stale-evidence remediation (#1978 L3/L5) -----------------------------
@@ -1031,6 +1123,22 @@ def test_real_fork_head_run_is_not_evidence_and_needs_a_dispatch():
     assert run["pull_requests"] == []  # GitHub never links a fork-head run to the base repo's PR
     assert gate.run_qualifies(run, 2020, fx["pr"]["head"]["sha"], "main") is False
     got = gate.evaluate_pr(fx["pr"], fx["files"], [_real_entry("fork_head")], "main")
+    assert (got.green, got.code) == (False, "untrusted-needs-dispatch")
+    # The captured run failed, so evaluate_pr would skip it on that alone; a succeeded twin
+    # with clean evidence must still not count, or run_qualifies alone guards the fork.
+    sha = fx["pr"]["head"]["sha"]
+    clean = {
+        "schema": 1,
+        "status": "reviewed",
+        "sha": sha,
+        "base_ref": "main",
+        "blocking": False,
+        "findings": [],
+    }
+    twin = dict(run, status="completed", conclusion="success")
+    got = gate.evaluate_pr(
+        fx["pr"], fx["files"], [{"run": twin, "artifact": clean, "state": "ok"}], "main"
+    )
     assert (got.green, got.code) == (False, "untrusted-needs-dispatch")
 
 

@@ -453,13 +453,21 @@ def paged(api, path, key=None, per_page=100, max_pages=10):
     return items
 
 
-def fetch_pr_snapshot(api, repo, number):
-    """(pr, files) with a head check: a push landing mid-read is an error, not a mixed snapshot."""
-    before = api("GET", f"repos/{repo}/pulls/{number}")
+class HeadMovedError(RuntimeError):
+    """The PR head changed while its snapshot was being read."""
+
+
+def fetch_pr_snapshot(api, repo, number, before=None):
+    """(pr, files) with a head check: a push landing mid-read is an error, not a mixed snapshot.
+
+    `before` is a PR response the caller already holds; it saves one GET.
+    """
+    if before is None:
+        before = api("GET", f"repos/{repo}/pulls/{number}")
     files = paged(api, f"repos/{repo}/pulls/{number}/files", max_pages=MAX_FILE_PAGES)
     after = api("GET", f"repos/{repo}/pulls/{number}")
     if before["head"]["sha"] != after["head"]["sha"]:
-        raise RuntimeError("PR head moved while its files were being read; re-evaluate")
+        raise HeadMovedError("PR head moved while its files were being read; re-evaluate")
     return after, files
 
 
@@ -467,16 +475,29 @@ class DispatchTargetError(Exception):
     """The review run was pointed at a PR or head that cannot be reviewed; the message names why."""
 
 
+def _head_moved_message(number, event_name, detail):
+    # A pull_request run is superseded by the synchronize run on the new head; only a
+    # dispatch has to be repeated by hand.
+    if event_name == "workflow_dispatch":
+        return f"PR #{number} {detail}: the head moved, dispatch again with the new head_sha"
+    return f"PR #{number} {detail}: the head moved, the run on the new head reviews it"
+
+
 def snapshot_review_target(api, repo, number, expected_head_sha, event_name):
-    """fetch_pr_snapshot, with every way a review run can be mis-aimed turned into a named error."""
+    """fetch_pr_snapshot, with every way a review run can be mis-aimed turned into a named error.
+
+    The PR itself is read first so a missing, closed, merged or moved target is refused
+    before the file list is paged.
+    """
     try:
-        pr, files = fetch_pr_snapshot(api, repo, number)
+        pr = api("GET", f"repos/{repo}/pulls/{number}")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise DispatchTargetError(f"PR #{number} does not exist in {repo}") from exc
+            raise DispatchTargetError(
+                f"PR #{number} was not found in {repo}: no such pull request "
+                "(an issue number is not one), or the token cannot see it"
+            ) from exc
         raise
-    except RuntimeError as exc:  # the head moved while the files were being read
-        raise DispatchTargetError(str(exc)) from exc
     if event_name == "workflow_dispatch":
         if pr.get("merged"):
             raise DispatchTargetError(f"PR #{number} is merged; there is nothing to review")
@@ -487,10 +508,16 @@ def snapshot_review_target(api, repo, number, expected_head_sha, event_name):
     head_sha = pr["head"]["sha"]
     if expected_head_sha and expected_head_sha != head_sha:
         raise DispatchTargetError(
-            f"PR #{number} head is {head_sha}, this dispatch was for {expected_head_sha}: "
-            "the head moved, dispatch again with the new head_sha"
+            _head_moved_message(
+                number, event_name, f"head is {head_sha}, this run was for {expected_head_sha}"
+            )
         )
-    return pr, files
+    try:
+        return fetch_pr_snapshot(api, repo, number, before=pr)
+    except HeadMovedError as exc:
+        raise DispatchTargetError(
+            _head_moved_message(number, event_name, "changed while its files were being read")
+        ) from exc
 
 
 def read_evidence_zip(blob):
