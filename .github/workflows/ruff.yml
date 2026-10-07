@@ -1,0 +1,62 @@
+name: Ruff
+
+# Layer A of the code-gate (#1816) as a real CI check: `ruff check` (lint rule
+# groups pinned in pyproject.toml `[tool.ruff.lint].select`) and
+# `ruff format --check`. Closes #1911 — pyproject.toml pinned ruff but nothing
+# ran it, so format drift went unnoticed until a pin bump surfaced it (#1909).
+#
+# VERSION: single source is pyproject.toml's `dev` extra (`ruff>=...,<1`), as
+# resolved to one exact version in uv.lock. `uv sync --locked` installs that
+# locked version and fails if uv.lock is out of sync with pyproject.toml, so
+# the runner never picks "whatever pip resolves today". The version is
+# deliberately NOT restated here; the step prints it so a run shows which
+# ruff judged it. A pre-commit hook is intentionally absent: it would need its
+# own `rev:` pin that must be kept equal to uv.lock by hand — the hook-vs-CI
+# fight #1911 warns about.
+#
+# SCOPE: repo-wide (`ruff check .` / `ruff format --check .`), not
+# changed-files-only. Reason: the whole tree is ~130 Python files and checks in
+# about a second, so a diff-scoped run saves nothing; and the drift this gate
+# exists for comes from ruff-version bumps and config edits, which change
+# verdicts on files the PR never touched — a changed-files run would let
+# exactly that drift back in. Repo-wide also keeps main always-clean, so a
+# violation is never attributable to "someone else's file".
+#
+# The PR trigger is intentionally unfiltered (no `paths:`): a path-filtered
+# job that skips on a PR leaves any required-check context at "Expected" and
+# deadlocks the merge (see gitleaks.yml). Whether this check is *required* is
+# a branch-protection setting, not decided here — see the PR for #1911.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  push:
+    branches: [main]
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Install the locked ruff
+        run: uv sync --locked --extra dev --no-install-project
+
+      - name: Show ruff version
+        run: uv run --no-sync ruff --version
+
+      - name: ruff check
+        run: uv run --no-sync ruff check .
+
+      - name: ruff format --check
+        run: uv run --no-sync ruff format --check .
