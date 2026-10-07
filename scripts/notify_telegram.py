@@ -20,6 +20,7 @@ Usage::
 
 from __future__ import annotations
 
+import shutil  # TEMP-1911 violation
 import json
 import os
 import sys
