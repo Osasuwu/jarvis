@@ -48,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run unattended worker
-        uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
+        uses: anthropics/claude-code-action@cab360f6565aa35a51d6ce9e43f1f4287c0a32ea # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Fine-grained PAT (contents/issues/pull-requests write, scoped to
