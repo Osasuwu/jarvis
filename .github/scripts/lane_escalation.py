@@ -18,7 +18,8 @@ issue body (a bot edit of the body would trip intake's `bot-edited` rule).
 
 The operator is whoever `LANE_OPERATOR` names (repository variable, no literal here).
 Unset or not a GitHub login, the label and comment still land without a mention and the
-command exits 1, so the misconfiguration shows red. Stdlib only.
+command exits 1, so the misconfiguration shows red; a `watch` pass that flagged nothing
+exits 0 either way. Stdlib only.
 """
 
 import json
@@ -378,7 +379,9 @@ def main(argv):
             return
         handle = operator_handle(env.get("LANE_OPERATOR"))
     elif command == "watch":
-        handle = watch(env)[1]
+        flagged, handle = watch(env)
+        if not flagged:
+            return  # nothing escalated, so a missing operator is not this pass's failure
     else:
         sys.exit("usage: lane_escalation.py run|watch")
     if handle is None:

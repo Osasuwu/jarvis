@@ -547,6 +547,16 @@ def test_a_dispatched_review_counts_by_its_run_title(gh):
     assert _watch(gh)[0] == [(40, "code-gate")]
 
 
+def test_watch_without_an_operator_exits_cleanly_when_nothing_is_red(gh, monkeypatch, capsys):
+    gh.open_prs = [_pr()]
+    gh.check_runs = {SHA: [_check("pytest", "success", 1)]}
+    monkeypatch.setenv("GH_REPO", REPO)
+    monkeypatch.delenv("LANE_OPERATOR", raising=False)
+    lane_escalation.main(["lane_escalation.py", "watch"])  # must not raise SystemExit
+    assert gh.writes == []
+    assert "::warning::" not in capsys.readouterr().out
+
+
 def test_watch_without_an_operator_still_flags_and_exits_failing(gh, monkeypatch, capsys):
     gh.open_prs = [_pr()]
     gh.check_runs = {SHA: [_check("pytest", "failure", 1)]}
