@@ -126,6 +126,42 @@ jobs:
             echo "GIT_COMMITTER_EMAIL=339131200+osasuwu-bot@users.noreply.github.com"
           } >> "$GITHUB_ENV"
 
+      # The worker's test toolchain (#1951): the `pytest` job's environment in
+      # pytest.yml, installed from the lockfile before the model starts, so the
+      # `python -m pytest` and `ruff` grants below have something to run and the
+      # worker can do the mutation probe test-quality.md asks for. The first
+      # three steps are copied from that job and a guard
+      # (test_agent_dispatch_toolchain_guard.py) pins that they stay equal. They
+      # run on the default-branch checkout before any worker output exists and
+      # hold only the read-only GITHUB_TOKEN, the same trust surface as CI's job.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Install package + extras from lockfile
+        run: uv sync --all-extras
+
+      # `uv sync` puts the environment in `.venv`. On PATH, `python`, `pytest`
+      # and `ruff` in the agent's shell resolve to it, so the allowlist needs no
+      # `uv` entry (`uv run` would sync against a pyproject.toml / uv.lock the
+      # worker can edit, i.e. install packages of its own choosing).
+      - name: Put the test environment on PATH
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      # Fails the job before the model starts when the environment is missing,
+      # so a broken install reaches the `escalate` job as a worker failure
+      # rather than a worker that silently cannot test.
+      - name: Check the test toolchain
+        run: |
+          set -euo pipefail
+          python -c 'import sys; assert sys.prefix.endswith("/.venv"), sys.prefix'
+          python -m pytest --version
+          ruff --version
+
       - name: Run unattended worker
         id: claude
         uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
@@ -172,9 +208,16 @@ jobs:
                stop and do nothing.
             3. Branch from `main`:
                `claude/issue-${{ github.event.issue.number }}-<slug>`.
-            4. Implement every acceptance-criteria bullet. Run the repo's
-               lint and test commands before committing; fix failures
-               before moving on.
+            4. Implement every acceptance-criteria bullet. Before
+               committing run `ruff check .`, `ruff format --check .` and
+               `python -m pytest tests/ -q`; fix failures before moving
+               on. The Python environment is already installed from the
+               lockfile and on PATH, and you cannot install packages: a
+               missing dependency is a step-5 blocker. Every test you add
+               or change gets the mutation probe that
+               `docs/reference/test-quality.md` describes, and the
+               `<production file>:<line> <mutation> → <tests> red` line
+               goes in the Testing section.
             5. If genuinely blocked — ambiguous scope, an acceptance
                criterion contradicts the codebase, or the change needs a
                human decision — do NOT guess. Write the specific blocker
@@ -206,7 +249,12 @@ jobs:
             # rationale as code-review.yml's allowlist — no human to approve
             # a mid-run permission prompt. Covers the implement loop:
             # read/search, edit, local git, `gh` reads, and this repo's
-            # lint/test commands. There is no push, `gh pr create` or `gh
+            # lint/test commands, which run from the venv the job installs
+            # from the lockfile before the agent starts (#1951). No installer
+            # is granted (no `pip`, `uv`, `npm`), so the worker cannot add
+            # packages of its own choosing; code that `pytest` itself runs is
+            # outside this list (D4), the boundary being the read-only token.
+            # There is no push, `gh pr create` or `gh
             # issue edit/comment` here: the token cannot do them, and the
             # `publish` job does. CI/hook/secret config paths stay a step-5
             # escalation, never an unattended edit (mechanically Edit-denied
