@@ -53,7 +53,7 @@ One line of the PR body, anywhere outside a code fence, HTML comment or `>` bloc
 Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>
 ```
 
-- An optional list marker `- ` or `* ` may precede it.
+- Up to three spaces of indentation and an optional list marker `- ` or `* ` may precede it. A line indented four spaces or more (or by a tab) is an indented code block and is ignored.
 - `Risk` and the tier are case-insensitive; the tier is read as upper case.
 - The tier may be wrapped in `**` (bold). The *label* may not: `**Risk**:` is malformed. `__x__` bold is
   not accepted either: the lenient parser in `lane_publish.py` cannot read it.
@@ -95,6 +95,8 @@ row against the parser, so the table cannot drift from the code.
 | `> Risk: LOW — quoted` | missing |
 | `Risk assessment: LOW` | missing |
 | `no risk line here` | missing |
+| `    Risk: LOW — indented code` | missing |
+| `   Risk: LOW — three spaces` | LOW |
 
 The PR template (`.github/PULL_REQUEST_TEMPLATE.md`) carries `Risk: <LOW|MEDIUM|HIGH|CRITICAL> —
 <reason>` unfilled, which is malformed on purpose: the check stays red until the author fills it in.

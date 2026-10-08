@@ -94,6 +94,7 @@ jobs:
   # read through the API as data. Not pull_request_target (D11/D11b).
   risk-tier:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
@@ -114,7 +115,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install pyyaml==6.0.3
-      - run: python .github/scripts/risk_tier.py
+      - run: |
+          if [ ! -f .github/scripts/risk_tier.py ]; then
+            echo "::error::risk-tier: the base branch has no .github/scripts/risk_tier.py (a PR based on a branch that predates #2004). Rebase onto main."
+            exit 1
+          fi
+          python .github/scripts/risk_tier.py
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}

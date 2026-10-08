@@ -47,10 +47,10 @@ _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 _FENCE_CLOSE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$")
 # A line that announces itself as the Risk line: the label, its colon, nothing else asked.
-_LABEL = re.compile(r"^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?Risk(?:\*\*)?[ \t]*:", re.IGNORECASE)
+_LABEL = re.compile(r"^[ ]{0,3}(?:[-*][ \t]+)?(?:\*\*)?Risk(?:\*\*)?[ \t]*:", re.IGNORECASE)
 _TIER = r"(?:LOW|MEDIUM|HIGH|CRITICAL)"
 _RISK_LINE = re.compile(
-    rf"^[ \t]*(?:[-*][ \t]+)?Risk[ \t]*:[ \t]*"
+    rf"^[ ]{{0,3}}(?:[-*][ \t]+)?Risk[ \t]*:[ \t]*"
     rf"(?:\*\*(?P<b>{_TIER})\*\*|(?P<p>{_TIER}))"
     r"[ \t]+(?:—|–|--|-)[ \t]+\S.*$",
     re.IGNORECASE,
@@ -104,6 +104,11 @@ def parse_declared(body):
     return (match.group("b") or match.group("p")).upper(), None
 
 
+def _clean(text):
+    """PR-controlled text for a log line: no newline can start a `::` workflow command."""
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
 def _is_test_file(path):
     base = path.rsplit("/", 1)[-1]
     return path.startswith("tests/") or any(fnmatch.fnmatchcase(base, p) for p in _TEST_BASENAMES)
@@ -131,21 +136,27 @@ def test_weakening(files):
     removed, added = collections.Counter(), collections.Counter()
     for f in files:
         name = f["filename"]
+        old_name = f.get("previous_filename")
+        if old_name and _is_test_file(old_name) and not _is_test_file(name):
+            reasons.append(f"test file renamed out of the test set: {_clean(old_name)}")
+            continue
         if not _is_test_file(name):
             continue
         if f.get("status") == "removed":
-            reasons.append(f"test file removed: {name}")
+            reasons.append(f"test file removed: {_clean(name)}")
             continue
         patch = f.get("patch")
         if patch is None:
-            reasons.append(f"test file with no readable diff: {name}")
+            if f.get("status") == "renamed" and not f.get("changes"):
+                continue  # a pure rename carries no patch and changes no line
+            reasons.append(f"test file with no readable diff: {_clean(name)}")
             continue
         for line in patch.split("\n"):
             m = _TEST_NAME.match(line)
             if m:
                 (removed if line[0] == "-" else added)[m.group(1)] += 1
             elif line.startswith("+") and any(s in line for s in _SKIP_MARKERS):
-                reasons.append(f"skip/xfail added in {name}: {line[1:].strip()}")
+                reasons.append(f"skip/xfail added in {_clean(name)}: {_clean(line[1:].strip())}")
     for test, count in sorted(removed.items()):
         if count > added[test]:
             reasons.append(f"test function removed: {test}")
@@ -265,7 +276,7 @@ def _github_get(path):
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read())
 
 

@@ -26,7 +26,9 @@
       "package-lock.json",
       "docs/reference/github-repo-setup.md",
       "docs/reference/test-quality.md",
-      "docs/security/**"
+      "docs/security/**",
+      ".gitleaksignore",
+      "SECURITY.md"
     ]
   },
   "SergazyNarynov/redrobot": {

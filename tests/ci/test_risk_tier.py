@@ -188,6 +188,21 @@ def test_a_path_in_any_bucket_of_the_base_list_reads_high_whatever_the_declared_
     )
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".gitleaksignore",
+        "SECURITY.md",
+        ".github/workflows/x.yml",
+        "config/plan_review.yaml",
+        "pyproject.toml",
+    ],
+)
+def test_the_real_protected_list_floors_the_gate_machinery_at_high(path):
+    tier, reasons = risk_tier.path_tier([path], REPO, _root)
+    assert (tier, reasons) == ("HIGH", [f"protected path(s): {path}"])
+
+
 def test_a_rename_out_of_a_protected_path_reads_high(base):
     files = [_file("scripts/moved.py", status="renamed", previous_filename="AGENTS.md")]
     tier, reasons = _computed(base, files)
@@ -259,6 +274,48 @@ def test_a_test_function_moved_to_another_file_does_not(base):
 def test_a_removed_test_function_in_a_non_test_named_file_under_tests_reads_high(base):
     files = [_file("tests/helpers.py", patch="@@ -1,2 +0,0 @@\n-def test_old():\n-    pass")]
     assert _computed(base, files) == ("HIGH", ["test function removed: test_old"])
+
+
+def test_a_test_file_renamed_out_of_the_test_set_reads_high(base):
+    files = [_file("docs/a.txt", patch=None, status="renamed", previous_filename="tests/test_a.py")]
+    assert _computed(base, files) == (
+        "HIGH",
+        ["test file renamed out of the test set: tests/test_a.py"],
+    )
+
+
+def test_a_pure_rename_between_test_files_is_not_an_unreadable_diff(base):
+    files = [
+        _file(
+            "tests/test_b.py",
+            patch=None,
+            status="renamed",
+            previous_filename="tests/test_a.py",
+            additions=0,
+            changes=0,
+        )
+    ]
+    assert _computed(base, files) == ("LOW", [])
+
+
+def test_a_renamed_test_file_with_edits_but_no_patch_still_reads_high(base):
+    files = [
+        _file(
+            "tests/test_b.py",
+            patch=None,
+            status="renamed",
+            previous_filename="tests/test_a.py",
+            changes=3,
+        )
+    ]
+    assert _computed(base, files) == ("HIGH", ["test file with no readable diff: tests/test_b.py"])
+
+
+def test_a_newline_in_a_file_name_cannot_start_a_workflow_command_line(base):
+    files = [_file("tests/a\n::stop-commands::x.py", patch=None, status="removed")]
+    tier, reasons = _computed(base, files)
+    assert (tier, reasons) == ("HIGH", ["test file removed: tests/a\\n::stop-commands::x.py"])
+    assert not any(line.startswith("::") for r in reasons for line in r.split("\n"))
 
 
 def test_adding_a_test_function_does_not(base):
@@ -432,8 +489,48 @@ def test_the_check_only_ever_checks_out_the_base_branch():
 
 def test_no_pr_text_is_interpolated_into_a_shell_step():
     runs = [s["run"] for s in _job()["steps"] if "run" in s]
-    assert "python .github/scripts/risk_tier.py" in runs
+    assert any(r.rstrip().endswith("python .github/scripts/risk_tier.py") for r in runs)
     assert [r for r in runs if "${{" in r] == []
+
+
+def test_the_job_is_time_boxed_and_names_a_base_without_the_script():
+    job = _job()
+    assert job["timeout-minutes"] == 10
+    guard = [s["run"] for s in job["steps"] if "risk_tier.py" in s.get("run", "")]
+    assert len(guard) == 1
+    assert "[ ! -f .github/scripts/risk_tier.py ]" in guard[0]
+    assert "::error::risk-tier: the base branch has no .github/scripts/risk_tier.py" in guard[0]
+
+
+def test_the_github_call_is_authenticated_and_bounded_by_a_timeout(monkeypatch):
+    seen = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"], seen["auth"], seen["timeout"] = (
+            req.full_url,
+            req.get_header("Authorization"),
+            timeout,
+        )
+        return Resp()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    monkeypatch.setattr(risk_tier.urllib.request, "urlopen", fake_urlopen)
+    assert risk_tier._github_get("repos/Osasuwu/jarvis/pulls/1") == {"ok": True}
+    assert seen == {
+        "url": "https://api.github.com/repos/Osasuwu/jarvis/pulls/1",
+        "auth": "Bearer t0ken",
+        "timeout": 30,
+    }
 
 
 def test_a_review_event_does_not_skip_the_linked_issue_job():
