@@ -130,7 +130,8 @@ def tally(comments, now, bot=DEFAULT_BOT_LOGIN):
         else:
             pending += 1
 
-    if successes > GATE_FAIL_AT_OR_BELOW:
+    # D13 judges ten counted runs: six clean ones out of six is still short of the window.
+    if successes > GATE_FAIL_AT_OR_BELOW and len(counted) >= GATE_RUNS:
         verdict = "pass"
     elif failures >= GATE_RUNS - GATE_FAIL_AT_OR_BELOW:
         verdict = "fail"
@@ -247,6 +248,8 @@ def add_row(env, out_dir, now):
     ]
 
     smoke = split_ref(env.get("LANE_LEDGER_SMOKE_ISSUE"))
+    if smoke is None:
+        print("::warning::LANE_LEDGER_SMOKE_ISSUE is not owner/repo#N; every run counts")
     in_smoke = smoke is not None and (
         gh("issue", "view", str(smoke[1]), "--repo", smoke[0], "--json", "state", "-q", ".state")
         == "OPEN"
@@ -269,7 +272,9 @@ def add_row(env, out_dir, now):
     }
     existing = _find_row(_comments(*ledger), bot, host, run_id)
     if existing:
-        row["at"] = existing[1].get("at", row["at"])
+        # A re-run must not undo what the PR close already settled, or the smoke call.
+        for key in ("at", "final", "window"):
+            row[key] = existing[1].get(key, row[key])
     _write(*ledger, existing[0] if existing else None, row)
     print(f"{host}#{issue}: ledger row for run {run_id} ({row['outcome']}, {row['window']})")
     return row

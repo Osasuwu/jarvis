@@ -102,6 +102,14 @@ def test_six_merged_unedited_of_ten_pass_the_gate():
     }
 
 
+def test_six_successes_of_six_counted_runs_are_not_a_pass_yet():
+    rows = [_row(n) for n in range(6)]
+    assert _tally([_comment(r) for r in rows])["verdict"] == "open"
+    # D13: fewer than ten counted runs by the deadline is a fail, however clean they are.
+    after = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
+    assert _tally([_comment(r) for r in rows], now=after)["verdict"] == "fail"
+
+
 def test_five_successes_do_not_pass_the_gate_yet():
     rows = [_row(n) for n in range(5)] + [_row(n, final="merged-edited") for n in range(5, 9)]
     rows.append(_row(9, final="pending", tier="LOW"))
@@ -140,6 +148,11 @@ def test_a_high_pr_without_a_decision_for_seven_days_counts_as_not_merged():
         "pending": 1,
         "verdict": "open",
     }
+
+
+def test_a_critical_pr_without_a_decision_for_seven_days_counts_as_not_merged():
+    held = _row(1, tier="CRITICAL", final="pending", at="2026-10-13T12:00:00+00:00")
+    assert _tally([_comment(held)])["failures"] == 1
 
 
 def test_a_pending_low_pr_stays_open_however_old():
@@ -309,6 +322,34 @@ def test_a_rerun_of_the_same_run_refreshes_its_row_instead_of_adding_one(github,
     ]
 
 
+def test_a_rerun_after_the_pr_closed_keeps_the_settled_final_and_window(github, tmp_path):
+    github.prs = [{"number": 77, "additions": 1, "deletions": 1, "body": "Risk: LOW — x"}]
+    lane_ledger.add_row(_add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW)
+    github.comments[0]["body"] = lane_ledger.render(
+        {**github.rows()[0], "final": "merged-unedited", "window": "smoke"}
+    )
+    # #2014 is CLOSED in the fake, so a fresh evaluation would say `counted` / `pending`.
+    lane_ledger.add_row(_add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW)
+    assert [(r["final"], r["window"]) for r in github.rows()] == [("merged-unedited", "smoke")]
+
+
+def test_a_forged_row_for_the_same_run_is_not_taken_for_the_runs_own_row(github, tmp_path):
+    github.comments.append(
+        {
+            "id": 5,
+            "user": "someone-else",
+            "body": lane_ledger.render(_row(9001, repo="Osasuwu/jarvis")),
+        }
+    )
+    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    assert [c["user"] for c in github.comments] == ["someone-else", BOT]
+
+
+def test_an_unset_smoke_checkpoint_is_warned_about(github, tmp_path, capsys):
+    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    assert "LANE_LEDGER_SMOKE_ISSUE" in capsys.readouterr().out
+
+
 def test_without_a_configured_ledger_nothing_is_written(github, tmp_path, capsys):
     assert lane_ledger.add_row(_add_env(LANE_LEDGER_ISSUE=""), tmp_path, NOW) is None
     assert github.calls == []
@@ -405,7 +446,7 @@ def test_no_ledger_issue_is_hardcoded_on_the_shared_lane_path():
         WORKFLOWS / "lane-ledger-close.yml",
         _root / ".github" / "scripts" / "lane_ledger.py",
     ):
-        assert not re.search(r"Osasuwu/jarvis#\d+", path.read_text(encoding="utf-8")), path.name
+        assert not re.search(r"[\w.-]+/[\w.-]+#\d+", path.read_text(encoding="utf-8")), path.name
 
 
 def test_the_close_workflow_finalises_lane_prs_from_default_branch_code():
@@ -436,3 +477,11 @@ def test_the_worker_commits_as_the_bot_before_it_runs():
         assert f"{var}=osasuwu-bot" in lines
     for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
         assert f"{var}=339131200+osasuwu-bot@users.noreply.github.com" in lines
+
+
+def test_no_run_script_expands_a_template_expression():
+    # Untrusted strings (branch names, labels) reach the shell only through `env`.
+    for name in ("agent-dispatch.yml", "lane-ledger-close.yml"):
+        for job_name, job in _load(name)["jobs"].items():
+            for step in job.get("steps", []):
+                assert "${{" not in step.get("run", ""), f"{name}:{job_name}:{step.get('name')}"
