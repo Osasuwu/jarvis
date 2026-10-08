@@ -176,7 +176,7 @@ class TestRedCheckWatcher:
                 r'"([^"]+)"', re.search(r"^WATCHED_CHECKS = \((.*?)\)$", source, re.M).group(1)
             )
         )
-        assert watched == required - {"waiting-human-review"}
+        assert watched == required - {"waiting-human-review", "risk-tier"}
 
     def test_pushes_to_the_default_branch_are_skipped(self, watcher):
         assert watcher["jobs"]["watch"]["if"] == "github.event.workflow_run.event != 'push'"

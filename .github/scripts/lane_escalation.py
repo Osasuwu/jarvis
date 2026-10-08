@@ -41,10 +41,10 @@ RUN_MARKER = "lane-escalation"
 RED_MARKER = "lane-red-check"
 LANE_HEAD_PREFIX = "claude/issue-"
 
-# The required checks on the default branch, less `waiting-human-review`: that one is red
-# by design while a human review is owed, which is the hold working, not a failure. The
-# set is pinned to the `required-checks-binding` block of docs/reference/github-repo-setup.md
-# by a guard test.
+# The required checks on the default branch, less `waiting-human-review` and `risk-tier`:
+# those two are red by design while a human review is owed (a HIGH/CRITICAL lane PR waits for
+# an admin approval), which is the hold working, not a failure. The set is pinned to the
+# `required-checks-binding` block of docs/reference/github-repo-setup.md by a guard test.
 WATCHED_CHECKS = ("require-linked-issue", "pytest", "code-gate", "gitleaks")
 CODE_GATE = "code-gate"
 RED_CONCLUSIONS = ("failure", "timed_out")
