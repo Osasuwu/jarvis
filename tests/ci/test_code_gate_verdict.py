@@ -800,17 +800,36 @@ def test_snapshot_returns_pr_and_files():
     assert got_files == [{"filename": "a.py"}]
 
 
+class SequencedApi(FakeApi):
+    """Answers each read of PR #7 with the next of `prs`; the file list is empty."""
+
+    def __init__(self, *prs):
+        super().__init__()
+        self.prs = iter(prs)
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        if method != "GET":
+            return {}
+        return next(self.prs) if path == "repos/o/r/pulls/7" else []
+
+
+def _open_pr(head_sha=SHA, **over):
+    return _pr(
+        state="open",
+        merged=False,
+        head={"sha": head_sha, "repo": {"full_name": "Osasuwu/jarvis"}},
+        **over,
+    )
+
+
+def _moving_api(**over):
+    return SequencedApi(_open_pr(SHA, **over), _open_pr(OTHER_SHA, **over))
+
+
 def test_snapshot_fails_when_the_head_moves_mid_read():
-    heads = iter([SHA, OTHER_SHA])
-
-    class Moving(FakeApi):
-        def __call__(self, method, path, body=None):
-            if path == "repos/o/r/pulls/7":
-                return _pr(head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}})
-            return []
-
-    with pytest.raises(RuntimeError, match="head moved"):
-        gate.fetch_pr_snapshot(Moving(), "o/r", 7)
+    with pytest.raises(gate.HeadMovedError, match="head moved"):
+        gate.fetch_pr_snapshot(_moving_api(), "o/r", 7)
 
 
 # --- post_check (fake API) ------------------------------------------------
@@ -955,33 +974,41 @@ def test_a_pull_request_run_for_a_since_merged_pr_is_not_a_dispatch_error():
     assert pr["number"] == PR
 
 
-def test_a_head_moving_mid_read_is_a_named_dispatch_error():
-    heads = iter([SHA, OTHER_SHA])
-
-    class Moving(FakeApi):
-        def __call__(self, method, path, body=None):
-            if path == "repos/o/r/pulls/7":
-                return _pr(
-                    state="open",
-                    merged=False,
-                    head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}},
-                )
-            return []
-
+def test_a_pr_merged_while_its_files_are_read_is_not_reviewed_on_dispatch():
+    api = SequencedApi(_open_pr(), _pr(state="closed", merged=True))
     with pytest.raises(gate.DispatchTargetError) as exc:
-        _target(Moving())
+        _target(api)
+    assert str(exc.value) == "PR #7 is merged; there is nothing to review"
+
+
+def test_a_pull_request_run_whose_head_moves_mid_read_is_not_told_to_dispatch():
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(_moving_api(), event="pull_request")
     assert str(exc.value) == (
         "PR #7 changed while its files were being read: "
-        "the head moved, dispatch again with the new head_sha"
+        "the head moved, the run on the new head reviews it"
+    )
+
+
+def test_a_fork_pull_request_run_on_a_moved_head_is_told_only_a_dispatch_reviews_it():
+    fork = {"sha": SHA, "repo": {"full_name": "stranger/jarvis"}}
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(
+            _target_api(_pr(state="open", merged=False, head=fork)),
+            expected=OTHER_SHA,
+            event="pull_request",
+        )
+    assert str(exc.value) == (
+        f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: the head moved; "
+        "a fork or Dependabot PR is reviewed only by a maintainer dispatch with the new head_sha"
     )
 
 
 def test_a_runtime_error_from_the_snapshot_is_not_a_dispatch_error():
     api = FakeApi({"repos/o/r/pulls/7": _pr(state="open", merged=False)})
     api.responses["repos/o/r/pulls/7/files"] = RuntimeError("boom")
-    with pytest.raises(RuntimeError, match="boom") as exc:
+    with pytest.raises(RuntimeError, match="boom"):
         _target(api)
-    assert not isinstance(exc.value, gate.DispatchTargetError)
 
 
 def _prepare_env(monkeypatch, tmp_path, **overrides):
@@ -999,22 +1026,6 @@ def _prepare_env(monkeypatch, tmp_path, **overrides):
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     return summary
-
-
-def _moving_api():
-    heads = iter([SHA, OTHER_SHA])
-
-    class Moving(FakeApi):
-        def __call__(self, method, path, body=None):
-            if path == "repos/o/r/pulls/7":
-                return _pr(
-                    state="open",
-                    merged=False,
-                    head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}},
-                )
-            return []
-
-    return Moving()
 
 
 @pytest.mark.parametrize(
@@ -1064,6 +1075,25 @@ def test_prepare_lets_an_unrelated_api_failure_propagate(monkeypatch, tmp_path):
     monkeypatch.setattr(gate, "Api", lambda token: api)
     with pytest.raises(urllib.error.HTTPError):
         gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
+
+
+def test_verdict_on_a_head_moving_mid_read_posts_nothing_and_exits_clean(monkeypatch, capsys):
+    for key, value in {
+        "GITHUB_REPOSITORY": "o/r",
+        "GH_TOKEN": "t",
+        "GATE_TOKEN": "t",
+        "GATE_APP_ID": "123",
+        "PR_NUMBER": "7",
+        "HEAD_SHA": SHA,
+    }.items():
+        monkeypatch.setenv(key, value)
+    api = _moving_api()
+    monkeypatch.setattr(gate, "Api", lambda token: api)
+    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert [m for m, _, _ in api.calls] == ["GET", "GET", "GET"]
+    assert capsys.readouterr().out == (
+        "PR head moved while its files were being read; the newer SHA has its own evaluation\n"
+    )
 
 
 def test_a_pull_request_run_on_a_moved_head_is_not_told_to_dispatch():

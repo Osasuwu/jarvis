@@ -467,7 +467,7 @@ def fetch_pr_snapshot(api, repo, number, before=None):
     files = paged(api, f"repos/{repo}/pulls/{number}/files", max_pages=MAX_FILE_PAGES)
     after = api("GET", f"repos/{repo}/pulls/{number}")
     if before["head"]["sha"] != after["head"]["sha"]:
-        raise HeadMovedError("PR head moved while its files were being read; re-evaluate")
+        raise HeadMovedError("PR head moved while its files were being read")
     return after, files
 
 
@@ -475,19 +475,32 @@ class DispatchTargetError(Exception):
     """The review run was pointed at a PR or head that cannot be reviewed; the message names why."""
 
 
-def _head_moved_message(number, event_name, detail):
-    # A pull_request run is superseded by the synchronize run on the new head; only a
-    # dispatch has to be repeated by hand.
+def _head_moved_message(pr, number, event_name, detail):
+    # A pull_request run is superseded by the synchronize run on the new head, except for an
+    # untrusted author: that run skips the review, so only a dispatch ever reviews it.
     if event_name == "workflow_dispatch":
         return f"PR #{number} {detail}: the head moved, dispatch again with the new head_sha"
+    if is_untrusted_author(pr):
+        return (
+            f"PR #{number} {detail}: the head moved; a fork or Dependabot PR is reviewed only "
+            "by a maintainer dispatch with the new head_sha"
+        )
     return f"PR #{number} {detail}: the head moved, the run on the new head reviews it"
+
+
+def _refuse_closed_target(pr, number):
+    if pr.get("merged"):
+        raise DispatchTargetError(f"PR #{number} is merged; there is nothing to review")
+    if pr.get("state") != "open":
+        raise DispatchTargetError(f"PR #{number} is closed; reopen it before dispatching a review")
 
 
 def snapshot_review_target(api, repo, number, expected_head_sha, event_name):
     """fetch_pr_snapshot, with every way a review run can be mis-aimed turned into a named error.
 
-    The PR itself is read first so a missing, closed, merged or moved target is refused
-    before the file list is paged.
+    The PR itself is read first so a missing or moved target is refused before the file
+    list is paged. A dispatch also refuses a closed or merged PR, on that first read and again
+    on the final one, so a merge landing mid-read is not reviewed.
     """
     try:
         pr = api("GET", f"repos/{repo}/pulls/{number}")
@@ -498,26 +511,25 @@ def snapshot_review_target(api, repo, number, expected_head_sha, event_name):
                 "(an issue number is not one), or the token cannot see it"
             ) from exc
         raise
-    if event_name == "workflow_dispatch":
-        if pr.get("merged"):
-            raise DispatchTargetError(f"PR #{number} is merged; there is nothing to review")
-        if pr.get("state") != "open":
-            raise DispatchTargetError(
-                f"PR #{number} is closed; reopen it before dispatching a review"
-            )
+    dispatch = event_name == "workflow_dispatch"
+    if dispatch:
+        _refuse_closed_target(pr, number)
     head_sha = pr["head"]["sha"]
     if expected_head_sha and expected_head_sha != head_sha:
         raise DispatchTargetError(
             _head_moved_message(
-                number, event_name, f"head is {head_sha}, this run was for {expected_head_sha}"
+                pr, number, event_name, f"head is {head_sha}, this run was for {expected_head_sha}"
             )
         )
     try:
-        return fetch_pr_snapshot(api, repo, number, before=pr)
+        after, files = fetch_pr_snapshot(api, repo, number, before=pr)
     except HeadMovedError as exc:
         raise DispatchTargetError(
-            _head_moved_message(number, event_name, "changed while its files were being read")
+            _head_moved_message(pr, number, event_name, "changed while its files were being read")
         ) from exc
+    if dispatch:
+        _refuse_closed_target(after, number)
+    return after, files
 
 
 def read_evidence_zip(blob):
@@ -798,7 +810,11 @@ def cmd_verdict(_args):
     repo = os.environ["GITHUB_REPOSITORY"]
     read = Api(os.environ["GH_TOKEN"])
     number = int(os.environ["PR_NUMBER"])
-    pr, files = fetch_pr_snapshot(read, repo, number)
+    try:
+        pr, files = fetch_pr_snapshot(read, repo, number)
+    except HeadMovedError:
+        print("PR head moved while its files were being read; the newer SHA has its own evaluation")
+        return 0
     if pr["head"]["sha"] != os.environ["HEAD_SHA"]:
         print("PR head moved past the event's SHA; the newer SHA has its own evaluation")
         return 0

@@ -143,8 +143,9 @@ A review dispatched at a PR that does not exist, is closed or merged, or whose h
 `prepare` step with a message naming which; dispatch again after the final push, with that push's
 `head_sha`. A push mid-run supersedes the run (its evidence is bound to the old SHA); the red
 `evidence-none` message says so, and for fork/Dependabot PRs `untrusted-needs-dispatch` carries the same
-advice. A `pull_request` run whose head moved is refused without a dispatch hint: the run on the new head
-reviews it.
+advice. A `pull_request` run whose head moved is refused without a dispatch hint (the run on the new head
+reviews it), except for a fork/Dependabot PR, which only a dispatch reviews. A dispatch re-checks merged/closed
+on its final PR read, so a merge landing mid-read is refused too.
 
 **Dependabot caveat.** A Dependabot-triggered `pull_request_target` / `workflow_run` run gets
 Dependabot secrets, not Actions or environment secrets, so the verdict job may fail to mint
