@@ -40,6 +40,7 @@ IN_PROGRESS = "status:in-progress"
 CLASS_LABELS = ("afk:1-auto", "afk:2-plan")
 PLAN_CLASS = "afk:2-plan"
 HUMAN_ONLY = "afk:3-human"
+NEEDS_HUMAN = "needs-human"
 IN_FLIGHT = (IN_PROGRESS, "status:review", "status:rework-in-progress")
 # The machine user the lane's own writes come from (D1); any edit of the body by it
 # after a human wrote it means the lane rewrote its own input.
@@ -127,6 +128,16 @@ def _claimed_by_pr(facts, payload_body, bot, class2_host):
         return "claimed-by-pr", f"open PR #{facts['closing_prs'][0]} already closes this issue"
 
 
+def _needs_human(facts, payload_body, bot, class2_host):
+    # Set by the escalation job (lane_escalation.py) when a run ends without a PR; the human
+    # clears it, then re-applies `agent:dispatch`.
+    if NEEDS_HUMAN in facts["labels"]:
+        return (
+            NEEDS_HUMAN,
+            f"a human decides first: remove `{NEEDS_HUMAN}`, then re-apply `agent:dispatch`",
+        )
+
+
 def _in_flight(facts, payload_body, bot, class2_host):
     for name in IN_FLIGHT:
         if name in facts["labels"]:
@@ -147,6 +158,7 @@ RULES = (
     _plan_lock,
     _closed,
     _claimed_by_pr,
+    _needs_human,
     _in_flight,
     _blocked,
 )

@@ -18,9 +18,9 @@ burst. The fix makes the group key depend on the label: dispatch events share
 one group, every other event gets a group unique to its own run.
 
 #2005 (D15, F7) widened the shared group from per-issue to per-repo and moved
-to ``queue: max`` with no ``cancel-in-progress``: the default ``queue: single``
-cancels the older pending run, so a batch of dispatches would lose its middle
-run with no artifact.
+to ``queue: max``: the default ``queue: single`` cancels the older pending run,
+so a batch of dispatches would lose its middle run with no artifact. #2011 made
+``cancel-in-progress: false`` explicit, so a re-dispatch never cancels a worker.
 
 The invariant pinned here is the one the workflow has to hold, stated without
 reference to how the key is spelled: **a run joins the dispatch group if and
@@ -159,9 +159,10 @@ class TestDispatchRunsShareOneGroupPerRepo:
 
     def test_pending_dispatches_queue_instead_of_cancelling(self, concurrency):
         # `queue: single` (the default) cancels the older pending run; `queue: max`
-        # keeps them all. `cancel-in-progress: true` is a validation error beside it.
+        # keeps them all. `cancel-in-progress: true` is a validation error beside it, so
+        # the explicit `false` is what #2011 requires: a re-dispatch never cancels a worker.
         assert concurrency.get("queue") == "max"
-        assert "cancel-in-progress" not in concurrency
+        assert concurrency["cancel-in-progress"] is False
 
     def test_different_issues_share_the_repo_group(self, concurrency):
         a = group_of(concurrency, event(DISPATCH_LABEL, issue=180, run_id=100))
@@ -211,7 +212,7 @@ class TestGroupAndJobConditionAgree:
         assert worker["needs"] == "intake"
         assert worker["if"] == "needs.intake.outputs.pass == 'true'"
 
-    @pytest.mark.parametrize("job", ["intake", "worker", "publish"])
+    @pytest.mark.parametrize("job", ["intake", "worker", "publish", "escalate"])
     def test_job_declares_no_group_of_its_own(self, workflow, job):
         # A second, job-level group keyed on the issue would bring the same
         # bug back through a side door.
