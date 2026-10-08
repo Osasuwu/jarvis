@@ -32,8 +32,9 @@ hardcoded on a shared code path.
 
 ## Merge rules
 
-Merging is gated by five required CI checks on the default branch: `code-gate` (the code-review
-verdict), `require-linked-issue`, `pytest`, `gitleaks`, and `waiting-human-review` —
+Merging is gated by six required CI checks on the default branch: `code-gate` (the code-review
+verdict), `require-linked-issue`, `pytest`, `gitleaks`, `waiting-human-review`, and `risk-tier`
+(the PR's `Risk:` line and diff; HIGH+ stays red until an admin human approves the head SHA) —
 branch-protection enforced, no cooperation needed from you. `waiting-human-review` is the merge
 hold: red while a human look is owed (a pending review request, or the label applied directly on
 the solo-developer path), and being a required check it blocks merge outright, including via

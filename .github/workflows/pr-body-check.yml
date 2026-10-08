@@ -3,6 +3,11 @@ name: PR Body Check
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  # An approval or a dismissal re-evaluates risk-tier without a push (#2004). The reused
+  # job set means require-linked-issue re-runs too; it has no `if:` because a skipped
+  # job reads as passing.
+  pull_request_review:
+    types: [submitted, dismissed]
 
 jobs:
   require-linked-issue:
@@ -81,3 +86,43 @@ jobs:
             if (errors.length > 0) {
               core.setFailed(errors.join('\n'));
             }
+
+  # The `risk-tier` required check (#2004; grammar and rules: .github/scripts/risk_tier.md).
+  # No `name:` key: the check context is the job id, which branch protection binds.
+  # Trusted execution: only the PR's *base* branch is checked out and run, so a PR cannot
+  # shorten the protected-path list or loosen the classifier it is judged by. The PR is
+  # read through the API as data. Not pull_request_target (D11/D11b).
+  risk-tier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    concurrency:
+      group: risk-tier-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: |
+            .github/scripts
+            agents
+            config
+            scripts
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - run: pip install pyyaml==6.0.3
+      - run: |
+          if [ ! -f .github/scripts/risk_tier.py ]; then
+            echo "::error::risk-tier: the base branch has no .github/scripts/risk_tier.py (a PR based on a branch that predates #2004). Rebase onto main."
+            exit 1
+          fi
+          python .github/scripts/risk_tier.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
