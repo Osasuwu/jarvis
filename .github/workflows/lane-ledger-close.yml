@@ -1,7 +1,8 @@
 name: Lane Ledger Close
 
 # Finalises the N-run gate ledger row of a lane PR when it closes (D13, #2012):
-# `merged-unedited` (every commit authored by osasuwu-bot), `merged-edited` or
+# `merged-unedited` (no commit, comment or non-approving review by anyone but
+# osasuwu-bot or a `*[bot]` login: `human-touched: no`), `merged-edited` or
 # `closed-unmerged`. Rules and row format: .github/scripts/lane_ledger.py.
 #
 # `pull_request_target`, not `pull_request`: this job holds the bot PAT, and a

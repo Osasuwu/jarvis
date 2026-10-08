@@ -72,6 +72,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           PAYLOAD_BODY: ${{ github.event.issue.body }}
+          # Who applied `agent:dispatch` (AP6): intake refuses the bot's own label.
+          LABEL_SENDER: ${{ github.event.sender.login }}
           # `afk:2-plan` runs AFK in this repo only until the N-run gate passes (D17);
           # a host repo that copies this workflow leaves the flag unset and is refused.
           LANE_CLASS2_AFK: "true"

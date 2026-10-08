@@ -7,12 +7,17 @@ kept on one tracking issue, named by operator configuration (`LANE_LEDGER_ISSUE`
 comment as the bot, and the comment is edited once more when its PR closes. The rows
 alone are enough to read the verdict: `python lane_ledger.py tally` does it.
 
-Three commands, each driven by environment variables so the workflow passes untrusted
+Four commands, each driven by environment variables so the workflow passes untrusted
 strings (branch names, labels) as data and never through a shell:
 
-- `add`   (agent-dispatch.yml `ledger` job): the row for a run that passed intake;
-- `close` (lane-ledger-close.yml): finalise the row of a lane PR that just closed;
-- `tally` (by hand): print the running count and verdict from the tracking issue.
+- `add`     (agent-dispatch.yml `ledger` job): the row for a run that passed intake;
+- `close`   (lane-ledger-close.yml): finalise the row of a lane PR that just closed;
+- `tally`   (by hand): print the running count and verdict from the tracking issue;
+- `touched` (by hand, `touched owner/repo#N`): print `human-touched: yes|no` for a PR and
+  list each non-bot commit, comment or review that makes it `yes` (#1999 AP4).
+
+The gate counts a run as a success only when its PR merged with `human-touched: no`: no
+commit, comment or non-approving review by anyone but the bot or a `*[bot]` login.
 
 A row is a visible one-line table plus a JSON object in an HTML comment. The JSON is the
 record; the table is rendered from it. Only comments authored by the bot count, so a
@@ -155,13 +160,52 @@ def run_outcome(has_pr, escalated):
     return ESCALATED if escalated else NO_ARTIFACT
 
 
-def final_outcome(merged, commit_authors, bot=DEFAULT_BOT_LOGIN):
-    """How a closed lane PR ended. An unreadable commit author counts as a human edit."""
+def _is_bot(login, bot):
+    login = login.casefold()
+    return login == bot.casefold() or login.endswith("[bot]")
+
+
+def _login(user):
+    return (user or {}).get("login") or ""
+
+
+def human_touches(commits, issue_comments, review_comments, reviews, bot=DEFAULT_BOT_LOGIN):
+    """One line per non-bot touch on a PR; an empty list means `human-touched: no`.
+
+    The arguments are the REST lists of the PR's commits, issue comments, review comments
+    and reviews. A commit counts when its author, or its committer other than GitHub's
+    `web-flow`, is not the bot: an unlinked author or committer (no login) is a touch, the
+    fail-closed reading. A human approval alone is not a touch: it edits nothing. An empty
+    commit list is a touch too, since a merged PR without readable commits cannot be shown clean.
+    """
+    touches = []
+    if not commits:
+        touches.append("no commits readable; cannot show the PR is untouched")
+    for commit in commits:
+        sha = (commit.get("sha") or "")[:7]
+        author = _login(commit.get("author"))
+        committer = _login(commit.get("committer"))
+        if not author or not _is_bot(author, bot):
+            touches.append(f"commit {sha}: author {author or 'unlinked'}")
+        if committer != "web-flow" and (not committer or not _is_bot(committer, bot)):
+            touches.append(f"commit {sha}: committer {committer or 'unlinked'}")
+    for kind, items in (("issue comment", issue_comments), ("review comment", review_comments)):
+        for item in items:
+            login = _login(item.get("user"))
+            if not _is_bot(login, bot):
+                touches.append(f"{kind} by {login or 'unknown'}")
+    for review in reviews:
+        login = _login(review.get("user"))
+        if review.get("state") != "APPROVED" and not _is_bot(login, bot):
+            touches.append(f"review ({review.get('state')}) by {login or 'unknown'}")
+    return touches
+
+
+def final_outcome(merged, touches):
+    """How a closed lane PR ended. `merged-unedited` is exactly `human-touched: no`."""
     if not merged:
         return CLOSED_UNMERGED
-    if commit_authors and all(author == bot for author in commit_authors):
-        return MERGED_UNEDITED
-    return MERGED_EDITED
+    return MERGED_EDITED if touches else MERGED_UNEDITED
 
 
 def class_of(labels):
@@ -187,6 +231,27 @@ def _comments(ledger_repo, ledger_issue):
         ".[] | {id, user: .user.login, body} | tojson",
     )
     return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def _api_list(path):
+    out = gh("api", "--paginate", path, "--jq", ".[] | tojson")
+    return [json.loads(line) for line in out.splitlines() if line.strip()]
+
+
+def fetch_touches(host, number, bot=DEFAULT_BOT_LOGIN):
+    """The non-bot touches on a PR, read from GitHub (see `human_touches`)."""
+    return human_touches(
+        _api_list(f"repos/{host}/pulls/{number}/commits"),
+        _api_list(f"repos/{host}/issues/{number}/comments"),
+        _api_list(f"repos/{host}/pulls/{number}/comments"),
+        _api_list(f"repos/{host}/pulls/{number}/reviews"),
+        bot,
+    )
+
+
+def report_touches(touches):
+    """The `human-touched` line plus one line per touch, as `close` and `touched` print it."""
+    return "\n".join([f"human-touched: {'yes' if touches else 'no'}", *touches])
 
 
 def _find_row(comments, bot, repo, run_id):
@@ -295,14 +360,9 @@ def close_row(env):
     if not found or str(found[1].get("pr")) != str(number):
         print(f"{host}#{number}: no ledger row for this PR; nothing to finalise")
         return None
-    authors = gh(
-        "api",
-        "--paginate",
-        f"repos/{host}/pulls/{number}/commits",
-        "--jq",
-        '.[].author.login // ""',
-    ).splitlines()
-    final = final_outcome(env["PR_MERGED"] == "true", authors, bot)
+    touches = fetch_touches(host, number, bot)
+    print(report_touches(touches))
+    final = final_outcome(env["PR_MERGED"] == "true", touches)
     row = {**found[1], "final": final}
     _write(*ledger, found[0], row)
     print(f"{host}#{number}: ledger row for run {row['run_id']} is {final}")
@@ -317,6 +377,12 @@ def main(argv):
         add_row(env, env.get("LANE_OUT", "lane-out"), now)
     elif command == "close":
         close_row(env)
+    elif command == "touched":
+        target = split_ref(argv[2] if len(argv) > 2 else "")
+        if target is None:
+            sys.exit("usage: lane_ledger.py touched owner/repo#N")
+        bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+        print(report_touches(fetch_touches(*target, bot)))
     elif command == "tally":
         ledger = split_ref(env.get("LANE_LEDGER_ISSUE"))
         if ledger is None:
@@ -327,7 +393,7 @@ def main(argv):
             )
         )
     else:
-        sys.exit("usage: lane_ledger.py add|close|tally")
+        sys.exit("usage: lane_ledger.py add|close|tally|touched")
 
 
 if __name__ == "__main__":

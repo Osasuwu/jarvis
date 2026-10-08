@@ -17,6 +17,9 @@ An `afk:2-plan` issue is dispatched only when its `## Plan` section verifies
 `LANE_CLASS2_AFK=true` — class 2 runs AFK in the lane's home repo until the
 N-run gate passes (D17), so every other host is refused before the plan is read.
 
+A label applied by the bot itself (`osasuwu-bot` or any `*[bot]` login, or a sender the event
+did not name) is refused first (AP6): the lane never dispatches its own output.
+
 Rules run in a fixed order and the first failure is the only one reported.
 
 Stdlib plus `agents/plan_lock.py`, itself stdlib-only: the job needs no
@@ -56,6 +59,23 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
 }
 """
+
+
+def _bot_labelled(facts, payload_body, bot, class2_host):
+    # The label is a human's go signal (D1, AP6): an issue the bot creates or edits enters
+    # the lane only after a human labels it. A missing sender is unknown, not human.
+    sender = facts.get("label_sender") or ""
+    if not sender:
+        return (
+            "labeller-unknown",
+            f"the `{DISPATCH}` labeller is unknown; a human re-applies `{DISPATCH}`",
+        )
+    if sender.casefold() == bot.casefold() or sender.endswith("[bot]"):
+        return (
+            "bot-labelled",
+            f"`{DISPATCH}` was applied by `{sender}`, not a human; a human removes and"
+            " re-applies it",
+        )
 
 
 def _body_changed(facts, payload_body, bot, class2_host):
@@ -151,6 +171,7 @@ def _blocked(facts, payload_body, bot, class2_host):
 
 
 RULES = (
+    _bot_labelled,
     _body_changed,
     _bot_edited,
     _unclassified,
@@ -227,11 +248,12 @@ def _remove_label(repo, number, name):
 def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     number = os.environ["ISSUE_NUMBER"]
-    bot = os.environ.get("LANE_BOT_LOGIN", DEFAULT_BOT_LOGIN)
+    bot = os.environ.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
     class2_host = os.environ.get("LANE_CLASS2_AFK") == "true"
-    refusal = check(
-        fetch_facts(repo, number), os.environ.get("PAYLOAD_BODY"), bot, class2_host=class2_host
-    )
+    facts = fetch_facts(repo, number)
+    # Who applied the label comes from the event, not from the issue's current state.
+    facts["label_sender"] = os.environ.get("LABEL_SENDER", "")
+    refusal = check(facts, os.environ.get("PAYLOAD_BODY"), bot, class2_host=class2_host)
     if refusal:
         rule, message = refusal
         _request(
