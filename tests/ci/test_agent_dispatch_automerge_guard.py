@@ -142,10 +142,10 @@ class TestStepShape:
 class TestNoPrFailsLoud:
     """#1927: a run that produced no PR must end red, not green.
 
-    The worker's escalation comment and assignee change are authored by
-    AGENT_DISPATCH_PAT, i.e. the owner's own account, and GitHub never
-    notifies a user about their own activity. A red run is the only signal
-    that reaches the owner: GitHub's native failed-workflow notification.
+    The step stays red so the run itself signals the failure through GitHub's
+    native failed-workflow notification; the cause and the worker's note are
+    posted on the issue, with the operator @-mention, by the separate
+    `escalate` job (#2011, tests/ci/test_agent_dispatch_escalation_guard.py).
     """
 
     @staticmethod

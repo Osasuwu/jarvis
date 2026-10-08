@@ -16,7 +16,10 @@ on:
 # — a three-issue batch would lose its middle run with no artifact. A retry
 # (removing `agent:dispatch` and re-applying it, per dispatch/SKILL.md's
 # recovery note) therefore waits its turn rather than cancelling the run in
-# flight. `queue: max` cannot be combined with `cancel-in-progress: true`.
+# flight, and intake then refuses it while the issue is still `status:in-progress`
+# or `needs-human` (D8, D14). `cancel-in-progress` is stated as `false`
+# (#2011) because a re-dispatch must never cancel a worker; `queue: max`
+# rejects only `cancel-in-progress: true`.
 #
 # The group key depends on the label, not just the repo (#1936).
 # Workflow-level concurrency is resolved when the run is queued, BEFORE the
@@ -32,6 +35,7 @@ on:
 concurrency:
   group: ${{ github.event.label.name == 'agent:dispatch' && format('agent-dispatch-{0}', github.repository) || format('agent-dispatch-noop-{0}', github.run_id) }}
   queue: max
+  cancel-in-progress: false
 
 jobs:
   # Deterministic gate in front of the worker (D6, D8, D9): refuses unless the
@@ -88,6 +92,11 @@ jobs:
       contents: read
       issues: read
       pull-requests: read
+    # How the worker ended, for the `escalate` job (#2011); empty when the
+    # execution log is absent.
+    outputs:
+      result_subtype: ${{ steps.ending.outputs.result_subtype }}
+      num_turns: ${{ steps.ending.outputs.num_turns }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -118,6 +127,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Run unattended worker
+        id: claude
         uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -255,6 +265,29 @@ jobs:
             # denied anyway so a wasted attempt does not burn turns.
             --disallowed-tools "Edit(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Bash(git push:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
 
+      # How the worker ended, read off the action's execution log: the `result`
+      # entry's `subtype` (`error_max_turns` when the SDK cut it off) and
+      # `num_turns`. Only `jq` runs here, over a path the action chose; the PAT
+      # is not in this job and no repo script runs. Both outputs stay empty when
+      # the log is absent; `lane_escalation.py` validates them before use.
+      - name: Record how the worker ended
+        id: ending
+        if: always()
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        run: |
+          subtype=""
+          turns=""
+          if [ -n "$EXECUTION_FILE" ] && [ -f "$EXECUTION_FILE" ]; then
+            ending=$(jq -rs 'flatten | map(select(type == "object" and .type == "result")) | last // {} | "\(.subtype // "")\t\(.num_turns // "")"' "$EXECUTION_FILE" || true)
+            subtype=${ending%%$'\t'*}
+            turns=${ending#*$'\t'}
+          fi
+          {
+            echo "result_subtype=${subtype}"
+            echo "num_turns=${turns}"
+          } >> "$GITHUB_OUTPUT"
+
       # Hand the worker's commits to `publish` as a bundle. Runs even when the
       # worker step failed (a timeout after the last commit still has work to
       # publish), holds no secret, and runs git with hooks off: the workspace is
@@ -363,8 +396,9 @@ jobs:
       # preflight, or the publish step failed) fails the step on purpose
       # (#1927): a green run would leave the escalation with no signal at all,
       # and a red run triggers GitHub's native failed-workflow notification to
-      # the triggering actor, i.e. whoever applied `agent:dispatch`. Reporting
-      # an escalation back on the issue is #2011.
+      # the triggering actor, i.e. whoever applied `agent:dispatch`. The cause
+      # and the worker's note are reported on the issue by the `escalate` job
+      # below (#2011); this step only keeps the run red.
       #
       # PAT, not GITHUB_TOKEN, for the same reason as the publish step: the
       # eventual merge commit lands on `main` as a normal external actor, so
@@ -391,11 +425,64 @@ jobs:
           pr=$(awk -F'\t' -v p="$PR_BRANCH_PREFIX" \
                  '$1 == p || index($1, p "-") == 1 { print $2; exit }' <<< "$raw")
           if [ -z "$pr" ]; then
-            echo "::error::No PR from the worker for issue #${ISSUE_NUMBER}: it escalated, stopped at preflight, or the publish step failed. Read lane-out/escalation.md in the run's artifacts and the publish step log."
+            echo "::error::No PR from the worker for issue #${ISSUE_NUMBER}: it escalated, stopped at preflight, or the publish step failed. The escalate job's comment on the issue names the cause."
             exit 1
           fi
           gh pr merge "$pr" --squash --auto
           echo "::notice::Auto-merge queued on PR #${pr} (squash); merges when all required checks pass."
+
+  # The escalation marker (#2011, D14): a run that passed intake and ended with
+  # no PR on its branch (the worker escalated, crashed, timed out, ran out of
+  # turns, or `publish` failed) leaves `needs-human` on the issue and one bot
+  # comment with the run id, the operator @-mention (repository variable
+  # LANE_OPERATOR) and either the worker's `escalation.md` or the cause. A human
+  # decides, removes `needs-human`, and re-applies `agent:dispatch`; intake
+  # refuses the issue until then. The issue's assignees are never touched.
+  # Rules and the cause table: .github/scripts/lane_escalation.py.
+  #
+  # `always()` so a failed worker or publish still reaches it; the intake output
+  # keeps refusals and skipped runs out. Fresh checkout of the default branch,
+  # no `ref`: this job holds the PAT and never runs anything the worker wrote
+  # (the worker's `escalation.md` is only ever read as text).
+  #
+  # NOT covered: a runner crash or Actions outage that kills this job before its
+  # step runs leaves no label and no comment. The `ledger` job below still
+  # records that run as `no-artifact`, which is how the gap shows up.
+  escalate:
+    needs: [intake, worker, publish]
+    if: always() && needs.intake.outputs.pass == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Download the worker's hand-off
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        continue-on-error: true
+        with:
+          name: lane-out
+          path: lane-out
+
+      - name: Label and comment on an issue that ended without a PR
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_ID: ${{ github.run_id }}
+          LANE_OPERATOR: ${{ vars.LANE_OPERATOR }}
+          WORKER_RESULT: ${{ needs.worker.result }}
+          WORKER_RESULT_SUBTYPE: ${{ needs.worker.outputs.result_subtype }}
+          WORKER_NUM_TURNS: ${{ needs.worker.outputs.num_turns }}
+          # Mirror the worker job's `timeout-minutes` and `--max-turns`; a guard
+          # test fails if they drift.
+          WORKER_TIMEOUT_MINUTES: "45"
+          WORKER_MAX_TURNS: "100"
+        run: python3 .github/scripts/lane_escalation.py run
 
   # The N-run gate ledger (D13, #2012): one row per run that passed intake, as a
   # comment by osasuwu-bot on the tracking issue named by the repository variable

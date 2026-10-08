@@ -142,6 +142,18 @@ def test_each_in_flight_status_is_refused():
         assert refusal == ("in-flight-status", f"issue carries `{label}`")
 
 
+def test_needs_human_issue_is_refused_until_the_human_clears_it():
+    assert _check(labels=["afk:1-auto", "agent:dispatch", "needs-human"]) == (
+        "needs-human",
+        "a human decides first: remove `needs-human`, then re-apply `agent:dispatch`",
+    )
+
+
+def test_needs_human_is_named_ahead_of_a_stale_in_flight_status():
+    refusal = _check(labels=["afk:1-auto", "status:in-progress", "needs-human"])
+    assert refusal[0] == "needs-human"
+
+
 def test_open_blocker_is_refused():
     assert _check(blocked_by=1) == ("blocked", "issue has an open blocker")
 
