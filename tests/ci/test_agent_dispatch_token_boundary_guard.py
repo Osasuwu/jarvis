@@ -2,8 +2,9 @@
 
 The worker reads an attacker-reachable issue body, so it must not hold a token that
 can write to the repo, its issues or its PRs: a prompt-injected worker then fails at
-GitHub rather than at a prompt rule. The bot PAT lives only in the `publish` job, which
-pushes the worker's bundle and runs repo code from a fresh default-branch checkout.
+GitHub rather than at a prompt rule. The bot PAT lives only in the jobs that run repo code
+from a fresh default-branch checkout: `publish` (pushes the worker's bundle), `ledger` and
+`escalate` (comment on the issue, #2011).
 
 None of this errors when it drifts: a worker given `contents: write` or the PAT still
 produces a green run and a merged PR. These tests read the workflow file and pin the
