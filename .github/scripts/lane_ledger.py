@@ -36,7 +36,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import lane_publish  # noqa: E402
 
-DEFAULT_BOT_LOGIN = "osasuwu-bot"
 MARKER = "lane-ledger"
 NONE = "—"
 
@@ -111,7 +110,7 @@ def _is_hold_expired(row, now):
     return row.get("tier") in HIGH_TIERS and now - _when(row) >= timedelta(days=HIGH_HOLD_DAYS)
 
 
-def tally(comments, now, bot=DEFAULT_BOT_LOGIN):
+def tally(comments, now, bot):
     """The running count over a ledger issue's comments, oldest first.
 
     `comments` is a list of `{"user": login, "body": text}`. Returns the counted rows
@@ -169,7 +168,7 @@ def _login(user):
     return (user or {}).get("login") or ""
 
 
-def human_touches(commits, issue_comments, review_comments, reviews, bot=DEFAULT_BOT_LOGIN):
+def human_touches(commits, issue_comments, review_comments, reviews, bot):
     """One line per non-bot touch on a PR; an empty list means `human-touched: no`.
 
     The arguments are the REST lists of the PR's commits, issue comments, review comments
@@ -238,7 +237,7 @@ def _api_list(path):
     return [json.loads(line) for line in out.splitlines() if line.strip()]
 
 
-def fetch_touches(host, number, bot=DEFAULT_BOT_LOGIN):
+def fetch_touches(host, number, bot):
     """The non-bot touches on a PR, read from GitHub (see `human_touches`)."""
     return human_touches(
         _api_list(f"repos/{host}/pulls/{number}/commits"),
@@ -284,7 +283,7 @@ def add_row(env, out_dir, now):
         print("::warning::LANE_LEDGER_ISSUE is not set to owner/repo#N; no ledger row written")
         return None
     host, issue, run_id = env["GH_REPO"], env["ISSUE_NUMBER"], env["RUN_ID"]
-    bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+    bot = lane_publish.require_bot(env, "lane_ledger")
 
     branch = lane_publish.branch_name(issue, run_id)
     prs = json.loads(
@@ -353,7 +352,7 @@ def close_row(env):
         print("not a ledgered lane PR; nothing to finalise")
         return None
     host, number = env["GH_REPO"], int(env["PR_NUMBER"])
-    bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+    bot = lane_publish.require_bot(env, "lane_ledger")
 
     found = _find_row(_comments(*ledger), bot, host, match.group(2))
     # The PR number in the row must match: a branch name alone is easy to imitate.
@@ -373,6 +372,8 @@ def main(argv):
     command = argv[1] if len(argv) > 1 else ""
     env = os.environ
     now = datetime.now(timezone.utc)
+    if command in ("add", "close", "tally"):
+        lane_publish.require_bot(env, "lane_ledger")
     if command == "add":
         add_row(env, env.get("LANE_OUT", "lane-out"), now)
     elif command == "close":
@@ -381,16 +382,14 @@ def main(argv):
         target = split_ref(argv[2] if len(argv) > 2 else "")
         if target is None:
             sys.exit("usage: lane_ledger.py touched owner/repo#N")
-        bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+        bot = lane_publish.require_bot(env, "lane_ledger")
         print(report_touches(fetch_touches(*target, bot)))
     elif command == "tally":
         ledger = split_ref(env.get("LANE_LEDGER_ISSUE"))
         if ledger is None:
             sys.exit("LANE_LEDGER_ISSUE must be owner/repo#N")
         print(
-            json.dumps(
-                tally(_comments(*ledger), now, env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN)
-            )
+            json.dumps(tally(_comments(*ledger), now, lane_publish.require_bot(env, "lane_ledger")))
         )
     else:
         sys.exit("usage: lane_ledger.py add|close|tally|touched")

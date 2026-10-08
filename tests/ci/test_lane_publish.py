@@ -179,6 +179,14 @@ def test_high_critical_or_unreadable_risk_requests_the_operator(lane, body):
     assert create[-2:] == ("--reviewer", "Osasuwu")
 
 
+def test_a_high_risk_pr_with_no_reviewer_still_opens_without_the_flag(lane):
+    # An org-owned host has no person to ask: the PR must still open, held by its labels.
+    (lane.out / "pr-body.md").write_text("Risk: HIGH — logic\n", encoding="utf-8")
+    _publish(lane, reviewer="")
+    create = next(c for c in lane.calls if c[:2] == ("pr", "create"))
+    assert "--reviewer" not in create
+
+
 def test_missing_pr_description_still_opens_a_pr_that_closes_the_issue(lane):
     _publish(lane)
     final = (lane.out / "pr-body.final.md").read_text(encoding="utf-8")
@@ -192,3 +200,18 @@ def test_no_bundle_publishes_nothing(lane):
     assert _publish(lane) is None
     assert lane.calls == []
     assert _git(lane.origin, "for-each-ref", "--format=%(refname)", "refs/heads/claude") == ""
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_require_bot_refuses_a_missing_login_and_names_the_caller(capsys, value):
+    env = {} if value is None else {"LANE_BOT_LOGIN": value}
+    with pytest.raises(SystemExit) as exit_info:
+        lane_publish.require_bot(env, "lane_x")
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().out.strip() == (
+        "::error::lane_x: LANE_BOT_LOGIN is empty; the calling workflow must pass the lane's bot login"
+    )
+
+
+def test_require_bot_returns_the_login_trimmed():
+    assert lane_publish.require_bot({"LANE_BOT_LOGIN": " some-bot "}, "lane_x") == "some-bot"

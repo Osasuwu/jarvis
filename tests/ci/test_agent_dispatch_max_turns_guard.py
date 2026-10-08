@@ -1,4 +1,4 @@
-"""Guard for the worker step's ``--max-turns`` ceiling in agent-dispatch.yml.
+"""Guard for the worker step's ``--max-turns`` ceiling in lane.yml.
 
 #1846: the trial run (#1806, issue #1844 -> PR #1845) did entirely correct,
 right-scoped work -- 8/8 check-runs green, auto-merge succeeded -- and still
@@ -19,7 +19,7 @@ quietly lowers it again) fails loudly instead of waiting for the next real
 run to trip it.
 
 Convention: docs/reference/ci-guard-meta-tests.md (#326) covers PR-blocking
-`paths:`-filtered workflows specifically; agent-dispatch.yml fires on
+`paths:`-filtered workflows specifically; lane.yml fires on
 `issues: labeled`, so it is out of that convention's scope, but it already
 has a co-located meta-test (test_agent_dispatch_automerge_guard.py) -- this
 file follows the same one-workflow-many-narrow-guards shape for a second,
@@ -35,7 +35,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "agent-dispatch.yml"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lane.yml"
 
 STEP_NAME = "Run unattended worker"
 
@@ -56,7 +56,7 @@ def worker_step(workflow: dict) -> dict:
     for step in steps:
         if step.get("name") == STEP_NAME:
             return step
-    pytest.fail(f"agent-dispatch.yml has no {STEP_NAME!r} step; #1846 context regressed")
+    pytest.fail(f"lane.yml has no {STEP_NAME!r} step; #1846 context regressed")
 
 
 def _max_turns(claude_args: str) -> int:
@@ -69,7 +69,7 @@ class TestMaxTurnsCeiling:
     def test_max_turns_is_pinned_value(self, worker_step: dict):
         claude_args = worker_step["with"]["claude_args"]
         assert _max_turns(claude_args) == 100, (
-            "agent-dispatch.yml's --max-turns changed; update this pin deliberately "
+            "lane.yml's --max-turns changed; update this pin deliberately "
             "(with a rationale in the workflow's own comment) rather than drifting"
         )
 

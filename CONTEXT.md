@@ -35,7 +35,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Merge-gate failure axis** — fail-CLOSED (false-FAILING, visible) vs fail-OPEN (false-PASSING, invisible, dangerous).
 - **Readiness axis** — Scalar AFK-ready vs HITL-required; measured by pre-dispatch gate at dispatch time.
 - **Pre-dispatch gate** — Five-condition check (`/dispatch` v4.0.0, post-#1793): repo match, no `needs-*`, AC section, decision reference, not `afk:3-human`. Detail below is current; historical `sandcastle`-label mechanism retired for `/dispatch`.
-- **Canon AFK lane** — jarvis `agent-dispatch.yml` on `claude-code-action`; the one unattended implementation path (#1960).
+- **Canon AFK lane** — jarvis `lane.yml` on `claude-code-action`; the one unattended implementation path (#1960).
 - **Worker identity** — machine user `osasuwu-bot`, classic `repo` PAT, no `workflow` scope; never the operator.
 - **Risk tier** — required `risk-tier` check; HIGH+ PRs need an admin human's head-SHA approval.
 - **`needs-human`** — AFK escalation label, applied by the lane's post-step (never the LLM); intake refuses it.
@@ -144,7 +144,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Silent no-review** — failure mode where the review run reports `is_error=false` with ~0 denials, burns full cost, and posts nothing. Root cause (#1239): the orchestrator launched reviewer agents with `run_in_background: true` + `ScheduleWakeup`, but headless `claude -p` exits at `end_turn`, so background-completion notifications never arrive. Dispatch in review workflows must therefore be **synchronous**. Diagnosability depends on the execution log being uploaded as a CI artifact (#1240).
 ### AFK orchestration (grill #1960, `docs/decisions/2026-Q4.md`)
 
-- **Canon AFK lane** — jarvis `agent-dispatch.yml` on `claude-code-action`, GitHub-hosted, via thin callers in each host repo (jarvis; like-current-song after the jarvis smoke runs are reviewed; others after the N-run gate). Host = repo `osasuwu-bot` is invited to (no code allowlist; prerequisites D2/D16). jarvis-oss is not canon.
+- **Canon AFK lane** — jarvis `lane.yml` on `claude-code-action`, GitHub-hosted, via thin callers in each host repo (jarvis; like-current-song after the jarvis smoke runs are reviewed; others after the N-run gate). Host = repo `osasuwu-bot` is invited to (no code allowlist; prerequisites D2/D16). jarvis-oss is not canon.
 - **Worker identity** — the lane writes as machine user `osasuwu-bot` (classic `repo` PAT, no `workflow`/admin scope, expiring); interactive sessions stay `Osasuwu`. `code-gate` is posted separately by the `osasuwu-ci` App.
 - **Risk tier** — LOW/MEDIUM/HIGH/CRITICAL from the diff, machinery-path list read from the base commit; the PR's `Risk:` line can raise it, never lower. On a HIGH+ PR the check stays red until an admin human (never the bot) leaves an APPROVED review at the head SHA; `waiting-human-review` only notifies.
 - **`needs-human`** — escalation label (never an assignee), applied by an `always()` post-step on any no-PR ending or by the red-check watcher, with a `run_id` comment and @-mention (D3); the worker has no writable token (D4).

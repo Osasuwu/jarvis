@@ -1,4 +1,4 @@
-"""Guard for the concurrency group in .github/workflows/agent-dispatch.yml.
+"""Guard for the concurrency group in .github/workflows/lane.yml.
 
 #1936: the workflow starts on every ``issues: labeled`` event and narrows to
 the ``agent:dispatch`` label with a job-level ``if``. Its concurrency group
@@ -44,7 +44,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "agent-dispatch.yml"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lane.yml"
 
 DISPATCH_LABEL = "agent:dispatch"
 OTHER_LABELS = ["status:ready", "priority:medium", "bug", "area:infrastructure"]
@@ -141,7 +141,7 @@ def workflow() -> dict:
 @pytest.fixture(scope="module")
 def concurrency(workflow: dict) -> dict:
     block = workflow.get("concurrency")
-    assert isinstance(block, dict), "agent-dispatch.yml must declare a concurrency group"
+    assert isinstance(block, dict), "lane.yml must declare a concurrency group"
     return block
 
 

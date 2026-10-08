@@ -1,4 +1,4 @@
-"""Guard for the token boundary of .github/workflows/agent-dispatch.yml (#2007, D4).
+"""Guard for the token boundary of .github/workflows/lane.yml (#2007, D4).
 
 The worker reads an attacker-reachable issue body, so it must not hold a token that
 can write to the repo, its issues or its PRs: a prompt-injected worker then fails at
@@ -23,7 +23,8 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "agent-dispatch.yml"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lane.yml"
+CALLER_PATH = REPO_ROOT / ".github" / "workflows" / "agent-dispatch.yml"
 
 PAT = "AGENT_DISPATCH_PAT"
 
@@ -87,19 +88,34 @@ class TestPublishJobHoldsThePat:
     def test_publish_step_runs_the_script_with_the_pat(self, publish):
         step = _step(publish, "Publish the worker's branch")
         assert step["env"]["GH_TOKEN"] == "${{ secrets.AGENT_DISPATCH_PAT }}"
-        assert step["run"] == "python3 .github/scripts/lane_publish.py"
+        assert step["run"] == "python3 .lane-src/.github/scripts/lane_publish.py"
         assert (REPO_ROOT / ".github" / "scripts" / "lane_publish.py").is_file()
+
+    def test_the_reviewer_is_the_callers_operator_not_the_repo_owner_alone(self, publish):
+        step = _step(publish, "Publish the worker's branch")
+        assert step["env"]["LANE_REVIEWER"] == "${{ inputs.operator || github.repository_owner }}"
 
     def test_publish_job_token_cannot_write(self, publish):
         assert "write" not in set(publish["permissions"].values())
 
     def test_checkout_is_the_default_branch_without_persisted_credentials(self, publish):
         checkout = next(
-            s for s in publish["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")
+            s
+            for s in publish["steps"]
+            if str(s.get("uses", "")).startswith("actions/checkout@") and "path" not in s["with"]
         )
         assert "ref" not in checkout["with"], "publish must not check out anything the worker chose"
         # A persisted GITHUB_TOKEN would shadow the PAT's credential helper at push time.
         assert checkout["with"]["persist-credentials"] is False
+
+    def test_the_other_pat_jobs_check_out_only_the_lane_source(self, workflow):
+        for name in ("escalate", "ledger"):
+            checkouts = [
+                s
+                for s in workflow["jobs"][name]["steps"]
+                if str(s.get("uses", "")).startswith("actions/checkout@")
+            ]
+            assert [c["with"]["path"] for c in checkouts] == [".lane-src"], name
 
     def test_no_agent_runs_in_the_publish_job(self, publish):
         uses = [str(s.get("uses", "")) for s in publish["steps"]]
@@ -107,11 +123,16 @@ class TestPublishJobHoldsThePat:
 
 
 class TestWorkerModelIsPinned:
-    def test_claude_args_carries_an_explicit_model(self, worker_action):
+    def test_claude_args_takes_the_model_from_the_callers_input(self, worker_action):
         claude_args = worker_action["with"]["claude_args"]
-        flags = [line.split() for line in claude_args.splitlines() if line.startswith("--model")]
-        assert len(flags) == 1 and len(flags[0]) == 2, "exactly one `--model <id>` line"
-        assert flags[0][1].startswith("claude-")
+        flags = [line for line in claude_args.splitlines() if line.startswith("--model")]
+        assert flags == ["--model ${{ inputs.model }}"], (
+            "exactly one `--model` line, from the input"
+        )
+
+    def test_the_jarvis_caller_pins_a_concrete_model(self):
+        caller = yaml.safe_load(CALLER_PATH.read_text(encoding="utf-8"))
+        assert caller["jobs"]["lane"]["with"]["model"].startswith("claude-")
 
 
 class TestCommentsDescribeTheCurrentToken:
@@ -121,6 +142,5 @@ class TestCommentsDescribeTheCurrentToken:
 
     def test_current_token_is_named(self):
         text = WORKFLOW_PATH.read_text(encoding="utf-8")
-        assert "osasuwu-bot" in text
         assert "classic `repo` PAT" in text
         assert "#1810" in text

@@ -1,16 +1,18 @@
 """The `risk-tier` required check: the PR body's `Risk:` line becomes a merge hold (#2004).
 
-Runs from the `risk-tier` job of `.github/workflows/pr-body-check.yml` on `pull_request`
-and `pull_request_review` events (decisions D7, D10, D11 and "Risk-tier check — the hold
-is the check itself" in docs/decisions/2026-Q4.md). The job checks out the PR's *base*
-branch and runs this file from it, so the protected-path list and the classifier a PR is
-judged by are the base's: a PR cannot shorten its own list. Nothing of the PR head is
-checked out, imported or executed here; the PR is read through the API as data.
+Runs from the `risk-tier` composite action (`.github/actions/risk-tier/action.yml`), called by
+the `risk-tier` job of a host's `pr-body-check.yml` on `pull_request` and
+`pull_request_review` events (decisions D7, D10, D11 and "Risk-tier check — the hold is the
+check itself" in docs/decisions/2026-Q4.md). Two checkouts, neither of the PR head: this
+file and the classifier come from a jarvis checkout pinned to a SHA (the code root), and the
+protected-path list comes from the host's own `config/protected-paths.json` at the PR's
+*base* commit (`RISK_TIER_HOST_ROOT`, D7). A PR cannot shorten its own list, and a host
+without that file gets HIGH on every diff. The PR is read through the API as data.
 
 Verdict, in order:
 
 1. the body must carry exactly one well-formed `Risk:` line (grammar: risk_tier.md);
-2. the computed tier is the highest of: a changed path in any bucket of the base's
+2. the computed tier is the highest of: a changed path in any bucket of the host base's
    `config/protected-paths.json` entry (HIGH), test weakening (HIGH), and the plan
    classifier's ordinal (3 -> HIGH, 2 -> MEDIUM, 1 -> LOW). Anything unreadable is HIGH;
 3. final tier = max(computed, declared). LOW and MEDIUM pass;
@@ -18,7 +20,7 @@ Verdict, in order:
    admin human who is not the lane's bot.
 
 Stdlib plus `agents.plan_classifier` / `agents.plan_review_config` (PyYAML) and the glob
-matcher of `scripts/to_tickets_afk_fit.py`, all read from the base checkout.
+matcher of `scripts/to_tickets_afk_fit.py`, all read from the pinned code root.
 """
 
 import collections
@@ -31,7 +33,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+CODE_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(CODE_ROOT))
 
 from agents.plan_classifier import ChangeSet, classify, prod_areas_from_paths  # noqa: E402
 from agents.plan_review_config import load_plan_review_config  # noqa: E402
@@ -41,7 +44,7 @@ SEVERITY = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 HOLD_TIERS = ("HIGH", "CRITICAL")
 GRAMMAR = "Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>"
 DOC = ".github/scripts/risk_tier.md"
-DEFAULT_BOT_LOGIN = "osasuwu-bot"
+HOST_SETUP_DOC = "docs/reference/lane-host-setup.md"
 
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
@@ -114,12 +117,38 @@ def _is_test_file(path):
     return path.startswith("tests/") or any(fnmatch.fnmatchcase(base, p) for p in _TEST_BASENAMES)
 
 
-def path_tier(paths, repo, root):
-    """HIGH when a changed path sits in any bucket of the base's protected list."""
+def path_tier(paths, repo, host_root):
+    """HIGH when a changed path sits in any bucket of the host base's protected list.
+
+    A host with no list, or none for this repo, is HIGH on every diff: the reason names the
+    fix (D2, D7), so a host that has not finished enabling the lane reads it in the check.
+    """
+    if host_root is None:
+        return "HIGH", [
+            "RISK_TIER_HOST_ROOT is not set: no host checkout to read "
+            "config/protected-paths.json from"
+        ]
+    adopt = f"every diff is HIGH until the host adds it (D2, {HOST_SETUP_DOC})"
     try:
-        data = json.loads((Path(root) / "config" / "protected-paths.json").read_text("utf-8"))
+        data = json.loads((Path(host_root) / "config" / "protected-paths.json").read_text("utf-8"))
+        if repo not in data:
+            return "HIGH", [
+                f"config/protected-paths.json has no entry for {repo} at the base commit: {adopt}"
+            ]
         entry = data[repo]
-        globs = [g for key, value in entry.items() if not key.startswith("_") for g in value]
+        buckets = [value for key, value in entry.items() if not key.startswith("_")]
+        if not all(isinstance(b, list) and all(isinstance(g, str) for g in b) for b in buckets):
+            return "HIGH", [
+                f"protected-path list for {repo} has a bucket that is not a list of globs: "
+                "fail closed"
+            ]
+        globs = [g for bucket in buckets for g in bucket]
+        if not globs:
+            return "HIGH", [
+                f"protected-path list for {repo} has no globs at the base commit: {adopt}"
+            ]
+    except FileNotFoundError:
+        return "HIGH", [f"config/protected-paths.json not found at the base commit: {adopt}"]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         return "HIGH", [
             f"protected-path list unreadable at base ({type(exc).__name__}): fail closed"
@@ -168,20 +197,20 @@ def _changed_paths(files):
     return tuple(p for f in files for p in (f["filename"], f.get("previous_filename")) if p)
 
 
-def classifier_tier(files, root):
+def classifier_tier(files, code_root):
     paths = _changed_paths(files)
     churn = sum(f.get("additions", 0) + f.get("deletions", 0) for f in files)
     try:
-        config = load_plan_review_config(Path(root) / "config" / "plan_review.yaml")
+        config = load_plan_review_config(Path(code_root) / "config" / "plan_review.yaml")
     except Exception as exc:  # unreadable config must not read as a clean diff
-        return "HIGH", [f"plan_review.yaml unreadable at base ({type(exc).__name__}): fail closed"]
+        return "HIGH", [f"plan_review.yaml unreadable ({type(exc).__name__}): fail closed"]
     ordinal = classify(config, ChangeSet(paths, churn, prod_areas_from_paths(paths)))
     return {1: "LOW", 2: "MEDIUM", 3: "HIGH"}[ordinal], (
         [f"classifier ordinal {ordinal}"] if ordinal > 1 else []
     )
 
 
-def computed_tier(files, changed_files, repo, root):
+def computed_tier(files, changed_files, repo, host_root, code_root=CODE_ROOT):
     """`(tier, reasons)` from the diff alone; the declared line cannot lower it."""
     tiers, reasons = [], []
     if len(files) < changed_files:
@@ -189,9 +218,9 @@ def computed_tier(files, changed_files, repo, root):
         reasons.append(f"only {len(files)} of {changed_files} changed files listable: fail closed")
     paths = _changed_paths(files)
     for tier, why in (
-        path_tier(paths, repo, root),
+        path_tier(paths, repo, host_root),
         ("HIGH", test_weakening(files)),
-        classifier_tier(files, root),
+        classifier_tier(files, code_root),
     ):
         if why:
             tiers.append(tier)
@@ -232,7 +261,7 @@ def releasing_reviewer(api, repo, number, head_sha, bot):
     return None
 
 
-def evaluate(api, repo, number, event_head_sha, root, bot=DEFAULT_BOT_LOGIN):
+def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_ROOT):
     """`(ok, messages)` for one PR. `api(path)` GETs a JSON document from the GitHub API."""
     pr = api(f"repos/{repo}/pulls/{number}")
     head = pr["head"]["sha"]
@@ -247,7 +276,9 @@ def evaluate(api, repo, number, event_head_sha, root, bot=DEFAULT_BOT_LOGIN):
             f"(grammar and examples: {DOC})."
         ]
     files = _paged(api, f"repos/{repo}/pulls/{number}/files")
-    computed, reasons = computed_tier(files, pr.get("changed_files", len(files)), repo, root)
+    computed, reasons = computed_tier(
+        files, pr.get("changed_files", len(files)), repo, host_root, code_root
+    )
     final = max(declared, computed, key=SEVERITY.index)
     summary = f"declared {declared}, computed {computed}, final {final}" + "".join(
         f"\n  - {r}" for r in reasons
@@ -281,13 +312,21 @@ def _github_get(path):
 
 
 def main():
+    bot = os.environ.get("LANE_BOT_LOGIN", "")
+    if not bot:
+        print(
+            "::error::risk-tier: LANE_BOT_LOGIN is empty; the calling workflow must pass the "
+            "lane's bot login"
+        )
+        sys.exit(1)
+    host_root = os.environ.get("RISK_TIER_HOST_ROOT")
     ok, messages = evaluate(
         _github_get,
         os.environ["GITHUB_REPOSITORY"],
         os.environ["PR_NUMBER"],
         os.environ["HEAD_SHA"],
-        Path(__file__).resolve().parents[2],
-        os.environ.get("LANE_BOT_LOGIN", DEFAULT_BOT_LOGIN),
+        Path(host_root) if host_root else None,
+        bot,
     )
     for line in messages:
         print(line)

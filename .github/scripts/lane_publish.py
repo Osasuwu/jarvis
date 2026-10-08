@@ -1,7 +1,7 @@
 """Publish step for the AFK lane: every GitHub write the worker may not make.
 
-Runs from the `publish` job of `.github/workflows/agent-dispatch.yml`, as
-`osasuwu-bot` with `AGENT_DISPATCH_PAT` (decisions D1, D4, D10, D14 in
+Runs from the `publish` job of `.github/workflows/lane.yml`, as the bot account
+named by `LANE_BOT_LOGIN`, with `AGENT_DISPATCH_PAT` (decisions D1, D4, D10, D14 in
 docs/decisions/2026-Q4.md). The worker job holds no token that can write; it leaves
 two files in `lane-out/` — `work.bundle` (its commits) and `pr-body.md` (its PR
 description) — and this job, on a fresh checkout of the default branch, does the rest:
@@ -23,6 +23,7 @@ and the body is passed as a file, never through a shell. Stdlib only.
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 IN_PROGRESS = "status:in-progress"
@@ -33,6 +34,18 @@ SEVERITY = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 _RISK_LINE = re.compile(
     r"^[ \t>*_-]*Risk[ \t]*:[ \t*_]*(LOW|MEDIUM|HIGH|CRITICAL)\b", re.IGNORECASE | re.MULTILINE
 )
+
+
+def require_bot(env, script):
+    """The bot login the lane acts as; a host names its own, so there is no default."""
+    bot = (env.get("LANE_BOT_LOGIN") or "").strip()
+    if not bot:
+        print(
+            f"::error::{script}: LANE_BOT_LOGIN is empty; "
+            "the calling workflow must pass the lane's bot login"
+        )
+        sys.exit(1)
+    return bot
 
 
 def parse_risk(body):
@@ -111,7 +124,9 @@ def publish(*, issue, run_id, default_branch, out_dir, reviewer, repo_dir=None):
         "--body-file",
         str(final),
     ]
-    if needs_human_review(risk):
+    if needs_human_review(risk) and reviewer:
+        # No reviewer to ask is not a failure after the branch is pushed: the
+        # `waiting-human-review` and `risk-tier` holds still stop the merge.
         create += ["--reviewer", reviewer]
     url = gh(*create)
     gh("issue", "edit", str(issue), "--remove-label", IN_PROGRESS, "--add-label", REVIEW)
@@ -127,7 +142,7 @@ def main():
         run_id=os.environ["RUN_ID"],
         default_branch=os.environ["DEFAULT_BRANCH"],
         out_dir=os.environ.get("LANE_OUT", "lane-out"),
-        reviewer=os.environ["LANE_REVIEWER"],
+        reviewer=os.environ.get("LANE_REVIEWER", ""),
     )
     if number is not None and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:

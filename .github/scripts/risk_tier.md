@@ -14,7 +14,9 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
    malformed or duplicate → red.
 2. The **computed tier** is the highest of:
    - **path tier** — HIGH when a changed path (or a rename's old path) matches any bucket
-     (`hitl`, `guarded`, `machinery`) of this repo's entry in `config/protected-paths.json`;
+     (`hitl`, `guarded`, `machinery`) of this repo's entry in the host's
+     `config/protected-paths.json` at the base commit. A missing file, or no entry for the repo,
+     is HIGH on every diff (D2), with a reason that points at `docs/reference/lane-host-setup.md`;
    - **test weakening** — HIGH when the PR removes a test function that no file of the PR
      re-adds, removes a test file, touches a test file GitHub could not diff, or adds
      `pytest.mark.skip`, `skipif`, `xfail`, `pytest.skip(`, `pytest.xfail(`,
@@ -29,17 +31,20 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
 4. LOW and MEDIUM → green. HIGH and CRITICAL → red until **an admin human has an APPROVED review
    on the current head SHA**: the reviewer's latest non-comment review is APPROVED, its
    `commit_id` is the live head, the reviewer is not a `Bot` account and not `LANE_BOT_LOGIN`
-   (default `osasuwu-bot`), and `GET /repos/{repo}/collaborators/{login}/permission` says
+   (the caller's `bot-login`; empty fails the check), and `GET /repos/{repo}/collaborators/{login}/permission` says
    `admin`. A new push moves the head, so it re-reds; a dismissed or superseded review does not
    count. There is no author-based exemption.
 
 ## Base-commit trust model
 
-The job checks out the PR's **base branch** and runs the script from it. The protected list, the
-classifier and `plan_review.yaml` are therefore the base's: a PR that adds a path to
-`config/protected-paths.json`, or loosens the classifier, gets no benefit from it for its own
-verdict. The PR itself is read through the API as data and is never checked out, imported or
-executed. It is a `pull_request` workflow, not `pull_request_target` (D11/D11b).
+Two trees, neither the PR's. The **host's protected list** is read from the PR's base branch
+(`RISK_TIER_HOST_ROOT`): a PR that adds a path to `config/protected-paths.json` gets no benefit
+from it for its own verdict. The **classifier code and `plan_review.yaml`** come from the
+script's own checkout: in jarvis today the base branch too; once the callers are pinned, the
+`.github/actions/risk-tier` composite action's download of jarvis at the pinned SHA, so a host
+runs a reviewed classifier rather than whatever its own base holds (D7). The PR itself is read
+through the API as data and is never checked out, imported or executed. It is a `pull_request`
+workflow, not `pull_request_target` (D11/D11b). Host setup: `docs/reference/lane-host-setup.md`.
 
 Reconciliation with the classifier's exempt short-circuit (docs-only, dependency-bump, …): the
 exemption lowers only the classifier ordinal. It never lowers the path floor, so a change to a

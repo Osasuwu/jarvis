@@ -1,24 +1,22 @@
 name: Lane Red Check Watcher
 
-# Escalation marker, PR side (#2011): when a required check goes red on an open
-# `claude/issue-*` PR, label the PR `needs-human` and comment once with the
-# failed check, its run link and an @-mention of the operator (repository
-# variable LANE_OPERATOR). Green checks, pending checks and non-lane PRs get
-# nothing. Rules and the settledness test for `code-gate`:
-# .github/scripts/lane_escalation.py.
+# The thin caller of the lane's red-check watcher (#2011, #2013). What it does
+# and its rules: lane-watch.yml and .github/scripts/lane_escalation.py. The
+# trigger stays here because the workflow names are the host's.
 #
-# The workflows listed are the ones that own the required checks `pytest`
-# (Tests), `gitleaks` (Gitleaks Secret Scanning), `require-linked-issue`
-# (PR Body Check) and `code-gate` (Code Gate Verdict). `waiting-human-review` is
-# left out on purpose: it is red by design while a HIGH/CRITICAL PR waits for a
-# human, which is the hold working and not a failure. A guard test pins this
-# list to the workflow `name:`s and to the required-checks block in
-# docs/reference/github-repo-setup.md.
+# The workflows listed are the ones that own the checks named in
+# `watched-checks` below: `pytest` (Tests), `gitleaks` (Gitleaks Secret
+# Scanning), `require-linked-issue` (PR Body Check) and `code-gate` (Code Gate
+# Verdict). A guard test pins both lists to the workflow `name:`s and to the
+# required-checks block in docs/reference/github-repo-setup.md.
 #
-# `workflow_run` always runs the default branch's copy of this file and the
-# script, never the PR's, which is what makes it safe to hold the bot PAT here.
-# Code Review -> Code Gate Verdict -> this watcher is the deepest chain: three
-# `workflow_run` levels, GitHub's maximum.
+# `workflow_run` always runs the default branch's copy of this file, never the
+# PR's, which is what makes it safe to hold the bot PAT here. Code Review ->
+# Code Gate Verdict -> this watcher is the deepest chain: three `workflow_run`
+# levels, GitHub's maximum.
+#
+# No `concurrency` here: the called workflow owns it (a caller group equal to
+# the callee's deadlocks).
 on:
   workflow_run:
     workflows:
@@ -28,31 +26,18 @@ on:
       - Code Gate Verdict
     types: [completed]
 
-# One pass at a time, queued rather than cancelled: a pass reads every open lane
-# PR, so a later one sees what an earlier one wrote.
-concurrency:
-  group: lane-red-check-watcher-${{ github.repository }}
-  cancel-in-progress: false
-
 jobs:
   watch:
-    # Pushes to the default branch have no PR to escalate on.
-    if: github.event.workflow_run.event != 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
     permissions:
       contents: read
-    steps:
-      # Default branch, no `ref`: this job holds the PAT and runs only the
-      # script from there.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          sparse-checkout: .github/scripts
-          persist-credentials: false
-
-      - name: Escalate lane PRs with a red required check
-        env:
-          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
-          GH_REPO: ${{ github.repository }}
-          LANE_OPERATOR: ${{ vars.LANE_OPERATOR }}
-        run: python3 .github/scripts/lane_escalation.py watch
+    uses: ./.github/workflows/lane-watch.yml
+    with:
+      bot-login: osasuwu-bot
+      operator: ${{ vars.LANE_OPERATOR }}
+      # `waiting-human-review` is left out on purpose: it is red by design while
+      # a HIGH/CRITICAL PR waits for a human, which is the hold working and not
+      # a failure. `risk-tier` is left out for the same reason (it holds a PR
+      # until an admin human approves the head SHA).
+      watched-checks: require-linked-issue,pytest,code-gate,gitleaks
+    secrets:
+      AGENT_DISPATCH_PAT: ${{ secrets.AGENT_DISPATCH_PAT }}

@@ -1,7 +1,8 @@
-"""Guard for the escalation marker wiring in the AFK lane workflows (#2011).
+"""Guard for the escalation marker wiring in the AFK lane workflows (#2011, #2013).
 
-``lane_escalation.py`` decides what to write; these workflows decide when it runs and what
-it holds. None of this errors when it drifts: an ``escalate`` job that loses its ``always()``
+``lane_escalation.py`` decides what to write; the shared workflows lane.yml (the ``escalate``
+job) and lane-watch.yml decide when it runs and what it holds, and the jarvis callers
+decide which checks the watcher watches. None of this errors when it drifts: an ``escalate`` job that loses its ``always()``
 silently stops reporting failed runs, a stale ``WORKER_MAX_TURNS`` misnames a turn-limit as
 a crash, a watcher bound to a renamed workflow never fires. The tests read the real YAML.
 
@@ -20,9 +21,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
-DISPATCH_PATH = WORKFLOWS / "agent-dispatch.yml"
-WATCHER_PATH = WORKFLOWS / "lane-red-check-watcher.yml"
-SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "lane_escalation.py"
+LANE_PATH = WORKFLOWS / "lane.yml"
+WATCH_PATH = WORKFLOWS / "lane-watch.yml"
+CALLER_PATH = WORKFLOWS / "lane-red-check-watcher.yml"
 SETUP_DOC = REPO_ROOT / "docs" / "reference" / "github-repo-setup.md"
 
 PAT = "AGENT_DISPATCH_PAT"
@@ -36,12 +37,17 @@ def _load(path: Path) -> dict:
 
 @pytest.fixture(scope="module")
 def dispatch() -> dict:
-    return _load(DISPATCH_PATH)
+    return _load(LANE_PATH)
 
 
 @pytest.fixture(scope="module")
 def watcher() -> dict:
-    return _load(WATCHER_PATH)
+    return _load(WATCH_PATH)
+
+
+@pytest.fixture(scope="module")
+def caller() -> dict:
+    return _load(CALLER_PATH)
 
 
 def _step(job: dict, name: str) -> dict:
@@ -49,10 +55,6 @@ def _step(job: dict, name: str) -> dict:
         if step.get("name") == name:
             return step
     pytest.fail(f"no step named {name!r}")
-
-
-def _checkout(job: dict) -> dict:
-    return next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
 
 
 class TestEscalateJob:
@@ -67,13 +69,6 @@ class TestEscalateJob:
     def test_token_cannot_write(self, escalate):
         assert escalate["permissions"] == {"contents": "read"}
 
-    def test_checkout_is_the_default_branch_without_persisted_credentials(self, escalate):
-        checkout = _checkout(escalate)
-        assert "ref" not in checkout["with"], (
-            "escalate must not check out anything the worker chose"
-        )
-        assert checkout["with"]["persist-credentials"] is False
-
     def test_no_agent_runs_in_the_job(self, escalate):
         uses = [str(s.get("uses", "")) for s in escalate["steps"]]
         assert not any(u.startswith("anthropics/") for u in uses)
@@ -81,7 +76,7 @@ class TestEscalateJob:
     def test_pat_is_in_the_script_step_only(self, escalate):
         step = _step(escalate, RUN_STEP)
         assert step["env"]["GH_TOKEN"] == "${{ secrets.AGENT_DISPATCH_PAT }}"
-        assert step["run"] == "python3 .github/scripts/lane_escalation.py run"
+        assert step["run"] == "python3 .lane-src/.github/scripts/lane_escalation.py run"
         others = [s for s in escalate["steps"] if s is not step]
         assert PAT not in json.dumps(others)
 
@@ -94,9 +89,10 @@ class TestEscalateJob:
         assert download["continue-on-error"] is True
         assert download["with"] == {"name": "lane-out", "path": "lane-out"}
 
-    def test_operator_handle_comes_from_a_repository_variable(self, escalate):
+    def test_operator_and_bot_come_from_the_callers_inputs(self, escalate):
         env = _step(escalate, RUN_STEP)["env"]
-        assert env["LANE_OPERATOR"] == "${{ vars.LANE_OPERATOR }}"
+        assert env["LANE_OPERATOR"] == "${{ inputs.operator }}"
+        assert env["LANE_BOT_LOGIN"] == "${{ inputs.bot-login }}"
 
     def test_worker_facts_come_from_the_worker_job(self, escalate):
         env = _step(escalate, RUN_STEP)["env"]
@@ -113,7 +109,7 @@ class TestEscalateJob:
         assert env["WORKER_MAX_TURNS"] == limit
 
     def test_the_uncovered_runner_crash_is_stated_in_the_workflow(self):
-        text = DISPATCH_PATH.read_text(encoding="utf-8")
+        text = LANE_PATH.read_text(encoding="utf-8")
         assert "NOT covered: a runner crash or Actions outage" in text
         assert "`no-artifact`" in text
 
@@ -154,8 +150,10 @@ class TestWorkerEndingRecord:
 
 
 class TestRedCheckWatcher:
-    def test_triggers_on_completed_runs_of_the_workflows_behind_the_watched_checks(self, watcher):
-        trigger = watcher[True]["workflow_run"]  # PyYAML reads the key `on` as True
+    def test_caller_triggers_on_completed_runs_of_the_workflows_behind_the_watched_checks(
+        self, caller
+    ):
+        trigger = caller[True]["workflow_run"]  # PyYAML reads the key `on` as True
         assert trigger["types"] == ["completed"]
         owners = {
             "pytest": "pytest.yml",
@@ -166,17 +164,21 @@ class TestRedCheckWatcher:
         names = [_load(WORKFLOWS / file)["name"] for file in owners.values()]
         assert sorted(trigger["workflows"]) == sorted(names)
 
-    def test_watched_checks_are_the_required_checks_less_the_deliberate_hold(self):
+    def test_watched_checks_are_the_required_checks_less_the_deliberate_hold(self, caller):
         text = SETUP_DOC.read_text(encoding="utf-8")
         block = text.split("<!-- required-checks-binding -->", 1)[1]
         required = set(json.loads(re.search(r"```json\n(.*?)\n```", block, re.S).group(1)))
-        source = SCRIPT_PATH.read_text(encoding="utf-8")
-        watched = set(
-            re.findall(
-                r'"([^"]+)"', re.search(r"^WATCHED_CHECKS = \((.*?)\)$", source, re.M).group(1)
-            )
-        )
+        watched = set(caller["jobs"]["watch"]["with"]["watched-checks"].split(","))
         assert watched == required - {"waiting-human-review", "risk-tier"}
+
+    def test_caller_calls_the_shared_watch_workflow_and_passes_the_pat_by_name(self, caller):
+        job = caller["jobs"]["watch"]
+        # A same-commit local ref, or `owner/repo/...@<40-hex sha>` once pinned.
+        assert re.fullmatch(
+            r"(\./|[\w.-]+/[\w.-]+/)\.github/workflows/lane-watch\.yml(@[0-9a-f]{40})?", job["uses"]
+        )
+        assert job["secrets"] == {"AGENT_DISPATCH_PAT": "${{ secrets.AGENT_DISPATCH_PAT }}"}
+        assert job["permissions"] == {"contents": "read"}
 
     def test_pushes_to_the_default_branch_are_skipped(self, watcher):
         assert watcher["jobs"]["watch"]["if"] == "github.event.workflow_run.event != 'push'"
@@ -190,20 +192,17 @@ class TestRedCheckWatcher:
     def test_job_token_cannot_write(self, watcher):
         assert watcher["jobs"]["watch"]["permissions"] == {"contents": "read"}
 
-    def test_checkout_is_the_default_branch_without_persisted_credentials(self, watcher):
-        checkout = _checkout(watcher["jobs"]["watch"])
-        assert "ref" not in checkout["with"]
-        assert checkout["with"]["persist-credentials"] is False
-
     def test_pat_and_operator_wiring(self, watcher):
-        (run_step,) = [s for s in watcher["jobs"]["watch"]["steps"] if "run" in s]
-        assert run_step["run"] == "python3 .github/scripts/lane_escalation.py watch"
-        assert run_step["env"] == {
+        step = _step(watcher["jobs"]["watch"], "Escalate lane PRs with a red watched check")
+        assert step["run"] == "python3 .lane-src/.github/scripts/lane_escalation.py watch"
+        assert step["env"] == {
             "GH_TOKEN": "${{ secrets.AGENT_DISPATCH_PAT }}",
             "GH_REPO": "${{ github.repository }}",
-            "LANE_OPERATOR": "${{ vars.LANE_OPERATOR }}",
+            "LANE_OPERATOR": "${{ inputs.operator }}",
+            "LANE_BOT_LOGIN": "${{ inputs.bot-login }}",
+            "LANE_WATCHED_CHECKS": "${{ inputs.watched-checks }}",
         }
 
-    def test_the_waiting_human_review_exclusion_is_explained_in_the_workflow(self):
-        text = WATCHER_PATH.read_text(encoding="utf-8")
-        assert "`waiting-human-review` is\n# left out on purpose" in text
+    def test_the_waiting_human_review_exclusion_is_explained_in_the_caller(self):
+        text = CALLER_PATH.read_text(encoding="utf-8")
+        assert "`waiting-human-review` is left out on purpose" in text

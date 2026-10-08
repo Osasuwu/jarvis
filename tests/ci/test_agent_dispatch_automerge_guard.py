@@ -1,4 +1,4 @@
-"""Meta-test for the auto-merge post-step in .github/workflows/agent-dispatch.yml.
+"""Meta-test for the auto-merge post-step in .github/workflows/lane.yml.
 
 After #1796 culled the 14 legacy workflows, nothing in this repo enabled
 auto-merge any more: the unattended worker ran to ``gh pr create`` and stopped,
@@ -47,7 +47,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "agent-dispatch.yml"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lane.yml"
 
 STEP_NAME = "Queue auto-merge on the worker's PR"
 
@@ -76,7 +76,7 @@ def automerge_step(workflow: dict) -> dict:
     for step in steps:
         if step.get("name") == STEP_NAME:
             return step
-    pytest.fail(f"agent-dispatch.yml has no {STEP_NAME!r} step; #1806 AC2 regressed")
+    pytest.fail(f"lane.yml has no {STEP_NAME!r} step; #1806 AC2 regressed")
 
 
 class TestBranchSelection:

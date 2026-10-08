@@ -34,18 +34,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import lane_publish  # noqa: E402
 
-DEFAULT_BOT_LOGIN = "osasuwu-bot"
 NEEDS_HUMAN = "needs-human"
 IN_PROGRESS = lane_publish.IN_PROGRESS
 RUN_MARKER = "lane-escalation"
 RED_MARKER = "lane-red-check"
 LANE_HEAD_PREFIX = "claude/issue-"
 
-# The required checks on the default branch, less `waiting-human-review` and `risk-tier`:
-# those two are red by design while a human review is owed (a HIGH/CRITICAL lane PR waits for
-# an admin approval), which is the hold working, not a failure. The set is pinned to the
-# `required-checks-binding` block of docs/reference/github-repo-setup.md by a guard test.
-WATCHED_CHECKS = ("require-linked-issue", "pytest", "code-gate", "gitleaks")
+# The watched checks are the host's required checks, less `waiting-human-review` and
+# `risk-tier`: those two are red by design while a human review is owed (a HIGH/CRITICAL
+# lane PR waits for an admin approval), which is the hold working, not a failure. The host's
+# caller passes the list as `LANE_WATCHED_CHECKS`; a guard test pins jarvis's caller to the
+# `required-checks-binding` block of docs/reference/github-repo-setup.md.
 CODE_GATE = "code-gate"
 RED_CONCLUSIONS = ("failure", "timed_out")
 
@@ -227,7 +226,7 @@ def escalate(env, out_dir):
     )
 
     handle = operator_handle(env.get("LANE_OPERATOR"))
-    bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+    bot = lane_publish.require_bot(env, "lane_escalation")
     server = env.get("GITHUB_SERVER_URL") or "https://github.com"
     comment = escalation_comment(
         run_id=run_id,
@@ -269,16 +268,25 @@ def settled(code_gate, review_runs):
     return code_gate["completed_at"] >= max(r["updated_at"] for r in review_runs)
 
 
-def red_checks(check_runs, review_runs):
+def watched_checks(env):
+    """The comma-separated `LANE_WATCHED_CHECKS`, in order; none is an error, not a no-op."""
+    names = [n.strip() for n in (env.get("LANE_WATCHED_CHECKS") or "").split(",") if n.strip()]
+    if not names:
+        print("::error::LANE_WATCHED_CHECKS is not set: the watcher needs the checks to watch")
+        sys.exit(1)
+    return names
+
+
+def red_checks(check_runs, review_runs, watched):
     """`(name, details_url)` of every watched check whose latest run is red, in name order."""
     latest = {}
     for run in check_runs:
-        if run["name"] in WATCHED_CHECKS and (
+        if run["name"] in watched and (
             run["name"] not in latest or run["id"] > latest[run["name"]]["id"]
         ):
             latest[run["name"]] = run
     red = []
-    for name in WATCHED_CHECKS:
+    for name in watched:
         run = latest.get(name)
         if not run or run["status"] != "completed" or run["conclusion"] not in RED_CONCLUSIONS:
             continue
@@ -332,7 +340,8 @@ def watch(env):
     """Label and comment on every open lane PR with a settled red required check."""
     repo = env["GH_REPO"]
     handle = operator_handle(env.get("LANE_OPERATOR"))
-    bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+    bot = lane_publish.require_bot(env, "lane_escalation")
+    watched = watched_checks(env)
     prs = json.loads(
         gh(
             "pr",
@@ -354,7 +363,8 @@ def watch(env):
         if pr["isCrossRepository"] or not pr["headRefName"].startswith(LANE_HEAD_PREFIX):
             continue
         number, sha = pr["number"], pr["headRefOid"]
-        red = red_checks(_check_runs(repo, sha), _review_runs(repo, number, sha))
+        reviews = _review_runs(repo, number, sha) if CODE_GATE in watched else []
+        red = red_checks(_check_runs(repo, sha), reviews, watched)
         if not red:
             continue
         if NEEDS_HUMAN not in [label["name"] for label in pr["labels"]]:
@@ -374,6 +384,8 @@ def watch(env):
 def main(argv):
     command = argv[1] if len(argv) > 1 else ""
     env = os.environ
+    if command in ("run", "watch"):
+        lane_publish.require_bot(env, "lane_escalation")
     if command == "run":
         if escalate(env, env.get("LANE_OUT", "lane-out")) is None:
             return

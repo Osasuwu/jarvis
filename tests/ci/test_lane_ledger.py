@@ -327,6 +327,7 @@ def _add_env(**over):
         "ISSUE_NUMBER": "55",
         "RUN_ID": "9001",
         "LANE_SHA": "0123456789abcdef0123",
+        "LANE_BOT_LOGIN": BOT,
     }
     env.update(over)
     return env
@@ -440,6 +441,7 @@ def _close_env(**over):
         "PR_NUMBER": "77",
         "PR_HEAD_REF": "claude/issue-55-9001",
         "PR_MERGED": "true",
+        "LANE_BOT_LOGIN": BOT,
     }
     env.update(over)
     return env
@@ -526,7 +528,7 @@ def _step_running(job, command):
 
 
 def test_the_ledger_job_runs_after_every_run_that_passed_intake():
-    job = _load("agent-dispatch.yml")["jobs"]["ledger"]
+    job = _load("lane.yml")["jobs"]["ledger"]
     assert set(job["needs"]) == {"intake", "worker", "publish"}
     # `always()` so a worker or publish failure still leaves its row; the intake output
     # keeps refusals and the job-level-`if` skips out.
@@ -535,64 +537,106 @@ def test_the_ledger_job_runs_after_every_run_that_passed_intake():
 
 
 def test_the_ledger_step_posts_as_the_bot_to_a_configured_issue():
-    job = _load("agent-dispatch.yml")["jobs"]["ledger"]
+    job = _load("lane.yml")["jobs"]["ledger"]
     step = _step_running(job, "lane_ledger.py add")
+    assert step["run"] == "python3 .lane-src/.github/scripts/lane_ledger.py add"
     assert step["env"]["GH_TOKEN"] == "${{ secrets.AGENT_DISPATCH_PAT }}"
-    assert step["env"]["LANE_LEDGER_ISSUE"] == "${{ vars.LANE_LEDGER_ISSUE }}"
-    assert step["env"]["LANE_SHA"] == "${{ github.sha }}"
+    assert step["env"]["LANE_LEDGER_ISSUE"] == "${{ inputs.ledger-issue }}"
+    assert step["env"]["LANE_LEDGER_SMOKE_ISSUE"] == "${{ inputs.ledger-smoke-issue }}"
+    assert step["env"]["LANE_BOT_LOGIN"] == "${{ inputs.bot-login }}"
+    # D13: each row records the lane's commit; `github.sha` is the host's under `workflow_call`.
+    assert step["env"]["LANE_SHA"] == "${{ job.workflow_sha }}"
 
 
-def test_the_ledger_job_runs_default_branch_code_only():
-    job = _load("agent-dispatch.yml")["jobs"]["ledger"]
-    checkout = next(
-        s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")
-    )
-    assert "ref" not in checkout["with"]
-    assert checkout["with"]["persist-credentials"] is False
+def test_the_jarvis_callers_pass_the_ledger_issues_from_repository_variables():
+    lane = _load("agent-dispatch.yml")["jobs"]["lane"]["with"]
+    assert lane["ledger-issue"] == "${{ vars.LANE_LEDGER_ISSUE }}"
+    assert lane["ledger-smoke-issue"] == "${{ vars.LANE_LEDGER_SMOKE_ISSUE }}"
+    close = _load("lane-ledger-close.yml")["jobs"]["finalise"]["with"]
+    assert close["ledger-issue"] == "${{ vars.LANE_LEDGER_ISSUE }}"
 
 
 def test_no_ledger_issue_is_hardcoded_on_the_shared_lane_path():
     for path in (
         WORKFLOWS / "agent-dispatch.yml",
+        WORKFLOWS / "lane.yml",
+        WORKFLOWS / "lane-close.yml",
         WORKFLOWS / "lane-ledger-close.yml",
         _root / ".github" / "scripts" / "lane_ledger.py",
     ):
         assert not re.search(r"[\w.-]+/[\w.-]+#\d+", path.read_text(encoding="utf-8")), path.name
 
 
-def test_the_close_workflow_finalises_lane_prs_from_default_branch_code():
+def test_the_close_caller_triggers_on_pull_request_target_only():
     workflow = _load("lane-ledger-close.yml")
-    # `pull_request` would run the PR's own copy of the script with the bot token.
+    # `pull_request` would run the PR's own copy of the workflow with the bot token.
     assert list(workflow[True]) == ["pull_request_target"]
     assert workflow[True]["pull_request_target"]["types"] == ["closed"]
     job = workflow["jobs"]["finalise"]
+    assert job["secrets"] == {"AGENT_DISPATCH_PAT": "${{ secrets.AGENT_DISPATCH_PAT }}"}
+    assert job["permissions"] == {"contents": "read"}
+
+
+def test_the_close_workflow_finalises_lane_prs_from_the_lanes_pinned_code():
+    job = _load("lane-close.yml")["jobs"]["finalise"]
     assert "startsWith(github.event.pull_request.head.ref, 'claude/issue-')" in job["if"]
     assert "github.event.pull_request.head.repo.full_name == github.repository" in job["if"]
-    checkout = next(
-        s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")
-    )
-    assert "ref" not in checkout["with"]
     step = _step_running(job, "lane_ledger.py close")
+    assert step["run"] == "python3 .lane-src/.github/scripts/lane_ledger.py close"
     assert step["env"]["GH_TOKEN"] == "${{ secrets.AGENT_DISPATCH_PAT }}"
     assert step["env"]["PR_HEAD_REF"] == "${{ github.event.pull_request.head.ref }}"
     assert step["env"]["PR_MERGED"] == "${{ github.event.pull_request.merged }}"
+    assert step["env"]["LANE_BOT_LOGIN"] == "${{ inputs.bot-login }}"
 
 
 def test_the_worker_commits_as_the_bot_before_it_runs():
-    steps = _load("agent-dispatch.yml")["jobs"]["worker"]["steps"]
+    steps = _load("lane.yml")["jobs"]["worker"]["steps"]
     identity = next(i for i, s in enumerate(steps) if s.get("name") == "Commit as the bot")
     worker = next(i for i, s in enumerate(steps) if "claude-code-action" in s.get("uses", ""))
     assert identity < worker
+    assert steps[identity]["env"] == {
+        "BOT_LOGIN": "${{ inputs.bot-login }}",
+        "BOT_EMAIL": "${{ inputs.bot-email }}",
+    }
     lines = steps[identity]["run"]
     for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
-        assert f"{var}=osasuwu-bot" in lines
+        assert f'echo "{var}=${{BOT_LOGIN}}"' in lines
     for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
-        assert f"{var}=339131200+osasuwu-bot@users.noreply.github.com" in lines
+        assert f'echo "{var}=${{BOT_EMAIL}}"' in lines
+
+
+def test_the_jarvis_caller_passes_the_bot_identity():
+    lane = _load("agent-dispatch.yml")["jobs"]["lane"]["with"]
+    assert lane["bot-login"] == "osasuwu-bot"
+    assert lane["bot-email"] == "339131200+osasuwu-bot@users.noreply.github.com"
+    # Every caller names the same bot, or the watcher and the ledger read a different
+    # account's comments than the lane wrote.
+    watch = _load("lane-red-check-watcher.yml")["jobs"]["watch"]["with"]
+    close = _load("lane-ledger-close.yml")["jobs"]["finalise"]["with"]
+    assert watch["bot-login"] == close["bot-login"] == "osasuwu-bot"
 
 
 def test_no_run_script_expands_a_template_expression():
     # Untrusted strings (branch names, labels) reach the shell only through `env`.
-    for name in ("agent-dispatch.yml", "lane-ledger-close.yml"):
+    for name in ("lane.yml", "lane-close.yml", "lane-watch.yml"):
         for job_name, job in _load(name)["jobs"].items():
             for step in job.get("steps", []):
                 assert "${{" not in step.get("run", ""), f"{name}:{job_name}:{step.get('name')}"
+
+
+@pytest.mark.parametrize("command", ["add", "close", "tally"])
+def test_every_ledger_command_without_a_bot_login_refuses_to_run(
+    github, monkeypatch, tmp_path, capsys, command
+):
+    env = {**_add_env(), **_close_env(), "LANE_BOT_LOGIN": ""}
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("LANE_OUT", str(tmp_path))
+    with pytest.raises(SystemExit) as exit_info:
+        lane_ledger.main(["lane_ledger.py", command])
+    assert exit_info.value.code == 1
+    assert github.calls == []
+    assert capsys.readouterr().out.strip() == (
+        "::error::lane_ledger: LANE_BOT_LOGIN is empty; the calling workflow must pass the "
+        "lane's bot login"
+    )

@@ -97,7 +97,7 @@ def _review(login, state, commit=HEAD, user_type="User"):
 
 
 def _run(base, api, head=HEAD):
-    return risk_tier.evaluate(api, REPO, 7, head, base)
+    return risk_tier.evaluate(api, REPO, 7, head, base, "osasuwu-bot")
 
 
 def _computed(base, files, changed_files=None):
@@ -209,19 +209,85 @@ def test_a_rename_out_of_a_protected_path_reads_high(base):
     assert (tier, reasons[0]) == ("HIGH", "protected path(s): AGENTS.md")
 
 
-@pytest.mark.parametrize("breakage", ["no file", "not json", "no repo entry"])
-def test_an_unreadable_protected_list_reads_high(base, breakage):
-    target = base / "config" / "protected-paths.json"
-    if breakage == "no file":
-        target.unlink()
-    elif breakage == "not json":
-        target.write_text("{", "utf-8")
-    else:
-        target.write_text(json.dumps({"Other/repo": {"hitl": []}}), "utf-8")
+def test_a_corrupt_protected_list_reads_high(base):
+    (base / "config" / "protected-paths.json").write_text("{", "utf-8")
     tier, reasons = _computed(base, [_file("scripts/x.py")])
     assert tier == "HIGH"
     assert len(reasons) == 1
     assert reasons[0].startswith("protected-path list unreadable at base (")
+
+
+@pytest.mark.parametrize(
+    ("entry", "reason"),
+    [
+        ({}, "has no globs at the base commit"),
+        ({"hitl": [], "guarded": [], "machinery": []}, "has no globs at the base commit"),
+        ({"machinery": ".github/**"}, "has a bucket that is not a list of globs"),
+        ({"machinery": [[".github/**"]]}, "has a bucket that is not a list of globs"),
+    ],
+)
+def test_an_empty_or_malformed_host_entry_reads_high_not_low(base, entry, reason):
+    (base / "config" / "protected-paths.json").write_text(json.dumps({REPO: entry}), "utf-8")
+    tier, reasons = _computed(base, [_file("scripts/x.py")])
+    assert tier == "HIGH"
+    assert len(reasons) == 1
+    assert reason in reasons[0]
+
+
+# A host that has not adopted the lane has no protected list: every diff is HIGH and the check
+# output says why and where the fix is (D2, D7; docs/reference/lane-host-setup.md).
+def test_a_host_without_a_protected_list_reads_high_with_the_reason(base):
+    (base / "config" / "protected-paths.json").unlink()
+    assert _computed(base, [_file("scripts/x.py")]) == (
+        "HIGH",
+        [
+            "config/protected-paths.json not found at the base commit: every diff is HIGH "
+            "until the host adds it (D2, docs/reference/lane-host-setup.md)"
+        ],
+    )
+
+
+def test_a_host_list_without_an_entry_for_the_repo_reads_high_naming_the_repo(base):
+    (base / "config" / "protected-paths.json").write_text(
+        json.dumps({"Other/repo": {"hitl": []}}), "utf-8"
+    )
+    assert _computed(base, [_file("scripts/x.py")]) == (
+        "HIGH",
+        [
+            "config/protected-paths.json has no entry for Osasuwu/jarvis at the base commit: "
+            "every diff is HIGH until the host adds it (D2, docs/reference/lane-host-setup.md)"
+        ],
+    )
+
+
+def test_an_unset_host_root_reads_high_with_its_own_reason():
+    assert risk_tier.path_tier(["scripts/x.py"], REPO, None) == (
+        "HIGH",
+        [
+            "RISK_TIER_HOST_ROOT is not set: no host checkout to read config/protected-paths.json from"
+        ],
+    )
+
+
+def test_a_path_only_the_hosts_own_list_names_reads_high(tmp_path):
+    host = tmp_path / "host"
+    (host / "config").mkdir(parents=True)
+    (host / "config" / "protected-paths.json").write_text(
+        json.dumps({REPO: {"guarded": ["host_only/**"]}}), "utf-8"
+    )
+    assert risk_tier.path_tier(["host_only/a.py"], REPO, host) == (
+        "HIGH",
+        ["protected path(s): host_only/a.py"],
+    )
+    assert risk_tier.path_tier(["AGENTS.md"], REPO, host) == ("LOW", [])
+
+
+def test_the_classifier_config_comes_from_the_code_not_the_host(base):
+    (base / "config" / "plan_review.yaml").unlink()  # a host carries none; the code checkout does
+    assert _computed(base, [_file("scripts/a.py"), _file("agents/b.py")]) == (
+        "MEDIUM",
+        ["classifier ordinal 2"],
+    )
 
 
 def test_a_files_listing_shorter_than_changed_files_reads_high(base):
@@ -248,11 +314,13 @@ def test_the_docs_only_exemption_does_not_lower_a_protected_path(base):
     assert (tier, reasons) == ("HIGH", ["protected path(s): docs/security/agent-boundaries.md"])
 
 
-def test_an_unreadable_plan_review_config_reads_high(base):
-    (base / "config" / "plan_review.yaml").write_text("not: [valid", "utf-8")
-    tier, reasons = _computed(base, [_file("scripts/x.py")])
+def test_an_unreadable_plan_review_config_reads_high(base, tmp_path):
+    code = tmp_path / "code"
+    (code / "config").mkdir(parents=True)
+    (code / "config" / "plan_review.yaml").write_text("not: [valid", "utf-8")
+    tier, reasons = risk_tier.computed_tier([_file("scripts/x.py")], 1, REPO, base, code_root=code)
     assert tier == "HIGH"
-    assert reasons[0].startswith("plan_review.yaml unreadable at base (")
+    assert reasons[0].startswith("plan_review.yaml unreadable (")
 
 
 # --- AC3: test weakening -----------------------------------------------------------------
@@ -448,17 +516,57 @@ def test_an_event_for_a_head_that_has_since_moved_is_red_as_superseded(high):
 # --- main(): the exit code and the annotation --------------------------------------------
 
 
-@pytest.mark.parametrize(("body", "code"), [("Risk: LOW — x", 0), ("Refs #1", 1)])
-def test_main_exits_with_the_verdict_and_annotates_a_failure(monkeypatch, capsys, body, code):
-    api = FakeGitHub(body=body, files=[_file("scripts/x.py")])
-    for key, value in {"GITHUB_REPOSITORY": REPO, "PR_NUMBER": "7", "HEAD_SHA": HEAD}.items():
+def _main_env(monkeypatch, host):
+    env = {
+        "GITHUB_REPOSITORY": REPO,
+        "PR_NUMBER": "7",
+        "HEAD_SHA": HEAD,
+        "LANE_BOT_LOGIN": "osasuwu-bot",
+        "RISK_TIER_HOST_ROOT": str(host),
+    }
+    for key, value in env.items():
         monkeypatch.setenv(key, value)
+
+
+@pytest.mark.parametrize(("body", "code"), [("Risk: LOW — x", 0), ("Refs #1", 1)])
+def test_main_exits_with_the_verdict_and_annotates_a_failure(monkeypatch, capsys, base, body, code):
+    api = FakeGitHub(body=body, files=[_file("scripts/x.py")])
+    _main_env(monkeypatch, base)
     monkeypatch.setattr(risk_tier, "_github_get", api)
     with pytest.raises(SystemExit) as exit_info:
         risk_tier.main()
     assert exit_info.value.code == code
     out = capsys.readouterr().out
     assert ("::error::The PR body has a missing Risk line." in out) == (code == 1)
+
+
+def test_main_reads_the_protected_list_from_the_host_root(monkeypatch, capsys, tmp_path):
+    host = tmp_path / "host"
+    (host / "config").mkdir(parents=True)
+    (host / "config" / "protected-paths.json").write_text(
+        json.dumps({REPO: {"guarded": ["scripts/**"]}}), "utf-8"
+    )
+    _main_env(monkeypatch, host)
+    monkeypatch.setattr(
+        risk_tier, "_github_get", FakeGitHub(body="Risk: LOW — x", files=[_file("scripts/x.py")])
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        risk_tier.main()
+    assert exit_info.value.code == 1
+    assert "computed HIGH" in capsys.readouterr().out
+
+
+def test_main_without_a_bot_login_fails_naming_the_variable(monkeypatch, capsys, base):
+    _main_env(monkeypatch, base)
+    monkeypatch.setenv("LANE_BOT_LOGIN", "")
+    monkeypatch.setattr(risk_tier, "_github_get", FakeGitHub(files=[_file("scripts/x.py")]))
+    with pytest.raises(SystemExit) as exit_info:
+        risk_tier.main()
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().out.strip() == (
+        "::error::risk-tier: LANE_BOT_LOGIN is empty; the calling workflow must pass the lane's "
+        "bot login"
+    )
 
 
 # --- AC5: the workflow ------------------------------------------------------------------
@@ -500,6 +608,53 @@ def test_the_job_is_time_boxed_and_names_a_base_without_the_script():
     assert len(guard) == 1
     assert "[ ! -f .github/scripts/risk_tier.py ]" in guard[0]
     assert "::error::risk-tier: the base branch has no .github/scripts/risk_tier.py" in guard[0]
+
+
+def test_the_in_place_job_names_its_host_root_and_the_bot():
+    (step,) = [s for s in _job()["steps"] if "risk_tier.py" in s.get("run", "")]
+    assert step["env"]["RISK_TIER_HOST_ROOT"] == "${{ github.workspace }}"
+    assert step["env"]["LANE_BOT_LOGIN"] == "osasuwu-bot"
+
+
+# --- the composite action a host repo calls (#2013, D7) ----------------------------------
+
+ACTION = yaml.safe_load(
+    (_root / ".github" / "actions" / "risk-tier" / "action.yml").read_text(encoding="utf-8")
+)
+
+
+def test_the_action_reads_protected_paths_only_from_the_hosts_base_commit():
+    checkouts = [
+        s for s in ACTION["runs"]["steps"] if s.get("uses", "").startswith("actions/checkout@")
+    ]
+    assert len(checkouts) == 1
+    assert checkouts[0]["with"] == {
+        "ref": "${{ github.event.pull_request.base.ref }}",
+        "path": ".risk-tier-host",
+        "sparse-checkout": "config",
+        "persist-credentials": False,
+    }
+
+
+def test_the_action_runs_the_classifier_from_its_own_pinned_checkout():
+    (step,) = [s for s in ACTION["runs"]["steps"] if "risk_tier.py" in s.get("run", "")]
+    # `$GITHUB_ACTION_PATH` is the action's repo at the pinned SHA: the host's tree is never run.
+    assert step["run"] == 'python "$GITHUB_ACTION_PATH/../../scripts/risk_tier.py"'
+    assert step["env"]["RISK_TIER_HOST_ROOT"] == "${{ github.workspace }}/.risk-tier-host"
+    assert step["env"]["LANE_BOT_LOGIN"] == "${{ inputs.bot-login }}"
+    assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
+    assert step["shell"] == "bash"
+
+
+def test_the_actions_script_path_resolves_from_the_action_directory():
+    action_dir = _root / ".github" / "actions" / "risk-tier"
+    assert (action_dir / ".." / ".." / "scripts" / "risk_tier.py").is_file()
+
+
+def test_no_context_value_is_interpolated_into_an_action_shell_step():
+    runs = [s["run"] for s in ACTION["runs"]["steps"] if "run" in s]
+    assert len(runs) == 2
+    assert [r for r in runs if "${{" in r] == []
 
 
 def test_the_github_call_is_authenticated_and_bounded_by_a_timeout(monkeypatch):

@@ -71,7 +71,7 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
 | `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
-| `risk-tier` | `pr-body-check.yml` (job `risk-tier`, script `.github/scripts/risk_tier.py`) | Red on a missing/malformed/duplicate `Risk:` line, and on any HIGH/CRITICAL PR until an admin human's APPROVED review sits on the current head SHA. Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
+| `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line, and on any HIGH/CRITICAL PR until an admin human's APPROVED review sits on the current head SHA. Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
 
 These six required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
 `waiting-human-review`, `risk-tier`) are the target set on jarvis's `main`. The first five have
@@ -327,7 +327,7 @@ read it back out of the body).
   GitHub's bot-recursion-prevention silently suppresses **native** linked-issue auto-close for
   *any* automated (bot or App) merge — even a GitHub App token merging doesn't restore it.
   Two ways out. Either queue auto-merge with a **user** PAT, so the merge is attributed to a
-  person and native auto-close fires (jarvis does this: `agent-dispatch.yml` queues
+  person and native auto-close fires (jarvis does this: the lane, `lane.yml`, queues
   `gh pr merge --auto` with `AGENT_DISPATCH_PAT`). Or, if merges must be bot/App-authored, both
   of these are required: (1) mint and use a GitHub App token for the merge step so the PR's
   `pull_request: closed` event itself isn't suppressed, and (2) add a second workflow triggered
