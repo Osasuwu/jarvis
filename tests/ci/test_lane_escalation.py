@@ -90,6 +90,7 @@ def _env(**over):
         "ISSUE_NUMBER": "2011",
         "RUN_ID": "9001",
         "LANE_OPERATOR": "Osasuwu",
+        "LANE_BOT_LOGIN": "osasuwu-bot",
         "WORKER_RESULT": "success",
         "WORKER_RESULT_SUBTYPE": "",
         "WORKER_NUM_TURNS": "",
@@ -382,9 +383,9 @@ def test_redispatch_after_an_escalation_needs_the_human_to_clear_the_marker(gh, 
         "closing_prs": [],
         "blocked_by": 0,
     }
-    assert lane_intake.check(facts, "Do the thing.")[0] == "needs-human"
+    assert lane_intake.check(facts, "Do the thing.", "osasuwu-bot")[0] == "needs-human"
     facts["labels"] = [n for n in after if n != "needs-human"]
-    assert lane_intake.check(facts, "Do the thing.") is None
+    assert lane_intake.check(facts, "Do the thing.", "osasuwu-bot") is None
 
 
 # --- watch: the PR side ---------------------------------------------------------------
@@ -411,8 +412,18 @@ def _check(name, conclusion, id_=1, status="completed", at="2026-10-08T10:00:00Z
     }
 
 
-def _watch(gh):
-    return lane_escalation.watch({"GH_REPO": REPO, "LANE_OPERATOR": "Osasuwu"})
+WATCHED = "require-linked-issue,pytest,code-gate,gitleaks"
+
+
+def _watch(gh, watched=WATCHED):
+    return lane_escalation.watch(
+        {
+            "GH_REPO": REPO,
+            "LANE_OPERATOR": "Osasuwu",
+            "LANE_BOT_LOGIN": "osasuwu-bot",
+            "LANE_WATCHED_CHECKS": watched,
+        }
+    )
 
 
 def test_a_red_required_check_on_a_lane_pr_labels_it_and_comments_once(gh):
@@ -551,6 +562,8 @@ def test_watch_without_an_operator_exits_cleanly_when_nothing_is_red(gh, monkeyp
     gh.open_prs = [_pr()]
     gh.check_runs = {SHA: [_check("pytest", "success", 1)]}
     monkeypatch.setenv("GH_REPO", REPO)
+    monkeypatch.setenv("LANE_BOT_LOGIN", "osasuwu-bot")
+    monkeypatch.setenv("LANE_WATCHED_CHECKS", WATCHED)
     monkeypatch.delenv("LANE_OPERATOR", raising=False)
     lane_escalation.main(["lane_escalation.py", "watch"])  # must not raise SystemExit
     assert gh.writes == []
@@ -561,6 +574,8 @@ def test_watch_without_an_operator_still_flags_and_exits_failing(gh, monkeypatch
     gh.open_prs = [_pr()]
     gh.check_runs = {SHA: [_check("pytest", "failure", 1)]}
     monkeypatch.setenv("GH_REPO", REPO)
+    monkeypatch.setenv("LANE_BOT_LOGIN", "osasuwu-bot")
+    monkeypatch.setenv("LANE_WATCHED_CHECKS", WATCHED)
     monkeypatch.delenv("LANE_OPERATOR", raising=False)
     with pytest.raises(SystemExit) as exit_info:
         lane_escalation.main(["lane_escalation.py", "watch"])
@@ -568,3 +583,43 @@ def test_watch_without_an_operator_still_flags_and_exits_failing(gh, monkeypatch
     assert [w[:2] for w in gh.writes] == [("pr", "edit"), ("pr", "comment")]
     assert gh.writes[1][-1].splitlines()[1].startswith("required check")
     assert "::warning::LANE_OPERATOR" in capsys.readouterr().out
+
+
+def test_the_watched_checks_come_from_the_caller_not_from_the_script(gh):
+    gh.open_prs = [_pr()]
+    gh.check_runs = {SHA: [_check("pytest", "failure", 1), _check("lint", "failure", 2)]}
+    assert _watch(gh, "lint")[0] == [(40, "lint")]
+
+
+def test_the_code_review_runs_are_read_only_when_code_gate_is_watched(gh):
+    gh.open_prs = [_pr()]
+    gh.check_runs = {SHA: [_check("pytest", "failure", 1)]}
+    _watch(gh, "pytest")
+    assert not [r for r in gh.reads if any("code-review.yml" in a for a in r)]
+
+
+@pytest.mark.parametrize("value", [None, "", " , "])
+def test_watch_with_no_watched_checks_fails_naming_the_variable(gh, monkeypatch, capsys, value):
+    gh.open_prs = [_pr()]
+    monkeypatch.setenv("GH_REPO", REPO)
+    monkeypatch.setenv("LANE_BOT_LOGIN", "osasuwu-bot")
+    monkeypatch.delenv("LANE_WATCHED_CHECKS", raising=False)
+    if value is not None:
+        monkeypatch.setenv("LANE_WATCHED_CHECKS", value)
+    with pytest.raises(SystemExit) as exit_info:
+        lane_escalation.main(["lane_escalation.py", "watch"])
+    assert exit_info.value.code == 1
+    assert "::error::LANE_WATCHED_CHECKS" in capsys.readouterr().out
+    assert gh.writes == []
+
+
+@pytest.mark.parametrize("command", ["run", "watch"])
+def test_escalation_without_a_bot_login_fails_naming_the_variable(gh, monkeypatch, capsys, command):
+    monkeypatch.setenv("GH_REPO", REPO)
+    monkeypatch.setenv("LANE_WATCHED_CHECKS", WATCHED)
+    monkeypatch.delenv("LANE_BOT_LOGIN", raising=False)
+    with pytest.raises(SystemExit) as exit_info:
+        lane_escalation.main(["lane_escalation.py", command])
+    assert exit_info.value.code == 1
+    assert "::error::lane_escalation: LANE_BOT_LOGIN" in capsys.readouterr().out
+    assert gh.writes == []

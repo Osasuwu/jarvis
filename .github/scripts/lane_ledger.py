@@ -31,7 +31,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import lane_publish  # noqa: E402
 
-DEFAULT_BOT_LOGIN = "osasuwu-bot"
 MARKER = "lane-ledger"
 NONE = "—"
 
@@ -106,7 +105,7 @@ def _is_hold_expired(row, now):
     return row.get("tier") in HIGH_TIERS and now - _when(row) >= timedelta(days=HIGH_HOLD_DAYS)
 
 
-def tally(comments, now, bot=DEFAULT_BOT_LOGIN):
+def tally(comments, now, bot):
     """The running count over a ledger issue's comments, oldest first.
 
     `comments` is a list of `{"user": login, "body": text}`. Returns the counted rows
@@ -155,7 +154,7 @@ def run_outcome(has_pr, escalated):
     return ESCALATED if escalated else NO_ARTIFACT
 
 
-def final_outcome(merged, commit_authors, bot=DEFAULT_BOT_LOGIN):
+def final_outcome(merged, commit_authors, bot):
     """How a closed lane PR ended. An unreadable commit author counts as a human edit."""
     if not merged:
         return CLOSED_UNMERGED
@@ -219,7 +218,7 @@ def add_row(env, out_dir, now):
         print("::warning::LANE_LEDGER_ISSUE is not set to owner/repo#N; no ledger row written")
         return None
     host, issue, run_id = env["GH_REPO"], env["ISSUE_NUMBER"], env["RUN_ID"]
-    bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+    bot = lane_publish.require_bot(env, "lane_ledger")
 
     branch = lane_publish.branch_name(issue, run_id)
     prs = json.loads(
@@ -288,7 +287,7 @@ def close_row(env):
         print("not a ledgered lane PR; nothing to finalise")
         return None
     host, number = env["GH_REPO"], int(env["PR_NUMBER"])
-    bot = env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
+    bot = lane_publish.require_bot(env, "lane_ledger")
 
     found = _find_row(_comments(*ledger), bot, host, match.group(2))
     # The PR number in the row must match: a branch name alone is easy to imitate.
@@ -313,6 +312,8 @@ def main(argv):
     command = argv[1] if len(argv) > 1 else ""
     env = os.environ
     now = datetime.now(timezone.utc)
+    if command in ("add", "close", "tally"):
+        lane_publish.require_bot(env, "lane_ledger")
     if command == "add":
         add_row(env, env.get("LANE_OUT", "lane-out"), now)
     elif command == "close":
@@ -322,9 +323,7 @@ def main(argv):
         if ledger is None:
             sys.exit("LANE_LEDGER_ISSUE must be owner/repo#N")
         print(
-            json.dumps(
-                tally(_comments(*ledger), now, env.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN)
-            )
+            json.dumps(tally(_comments(*ledger), now, lane_publish.require_bot(env, "lane_ledger")))
         )
     else:
         sys.exit("usage: lane_ledger.py add|close|tally")

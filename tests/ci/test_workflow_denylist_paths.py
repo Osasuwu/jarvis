@@ -73,7 +73,7 @@ def test_every_denylist_path_exists_on_disk() -> None:
     )
     # The walk must reach the dispatch worker's guard-file rules, or a refactor of the
     # workflow's shape would turn this into a loop over nothing.
-    assert "agent-dispatch.yml:./.claude/settings.json" in checked
+    assert "lane.yml:./.claude/settings.json" in checked
 
 
 def test_checker_flags_a_planted_dead_path(tmp_path: Path) -> None:

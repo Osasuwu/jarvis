@@ -42,9 +42,6 @@ PLAN_CLASS = "afk:2-plan"
 HUMAN_ONLY = "afk:3-human"
 NEEDS_HUMAN = "needs-human"
 IN_FLIGHT = (IN_PROGRESS, "status:review", "status:rework-in-progress")
-# The machine user the lane's own writes come from (D1); any edit of the body by it
-# after a human wrote it means the lane rewrote its own input.
-DEFAULT_BOT_LOGIN = "osasuwu-bot"
 
 FACTS_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -164,7 +161,7 @@ RULES = (
 )
 
 
-def check(facts, payload_body, bot=DEFAULT_BOT_LOGIN, class2_host=False):
+def check(facts, payload_body, bot, class2_host=False):
     """Return None to dispatch, else `(rule_name, message)` for the first rule that fails."""
     for rule in RULES:
         refusal = rule(facts, payload_body, bot, class2_host)
@@ -227,7 +224,13 @@ def _remove_label(repo, number, name):
 def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     number = os.environ["ISSUE_NUMBER"]
-    bot = os.environ.get("LANE_BOT_LOGIN", DEFAULT_BOT_LOGIN)
+    bot = os.environ.get("LANE_BOT_LOGIN", "").strip()
+    if not bot:
+        print(
+            "::error::lane_intake: LANE_BOT_LOGIN is empty; "
+            "the calling workflow must pass the lane's bot login"
+        )
+        sys.exit(1)
     class2_host = os.environ.get("LANE_CLASS2_AFK") == "true"
     refusal = check(
         fetch_facts(repo, number), os.environ.get("PAYLOAD_BODY"), bot, class2_host=class2_host

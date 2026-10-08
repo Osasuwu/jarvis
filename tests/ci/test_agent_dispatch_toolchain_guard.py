@@ -62,14 +62,14 @@ def _load(name: str) -> dict:
 
 @pytest.fixture(scope="module")
 def worker_steps() -> list[dict]:
-    return _load("agent-dispatch.yml")["jobs"]["worker"]["steps"]
+    return _load("lane.yml")["jobs"]["worker"]["steps"]
 
 
 def _index(steps: list[dict], name: str) -> int:
     for i, step in enumerate(steps):
         if step.get("name") == name:
             return i
-    pytest.fail(f"agent-dispatch.yml worker job has no {name!r} step")
+    pytest.fail(f"lane.yml worker job has no {name!r} step")
 
 
 def _allowed_tools(steps: list[dict]) -> list[str]:

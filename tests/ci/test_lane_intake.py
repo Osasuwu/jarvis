@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 _spec = importlib.util.spec_from_file_location(
     "lane_intake", _root / ".github" / "scripts" / "lane_intake.py"
@@ -11,6 +13,7 @@ lane_intake = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lane_intake)
 
 PAYLOAD_BODY = "Do the thing."
+BOT = "osasuwu-bot"
 
 # sha256 of the canonical steps "- step one\n- step two", worked out independently of
 # agents.plan_lock.
@@ -33,12 +36,14 @@ def _facts(**over):
 
 
 def _check(**over):
-    return lane_intake.check(_facts(**over), PAYLOAD_BODY)
+    return lane_intake.check(_facts(**over), PAYLOAD_BODY, BOT)
 
 
 def _check_plan(body, labels=("afk:2-plan",), class2_host=True):
     """An `afk:2-plan` issue whose live body equals the body the human labelled."""
-    return lane_intake.check(_facts(body=body, labels=list(labels)), body, class2_host=class2_host)
+    return lane_intake.check(
+        _facts(body=body, labels=list(labels)), body, BOT, class2_host=class2_host
+    )
 
 
 def test_clean_issue_passes():
@@ -101,7 +106,7 @@ def test_body_edited_after_label_is_refused():
 
 
 def test_empty_payload_body_matches_empty_live_body():
-    assert lane_intake.check(_facts(body=""), None) is None
+    assert lane_intake.check(_facts(body=""), None, BOT) is None
 
 
 def test_bot_edit_in_history_is_refused():
@@ -161,7 +166,7 @@ def test_open_blocker_is_refused():
 def test_missing_blocker_summary_is_treated_as_blocked():
     facts = _facts()
     del facts["blocked_by"]
-    assert lane_intake.check(facts, PAYLOAD_BODY) == ("blocked", "issue has an open blocker")
+    assert lane_intake.check(facts, PAYLOAD_BODY, BOT) == ("blocked", "issue has an open blocker")
 
 
 def test_first_failing_rule_wins():
@@ -200,6 +205,7 @@ def _run_main(monkeypatch, tmp_path, class2_flag):
     monkeypatch.setenv("ISSUE_NUMBER", "7")
     monkeypatch.setenv("PAYLOAD_BODY", LOCKED_BODY)
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
     if class2_flag is None:
         monkeypatch.delenv("LANE_CLASS2_AFK", raising=False)
     else:
@@ -237,3 +243,21 @@ def test_main_refuses_afk_2_plan_when_the_host_leaves_the_class2_flag_unset(monk
 def test_main_treats_a_class2_flag_other_than_true_as_unset(monkeypatch, tmp_path):
     _, output = _run_main(monkeypatch, tmp_path, "false")
     assert output == "pass=false\n"
+
+
+def test_main_without_a_bot_login_refuses_to_run_and_touches_nothing(monkeypatch, tmp_path, capsys):
+    calls = []
+    monkeypatch.setattr(lane_intake, "fetch_facts", lambda repo, number: _facts())
+    monkeypatch.setattr(lane_intake, "_request", lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("ISSUE_NUMBER", "7")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    monkeypatch.setenv("LANE_BOT_LOGIN", "")
+    with pytest.raises(SystemExit) as exit_info:
+        lane_intake.main()
+    assert exit_info.value.code == 1
+    assert calls == []
+    assert capsys.readouterr().out.strip() == (
+        "::error::lane_intake: LANE_BOT_LOGIN is empty; the calling workflow must pass the "
+        "lane's bot login"
+    )

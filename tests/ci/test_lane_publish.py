@@ -192,3 +192,18 @@ def test_no_bundle_publishes_nothing(lane):
     assert _publish(lane) is None
     assert lane.calls == []
     assert _git(lane.origin, "for-each-ref", "--format=%(refname)", "refs/heads/claude") == ""
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_require_bot_refuses_a_missing_login_and_names_the_caller(capsys, value):
+    env = {} if value is None else {"LANE_BOT_LOGIN": value}
+    with pytest.raises(SystemExit) as exit_info:
+        lane_publish.require_bot(env, "lane_x")
+    assert exit_info.value.code == 1
+    assert capsys.readouterr().out.strip() == (
+        "::error::lane_x: LANE_BOT_LOGIN is empty; the calling workflow must pass the lane's bot login"
+    )
+
+
+def test_require_bot_returns_the_login_trimmed():
+    assert lane_publish.require_bot({"LANE_BOT_LOGIN": " some-bot "}, "lane_x") == "some-bot"

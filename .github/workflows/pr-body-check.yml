@@ -126,3 +126,8 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # PR1 of #2013 runs the classifier from the base checkout itself, so code root
+          # and host root are the same tree; the next change replaces these steps with
+          # the pinned `.github/actions/risk-tier` action.
+          RISK_TIER_HOST_ROOT: ${{ github.workspace }}
+          LANE_BOT_LOGIN: osasuwu-bot

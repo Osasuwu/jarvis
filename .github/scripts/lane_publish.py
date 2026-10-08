@@ -1,7 +1,7 @@
 """Publish step for the AFK lane: every GitHub write the worker may not make.
 
-Runs from the `publish` job of `.github/workflows/agent-dispatch.yml`, as
-`osasuwu-bot` with `AGENT_DISPATCH_PAT` (decisions D1, D4, D10, D14 in
+Runs from the `publish` job of `.github/workflows/lane.yml`, as the bot account
+named by `LANE_BOT_LOGIN`, with `AGENT_DISPATCH_PAT` (decisions D1, D4, D10, D14 in
 docs/decisions/2026-Q4.md). The worker job holds no token that can write; it leaves
 two files in `lane-out/` — `work.bundle` (its commits) and `pr-body.md` (its PR
 description) — and this job, on a fresh checkout of the default branch, does the rest:
@@ -23,6 +23,7 @@ and the body is passed as a file, never through a shell. Stdlib only.
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 IN_PROGRESS = "status:in-progress"
@@ -33,6 +34,18 @@ SEVERITY = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 _RISK_LINE = re.compile(
     r"^[ \t>*_-]*Risk[ \t]*:[ \t*_]*(LOW|MEDIUM|HIGH|CRITICAL)\b", re.IGNORECASE | re.MULTILINE
 )
+
+
+def require_bot(env, script):
+    """The bot login the lane acts as; a host names its own, so there is no default."""
+    bot = (env.get("LANE_BOT_LOGIN") or "").strip()
+    if not bot:
+        print(
+            f"::error::{script}: LANE_BOT_LOGIN is empty; "
+            "the calling workflow must pass the lane's bot login"
+        )
+        sys.exit(1)
+    return bot
 
 
 def parse_risk(body):
