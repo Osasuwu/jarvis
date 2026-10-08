@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-repo path buckets consumed by /to-tickets AFK-fit classification (#642, split per #1708). Adding a new repo MUST NOT require editing any SKILL.md — only this file. Paths are gitignore-style globs evaluated against an issue's declared-changed file list. Two buckets per repo: `hitl` = identity/security config, a categorical security boundary — any match is class 3 (afk:3-human), hard refusal. `guarded` = shared surfaces with off-repo consumers — any match is class 2 (afk:2-plan), AFK-eligible once a plan locks. No match in either bucket falls through to Q2-Q4 LLM judgement. For jarvis, hitl mirrors the identity/security subset of docs/security/agent-boundaries.md; guarded covers supabase/** (schema is a shared surface per docs/reference/mcp-and-environment.md — kept in sync with config/plan_review.yaml's class_2.shared_surface_globs, commit 481c938b), whose consumers (redrobot, future jarvis-oss operators) sit outside this repo. (`mcp-memory/**` was dropped from this bucket in #1801 — the directory no longer exists, the memory stack having been retired along with its Supabase-backed tables. Root `.mcp.json` was dropped from this bucket in #1800 — it hasn't existed in the repo since commit b807d3d, predating this issue; MCP registration now lives at user level. Root `CLAUDE.md` was dropped in #1955 — the file no longer exists; `AGENTS.md` is the sole rules file and stays hitl.) For redrobot, the research-mode tier-1 safety core (redrobot/driver/**, redrobot/planning/**, redrobot/experiments.py, tests/safety/**, tests/experiments/test_rehearsal_guard.py per decision a7111a44) is guarded, not hitl — redrobot has no hitl entries. Redrobot globs are repo-relative and carry the `redrobot/` package prefix.",
+  "_comment": "Per-repo path buckets consumed by /to-tickets AFK-fit classification (#642, split per #1708). Adding a new repo MUST NOT require editing any SKILL.md — only this file. Paths are gitignore-style globs evaluated against an issue's declared-changed file list. Two buckets per repo drive /to-tickets (a third, optional `machinery`, is read only by the risk-tier check — below): `hitl` = identity/security config, a categorical security boundary — any match is class 3 (afk:3-human), hard refusal. `guarded` = shared surfaces with off-repo consumers — any match is class 2 (afk:2-plan), AFK-eligible once a plan locks. No match in either bucket falls through to Q2-Q4 LLM judgement. For jarvis, hitl mirrors the identity/security subset of docs/security/agent-boundaries.md; guarded covers supabase/** (schema is a shared surface per docs/reference/mcp-and-environment.md — kept in sync with config/plan_review.yaml's class_2.shared_surface_globs, commit 481c938b), whose consumers (redrobot, future jarvis-oss operators) sit outside this repo. (`mcp-memory/**` was dropped from this bucket in #1801 — the directory no longer exists, the memory stack having been retired along with its Supabase-backed tables. Root `.mcp.json` was dropped from this bucket in #1800 — it hasn't existed in the repo since commit b807d3d, predating this issue; MCP registration now lives at user level. Root `CLAUDE.md` was dropped in #1955 — the file no longer exists; `AGENTS.md` is the sole rules file and stays hitl.) For redrobot, the research-mode tier-1 safety core (redrobot/driver/**, redrobot/planning/**, redrobot/experiments.py, tests/safety/**, tests/experiments/test_rehearsal_guard.py per decision a7111a44) is guarded, not hitl — redrobot has no hitl entries. Redrobot globs are repo-relative and carry the `redrobot/` package prefix. `machinery` (jarvis only) lists the CI/process machinery that decides what merges — workflows, hooks, the plan classifier and this file, dependency manifests, the merge-gate docs: the risk-tier required check (#2004) reads it from the base commit and floors any PR touching a match at HIGH. /to-tickets ignores it, so AFK-fit classification is unchanged.",
   "Osasuwu/jarvis": {
     "hitl": [
       "config/SOUL.md",
@@ -10,6 +10,23 @@
     ],
     "guarded": [
       "supabase/**"
+    ],
+    "machinery": [
+      ".github/**",
+      ".claude/**",
+      "AGENTS.md",
+      "agents/plan_classifier.py",
+      "agents/plan_review_config.py",
+      "config/plan_review.yaml",
+      "config/protected-paths.json",
+      "scripts/to_tickets_afk_fit.py",
+      "pyproject.toml",
+      "uv.lock",
+      "package.json",
+      "package-lock.json",
+      "docs/reference/github-repo-setup.md",
+      "docs/reference/test-quality.md",
+      "docs/security/**"
     ]
   },
   "SergazyNarynov/redrobot": {

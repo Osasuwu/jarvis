@@ -71,10 +71,13 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
 | `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
+| `risk-tier` | `pr-body-check.yml` (job `risk-tier`, script `.github/scripts/risk_tier.py`) | Red on a missing/malformed/duplicate `Risk:` line, and on any HIGH/CRITICAL PR until an admin human's APPROVED review sits on the current head SHA. Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
 
-These five required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
-`waiting-human-review`) are exactly what's enforced on jarvis's `main` since #1893 (read back
-from the live branch-protection settings, 2026-09-24). Before that, #1796/#1835 had cut it down
+These six required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
+`waiting-human-review`, `risk-tier`) are the target set on jarvis's `main`. The first five have
+been enforced since #1893 (read back from the live branch-protection settings, 2026-09-24);
+`risk-tier` (#2004) is added by the operator once the check is live, which is why the binding
+block below names it before the live setting does. Before that, #1796/#1835 had cut it down
 to the first four, deleting the former `owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the
 review retry wrapper and the advisory `issue-checks.yml`; don't copy any of those from older
 docs. Repo-custom gates layer on top of this floor as needed; they don't need to match another
@@ -127,7 +130,8 @@ fail-open gate. Change the block and the live setting together
   "pytest": 15368,
   "code-gate": 3969106,
   "gitleaks": 15368,
-  "waiting-human-review": 15368
+  "waiting-human-review": 15368,
+  "risk-tier": 15368
 }
 ```
 
@@ -184,7 +188,8 @@ repos/<owner>/<repo>/branches/<default>/protection`) as required status checks. 
 ## 4. `config/protected-paths.json` entry
 
 If the repo participates in AFK/agent dispatch classification, add an entry to
-`config/protected-paths.json` (jarvis's copy; adapt path per repo) with two buckets:
+`config/protected-paths.json` (jarvis's copy; adapt path per repo) with two buckets (plus an
+optional third, below):
 
 - **`hitl`** — identity/security config; any changed file matching these globs is a hard
   refusal for autonomous agents (class 3, human-in-the-loop only). Mirrors the sensitive
@@ -193,6 +198,12 @@ If the repo participates in AFK/agent dispatch classification, add an entry to
 - **`guarded`** — shared surfaces with consumers outside this repo (a shared schema, a memory
   server, a config file another repo depends on). Any match is class 2 (plan-review required,
   AFK-eligible once a plan locks) — not a refusal, just a higher bar.
+
+- **`machinery`** (optional) — the CI/process machinery that decides what merges: workflows,
+  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs. Read only
+  by the `risk-tier` check, from the base commit, never by `/to-tickets`; any changed file
+  matching these globs floors the PR at HIGH. A repo without the bucket still gets the `hitl`
+  and `guarded` floors.
 
 A repo with no shared surfaces and no identity-adjacent files can have both arrays empty.
 Adding a new repo to this file should never require touching skill logic — it's pure data.

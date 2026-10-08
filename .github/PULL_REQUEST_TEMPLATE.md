@@ -31,6 +31,8 @@ PR scope rules:
 - **HIGH**: <!-- logic changes, safety-adjacent -->
 - **CRITICAL**: <!-- data loss, security, breaking API -->
 
+Risk: <LOW|MEDIUM|HIGH|CRITICAL> — <reason>
+
 ## Testing
 
 <!--
