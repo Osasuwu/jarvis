@@ -6,7 +6,9 @@ are wiring that fails quietly when it drifts:
 1. The job checks out only `.github/scripts` and `agents`. Drop `agents` and the
    script dies on its import, so no label ever dispatches; the Actions page shows
    a red intake job and no refusal comment.
-2. The step sets `LANE_CLASS2_AFK: "true"`. Drop it and every `afk:2-plan` issue in
+2. The step passes the label's applier as `LABEL_SENDER`. Drop it and intake sees an unknown
+   labeller and refuses every dispatch as `labeller-unknown`, human or bot.
+3. The step sets `LANE_CLASS2_AFK: "true"`. Drop it and every `afk:2-plan` issue in
    this repo is refused as `class2-host`, which reads like a plan problem.
 
 Convention: docs/reference/ci-guard-meta-tests.md (#326).
@@ -38,3 +40,7 @@ def test_intake_checks_out_the_script_and_the_plan_lock_module(intake_job):
 
 def test_intake_step_sets_the_class2_flag_for_this_repo(intake_job):
     assert _step(intake_job, "intake")["env"]["LANE_CLASS2_AFK"] == "true"
+
+
+def test_intake_step_passes_the_label_applier(intake_job):
+    assert _step(intake_job, "intake")["env"]["LABEL_SENDER"] == "${{ github.event.sender.login }}"

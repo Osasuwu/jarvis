@@ -25,6 +25,10 @@ See `docs/security/mcp-audit.md` for per-server analysis. Summary:
 | Secret exfiltration via memory_store | Medium | **Sprint 2: #159** |
 | Prompt injection via firecrawl/web | Medium | Claude instruction hierarchy |
 | Prompt injection via GitHub issues | Medium | AFK lane intake (#2005): worker refused unless the issue body equals the `labeled` payload body and carries no `osasuwu-bot` edit (D9); refused when unclassified, closed, claimed by a PR, in flight or blocked (D8). Worker without a write token (D4) is committed but not yet enforced (#1966) |
+| Bot releases a merge hold (AP5, #1999) | High | The worker is `osasuwu-bot` with write access, so it can remove `waiting-human-review` or a review request. `waiting-human-review` (run from the base ref by `.github/scripts/waiting_human_review.py`) treats a release by the bot or any `*[bot]` actor as no release: it re-applies the label and stays red until a human removes it |
+| Bot dispatches itself (AP6, #1999) | High | Intake refuses `agent:dispatch` applied by the bot, a `*[bot]` login or an unknown labeller (`bot-labelled`, `labeller-unknown`); only a human's label starts a run |
+| Bot added to a trusted/bypass author list (#1999) | High | `tests/ci/test_bot_bypass_list_guard.py` under the required `pytest` check: no `osasuwu-bot` in the code-gate author rule, in any `allowed_bots`, or in the `require-linked-issue` bypass; `allowed_bots: "*"` also fails |
+| N-run gate counts bot-edited-by-human or bot-commented runs as clean (#1999) | Medium | `lane_ledger.py` `merged-unedited` means `human-touched: no`: no non-bot commit, comment or non-approving review; `lane_ledger.py touched <owner/repo#N>` lists the touches |
 | Data corruption via memory writes | Medium | Soft delete with 30-day retention (#160) |
 | Obsidian vault data exposure | Low | Local only, no network |
 
