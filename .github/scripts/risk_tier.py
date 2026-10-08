@@ -116,7 +116,9 @@ def path_tier(paths, repo, root):
         entry = data[repo]
         globs = [g for key, value in entry.items() if not key.startswith("_") for g in value]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        return "HIGH", [f"protected-path list unreadable at base ({type(exc).__name__}): fail closed"]
+        return "HIGH", [
+            f"protected-path list unreadable at base ({type(exc).__name__}): fail closed"
+        ]
     hits = _matched_files(list(paths), globs)
     if hits:
         return "HIGH", [f"protected path(s): {', '.join(hits)}"]
@@ -224,7 +226,9 @@ def evaluate(api, repo, number, event_head_sha, root, bot=DEFAULT_BOT_LOGIN):
     pr = api(f"repos/{repo}/pulls/{number}")
     head = pr["head"]["sha"]
     if head != event_head_sha:
-        return False, [f"head moved to {head[:7]} (event was {event_head_sha[:7]}): superseded by a newer push"]
+        return False, [
+            f"head moved to {head[:7]} (event was {event_head_sha[:7]}): superseded by a newer push"
+        ]
     declared, problem = parse_declared(pr.get("body"))
     if problem:
         return False, [
@@ -241,7 +245,10 @@ def evaluate(api, repo, number, event_head_sha, root, bot=DEFAULT_BOT_LOGIN):
         return True, [summary]
     releaser = releasing_reviewer(api, repo, number, head, bot)
     if releaser:
-        return True, [summary, f"released by an APPROVED review from admin {releaser} at {head[:7]}"]
+        return True, [
+            summary,
+            f"released by an APPROVED review from admin {releaser} at {head[:7]}",
+        ]
     return False, [
         summary,
         f"{final} holds until an admin human (not {bot}) leaves an APPROVED review on the "

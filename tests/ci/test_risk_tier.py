@@ -18,7 +18,9 @@ _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "sc
 
 
 def _load(name):
-    spec = importlib.util.spec_from_file_location(name, _root / ".github" / "scripts" / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(
+        name, _root / ".github" / "scripts" / f"{name}.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -53,8 +55,9 @@ def base(tmp_path):
 class FakeGitHub:
     """GET-only GitHub API; unknown routes fail the test instead of answering."""
 
-    def __init__(self, body=GOOD_BODY, files=(), reviews=(), permissions=None, head=HEAD,
-                 changed_files=None):
+    def __init__(
+        self, body=GOOD_BODY, files=(), reviews=(), permissions=None, head=HEAD, changed_files=None
+    ):
         self.pr = {
             "body": body,
             "head": {"sha": head},
@@ -127,9 +130,7 @@ def test_every_documented_grammar_row_is_parsed_as_documented():
 
 
 def test_documented_tier_rows_parse_to_the_same_tier_in_the_lenient_lane_parser():
-    one_liners = [
-        (ex, v) for ex, v in _doc_rows() if v in risk_tier.SEVERITY and "\n" not in ex
-    ]
+    one_liners = [(ex, v) for ex, v in _doc_rows() if v in risk_tier.SEVERITY and "\n" not in ex]
     assert len(one_liners) >= 7
     wrong = [ex for ex, v in one_liners if lane_publish.parse_risk(ex) != v]
     assert wrong == []
@@ -175,7 +176,9 @@ def test_a_bad_risk_line_is_red_and_names_the_expected_grammar(base, body, probl
 
 
 @pytest.mark.parametrize(
-    "path", ["AGENTS.md", ".github/workflows/x.yml", "supabase/x.sql"], ids=["hitl", "machinery", "guarded"]
+    "path",
+    ["AGENTS.md", ".github/workflows/x.yml", "supabase/x.sql"],
+    ids=["hitl", "machinery", "guarded"],
 )
 def test_a_path_in_any_bucket_of_the_base_list_reads_high_whatever_the_declared_line(base, path):
     ok, messages = _run(base, FakeGitHub(body="Risk: LOW — x", files=[_file(path)]))
@@ -213,8 +216,11 @@ def test_a_files_listing_shorter_than_changed_files_reads_high(base):
 
 def test_a_files_listing_is_read_past_the_first_page(base):
     files = [_file(f"scripts/f{i}.py") for i in range(150)]
-    assert _computed(base, risk_tier._paged(FakeGitHub(files=files), f"repos/{REPO}/pulls/7/files"),
-                     changed_files=150) == ("LOW", [])
+    assert _computed(
+        base,
+        risk_tier._paged(FakeGitHub(files=files), f"repos/{REPO}/pulls/7/files"),
+        changed_files=150,
+    ) == ("LOW", [])
 
 
 def test_two_production_areas_read_medium_through_the_classifier(base):
@@ -292,7 +298,10 @@ def test_a_removed_test_file_reads_high(base):
 
 def test_a_test_file_without_a_readable_diff_reads_high(base):
     files = [_file("tests/test_big.py", patch=None)]
-    assert _computed(base, files) == ("HIGH", ["test file with no readable diff: tests/test_big.py"])
+    assert _computed(base, files) == (
+        "HIGH",
+        ["test file with no readable diff: tests/test_big.py"],
+    )
 
 
 # --- AC4: the release is an admin human's approval at the current head -------------------
@@ -331,11 +340,20 @@ def test_an_admin_approval_on_the_current_head_releases_a_high_pr(high):
         ([], {}),
     ],
     ids=[
-        "old head", "the lane's bot", "a Bot account", "not admin", "changes requested later",
-        "dismissed", "comment only", "permission lookup fails", "no reviews",
+        "old head",
+        "the lane's bot",
+        "a Bot account",
+        "not admin",
+        "changes requested later",
+        "dismissed",
+        "comment only",
+        "permission lookup fails",
+        "no reviews",
     ],
 )
-def test_nothing_but_an_admin_humans_approval_at_head_releases_a_high_pr(high, reviews, permissions):
+def test_nothing_but_an_admin_humans_approval_at_head_releases_a_high_pr(
+    high, reviews, permissions
+):
     ok, messages = high(reviews, permissions)
     assert ok is False
     assert messages[-1] == (
