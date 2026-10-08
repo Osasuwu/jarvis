@@ -96,9 +96,7 @@ Every test you add or change gets one, whatever the size of the PR.
    `no probe — <test>: <what it cannot catch>` for a mirror (*Open exception* below);
    `not probed — <why>` where the run may not edit the artifact (the unattended worker
    never edits `.github/workflows/**` or a protected file, not even to probe), the test is
-   skipped on this platform, or pytest cannot run in the environment — name the command
-   that failed (the dispatch worker has no test toolchain until
-   [#1951](https://github.com/Osasuwu/jarvis/issues/1951)). That probe falls to whoever
+   skipped on this platform. That probe falls to whoever
    merges: an unattended run with a `not probed` line opens its PR with
    `--label waiting-human-review`, so the PR cannot merge before a human has run the probe.
 5. A fixture edit is probed once, through the code path the fixture exists to reach. So is
@@ -107,9 +105,9 @@ Every test you add or change gets one, whatever the size of the PR.
 6. Run the tests you touched with `pytest -rs`: none may be reported skipped, except a skip
    whose condition is false in the CI job — name it. A skip on a dependency the CI job does
    not install is not done: make the job install it or take the skip out. An unattended run
-   that can do neither escalates instead of pushing the test. This step is for a run where
-   pytest works; where it does not run at all, step 4's `not probed` line and label apply
-   and the PR is still opened.
+   that can do neither escalates instead of pushing the test. The dispatch worker's job
+   installs the `pytest` CI job's environment before the worker starts, so pytest failing
+   to start in an unattended run is a blocker to escalate, not a `not probed` line.
 
 If your diff tightens a limit, changes a default, adds an early exit, edits a fixture or moves
 logic: grep `tests/` for the changed symbol, the limit's name, the fixture's name and the
