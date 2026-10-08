@@ -30,6 +30,7 @@ def _facts(**over):
         "editors": ["Osasuwu"],
         "closing_prs": [],
         "blocked_by": 0,
+        "label_sender": "Osasuwu",
     }
     facts.update(over)
     return facts
@@ -95,6 +96,37 @@ def test_afk_2_plan_edited_after_the_panel_is_refused():
         "the `## Plan` lock does not match its steps: the plan was edited after the critic panel;"
         " re-run the panel and republish",
     )
+
+
+def test_dispatch_label_applied_by_the_bot_is_refused():
+    assert _check(label_sender="osasuwu-bot") == (
+        "bot-labelled",
+        "`agent:dispatch` was applied by `osasuwu-bot`, not a human; a human removes and"
+        " re-applies it",
+    )
+
+
+def test_dispatch_label_applied_by_a_bot_app_login_is_refused():
+    assert _check(label_sender="claude[bot]") == (
+        "bot-labelled",
+        "`agent:dispatch` was applied by `claude[bot]`, not a human; a human removes and"
+        " re-applies it",
+    )
+
+
+def test_dispatch_label_applied_by_the_bot_in_other_case_is_refused():
+    assert _check(label_sender="Osasuwu-Bot")[0] == "bot-labelled"
+
+
+def test_dispatch_label_with_an_unknown_applier_is_refused():
+    assert _check(label_sender="") == (
+        "labeller-unknown",
+        "the `agent:dispatch` labeller is unknown; a human re-applies `agent:dispatch`",
+    )
+
+
+def test_bot_labelled_is_named_ahead_of_a_changed_body():
+    assert _check(label_sender="osasuwu-bot", body="changed")[0] == "bot-labelled"
 
 
 def test_body_edited_after_label_is_refused():
@@ -204,6 +236,7 @@ def _run_main(monkeypatch, tmp_path, class2_flag):
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
     monkeypatch.setenv("ISSUE_NUMBER", "7")
     monkeypatch.setenv("PAYLOAD_BODY", LOCKED_BODY)
+    monkeypatch.setenv("LABEL_SENDER", "Osasuwu")
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
     if class2_flag is None:
@@ -261,3 +294,30 @@ def test_main_without_a_bot_login_refuses_to_run_and_touches_nothing(monkeypatch
         "::error::lane_intake: LANE_BOT_LOGIN is empty; the calling workflow must pass the "
         "lane's bot login"
     )
+
+
+def test_main_refuses_a_dispatch_label_applied_by_the_bot(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(lane_intake, "fetch_facts", lambda repo, number: _facts())
+    monkeypatch.setattr(
+        lane_intake, "_request", lambda method, path, body=None: calls.append((method, path, body))
+    )
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("ISSUE_NUMBER", "7")
+    monkeypatch.setenv("PAYLOAD_BODY", PAYLOAD_BODY)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("LABEL_SENDER", "osasuwu-bot")
+    monkeypatch.setenv("LANE_BOT_LOGIN", "osasuwu-bot")
+    lane_intake.main()
+    assert out.read_text(encoding="utf-8") == "pass=false\n"
+    assert calls == [
+        (
+            "POST",
+            "repos/owner/repo/issues/7/comments",
+            {
+                "body": "Lane intake refused dispatch: `bot-labelled`. `agent:dispatch` was applied"
+                " by `osasuwu-bot`, not a human; a human removes and re-applies it."
+            },
+        )
+    ]

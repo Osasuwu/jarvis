@@ -382,6 +382,7 @@ def test_redispatch_after_an_escalation_needs_the_human_to_clear_the_marker(gh, 
         "editors": ["Osasuwu"],
         "closing_prs": [],
         "blocked_by": 0,
+        "label_sender": "Osasuwu",
     }
     assert lane_intake.check(facts, "Do the thing.", "osasuwu-bot")[0] == "needs-human"
     facts["labels"] = [n for n in after if n != "needs-human"]

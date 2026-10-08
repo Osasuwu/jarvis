@@ -137,6 +137,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           PAYLOAD_BODY: ${{ github.event.issue.body }}
+          # Who applied `agent:dispatch` (AP6): intake refuses the bot's own label.
+          LABEL_SENDER: ${{ github.event.sender.login }}
           # `afk:2-plan` runs AFK only where the caller turns it on, and only
           # until the N-run gate passes (D17); a caller that leaves the input
           # off gets a refusal.

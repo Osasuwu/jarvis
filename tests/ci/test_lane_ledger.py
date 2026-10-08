@@ -180,17 +180,85 @@ def test_a_row_posted_by_anyone_but_the_bot_is_ignored():
 
 
 @pytest.mark.parametrize(
-    ("merged", "authors", "expected"),
+    ("merged", "touches", "expected"),
     [
-        (True, [BOT, BOT], "merged-unedited"),
-        (True, [BOT, "Osasuwu"], "merged-edited"),
-        (True, [BOT, ""], "merged-edited"),
-        (True, [], "merged-edited"),
-        (False, [BOT], "closed-unmerged"),
+        (True, [], "merged-unedited"),
+        (True, ["issue comment by Osasuwu"], "merged-edited"),
+        (False, [], "closed-unmerged"),
+        (False, ["issue comment by Osasuwu"], "closed-unmerged"),
     ],
 )
-def test_final_outcome(merged, authors, expected):
-    assert lane_ledger.final_outcome(merged, authors, BOT) == expected
+def test_final_outcome(merged, touches, expected):
+    assert lane_ledger.final_outcome(merged, touches) == expected
+
+
+# --- human touches (#1999 AP4) -------------------------------------------------------
+
+
+def _commit(author=BOT, committer=BOT, sha="abcdef0123456"):
+    return {
+        "sha": sha,
+        "author": {"login": author} if author else None,
+        "committer": {"login": committer} if committer else None,
+    }
+
+
+def _touches(commits=None, issue=(), review=(), reviews=()):
+    commits = [_commit()] if commits is None else commits
+    return lane_ledger.human_touches(commits, list(issue), list(review), list(reviews), BOT)
+
+
+def test_a_pr_of_only_bot_work_is_untouched():
+    assert _touches(issue=[{"user": {"login": "claude[bot]"}}]) == []
+
+
+def test_a_human_commit_author_is_a_touch():
+    assert _touches([_commit(author="Osasuwu")]) == ["commit abcdef0: author Osasuwu"]
+
+
+def test_a_human_committer_is_a_touch():
+    assert _touches([_commit(committer="Osasuwu")]) == ["commit abcdef0: committer Osasuwu"]
+
+
+def test_an_unlinked_commit_author_is_a_touch():
+    assert _touches([_commit(author=None)]) == ["commit abcdef0: author unlinked"]
+
+
+def test_an_unlinked_commit_committer_is_a_touch():
+    assert _touches([_commit(committer=None)]) == ["commit abcdef0: committer unlinked"]
+
+
+def test_a_web_flow_committer_is_not_a_touch():
+    assert _touches([_commit(committer="web-flow")]) == []
+
+
+def test_a_human_issue_comment_is_a_touch():
+    assert _touches(issue=[{"user": {"login": "Osasuwu"}}]) == ["issue comment by Osasuwu"]
+
+
+def test_a_human_review_comment_is_a_touch():
+    assert _touches(review=[{"user": {"login": "Osasuwu"}}]) == ["review comment by Osasuwu"]
+
+
+def test_a_human_commented_review_is_a_touch():
+    review = {"user": {"login": "Osasuwu"}, "state": "COMMENTED"}
+    assert _touches(reviews=[review]) == ["review (COMMENTED) by Osasuwu"]
+
+
+def test_a_human_approval_alone_is_not_a_touch():
+    assert _touches(reviews=[{"user": {"login": "Osasuwu"}, "state": "APPROVED"}]) == []
+
+
+def test_a_bot_review_is_not_a_touch():
+    assert _touches(reviews=[{"user": {"login": "claude[bot]"}, "state": "COMMENTED"}]) == []
+
+
+def test_a_bot_login_in_other_case_is_not_a_touch():
+    assert _touches(commits=[_commit(author="Osasuwu-Bot", committer="Osasuwu-Bot")]) == []
+
+
+def test_a_pr_with_no_readable_commits_is_a_touch():
+    assert _touches(commits=[]) == ["no commits readable; cannot show the PR is untouched"]
 
 
 # --- add / close against an in-memory ledger issue -----------------------------------
@@ -204,7 +272,10 @@ class FakeGitHub:
         self.prs = []
         self.labels = ["afk:1-auto", "status:in-progress"]
         self.smoke_state = "CLOSED"
-        self.authors = []
+        self.commits = [_commit()]  # the PR's commits, REST shape
+        self.pr_comments = []  # the PR's issue comments
+        self.review_comments = []
+        self.reviews = []
         self.calls = []
 
     def __call__(self, *args):
@@ -215,8 +286,14 @@ class FakeGitHub:
             return json.dumps([{"name": n} for n in self.labels])
         if args[:2] == ("pr", "list"):
             return json.dumps(self.prs)
-        if args[0] == "api" and "/pulls/" in args[2]:
-            return "\n".join(self.authors)
+        pr_lists = {
+            "repos/Osasuwu/jarvis/pulls/77/commits": self.commits,
+            "repos/Osasuwu/jarvis/issues/77/comments": self.pr_comments,
+            "repos/Osasuwu/jarvis/pulls/77/comments": self.review_comments,
+            "repos/Osasuwu/jarvis/pulls/77/reviews": self.reviews,
+        }
+        if args[0] == "api" and args[2] in pr_lists:
+            return "\n".join(json.dumps(item) for item in pr_lists[args[2]])
         if args[0] == "api" and "--paginate" in args:
             return "\n".join(json.dumps(c) for c in self.comments)
         if args[0] == "api" and "-X" in args:
@@ -377,17 +454,51 @@ def open_row(github, tmp_path):
     return github
 
 
-def test_a_merged_pr_of_only_bot_commits_finalises_its_row_as_unedited(open_row):
-    open_row.authors = [BOT, BOT]
+def test_a_merged_pr_of_only_bot_work_finalises_its_row_as_unedited(open_row, capsys):
     lane_ledger.close_row(_close_env())
     assert [r["final"] for r in open_row.rows()] == ["merged-unedited"]
     assert open_row.rows()[0]["outcome"] == "pr-opened"
+    assert "human-touched: no\n" in capsys.readouterr().out
 
 
 def test_a_merged_pr_with_a_human_commit_is_finalised_as_edited(open_row):
-    open_row.authors = [BOT, "Osasuwu"]
+    open_row.commits = [_commit(), _commit(author="Osasuwu")]
     lane_ledger.close_row(_close_env())
     assert [r["final"] for r in open_row.rows()] == ["merged-edited"]
+
+
+def test_a_merged_pr_with_a_human_comment_is_finalised_as_edited(open_row, capsys):
+    open_row.pr_comments = [{"user": {"login": "Osasuwu"}}]
+    lane_ledger.close_row(_close_env())
+    assert [r["final"] for r in open_row.rows()] == ["merged-edited"]
+    assert capsys.readouterr().out.startswith("human-touched: yes\nissue comment by Osasuwu\n")
+
+
+def test_a_merged_pr_with_only_a_human_approval_is_finalised_as_unedited(open_row):
+    open_row.reviews = [{"user": {"login": "Osasuwu"}, "state": "APPROVED"}]
+    lane_ledger.close_row(_close_env())
+    assert [r["final"] for r in open_row.rows()] == ["merged-unedited"]
+
+
+def test_touched_prints_no_for_an_untouched_pr(github, capsys, monkeypatch):
+    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
+    lane_ledger.main(["lane_ledger.py", "touched", "Osasuwu/jarvis#77"])
+    assert capsys.readouterr().out == "human-touched: no\n"
+
+
+def test_touched_prints_yes_and_each_touch(github, capsys, monkeypatch):
+    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
+    github.commits = [_commit(author="Osasuwu")]
+    github.review_comments = [{"user": {"login": "Osasuwu"}}]
+    lane_ledger.main(["lane_ledger.py", "touched", "Osasuwu/jarvis#77"])
+    assert capsys.readouterr().out == (
+        "human-touched: yes\ncommit abcdef0: author Osasuwu\nreview comment by Osasuwu\n"
+    )
+
+
+def test_touched_without_a_ref_exits_with_the_usage(github):
+    with pytest.raises(SystemExit, match="usage: lane_ledger.py touched owner/repo#N"):
+        lane_ledger.main(["lane_ledger.py", "touched"])
 
 
 def test_a_closed_unmerged_pr_is_finalised_as_closed_unmerged(open_row):
