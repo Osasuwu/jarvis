@@ -114,6 +114,23 @@ Two workflows, split so a PR can never change the rule that judges it:
   check run; branch protection binds `code-gate` to that App's `app_id` (and `gitleaks` to
   15368), so no other workflow can satisfy the gate by creating a same-named check.
 
+The binding below is what live protection must carry. `branch-protection-drift.yml` (#1998) reads
+this block daily and goes red on any difference from `GET /branches/<default>` — an `app_id: null`
+there accepts a same-named check run or commit status from any token, so an unapplied binding is a
+fail-open gate. Change the block and the live setting together
+(`gh api -X PATCH repos/<owner>/<repo>/branches/<default>/protection/required_status_checks`).
+
+<!-- required-checks-binding -->
+```json
+{
+  "require-linked-issue": 15368,
+  "pytest": 15368,
+  "code-gate": 3969106,
+  "gitleaks": 15368,
+  "waiting-human-review": 15368
+}
+```
+
 `code-gate` is **green iff**:
 
 1. at least one successful `code-review.yml` run bound to the evaluated head SHA carries a valid
