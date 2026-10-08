@@ -1,0 +1,255 @@
+{
+  "_about": "Real GitHub API payloads captured 2026-10-07 from Osasuwu/jarvis (#1978 L6), trimmed to the fields the gate reads; actor and head_commit dropped (the fork and PR author handles are kept: public, and the fork shape needs them). Entries marked _derived are NOT captured: the first real artifact expiry is 2026-10-09 (90-day retention), so that one is a real response with `expired` flipped.",
+  "fork_head": {
+    "_source": "canary run 37661571121 on fork PR #2020 (DaNi64j/jarvis, head canary/code-gate-5-fork)",
+    "run": {
+      "id": 37661571121,
+      "name": "Code Review",
+      "path": ".github/workflows/code-review.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "failure",
+      "head_branch": "canary/code-gate-5-fork",
+      "head_sha": "0a85afd31ec64b54e1abd9cdfaa6970813b083d9",
+      "display_title": "chore(critic-verdict): reword a comment (code-gate canary 5/7)",
+      "pull_requests": [],
+      "run_attempt": 1,
+      "created_at": "2026-10-07T17:45:47Z",
+      "run_started_at": "2026-10-07T17:45:47Z",
+      "head_repository": {
+        "full_name": "DaNi64j/jarvis"
+      }
+    },
+    "pr": {
+      "number": 2020,
+      "state": "closed",
+      "draft": false,
+      "changed_files": 1,
+      "user": {
+        "login": "DaNi64j",
+        "type": "User"
+      },
+      "base": {
+        "ref": "main",
+        "repo": {
+          "full_name": "Osasuwu/jarvis"
+        }
+      },
+      "head": {
+        "sha": "0a85afd31ec64b54e1abd9cdfaa6970813b083d9",
+        "repo": {
+          "full_name": "DaNi64j/jarvis"
+        }
+      }
+    },
+    "files": [
+      {
+        "filename": "agents/critic_verdict.py",
+        "status": "modified",
+        "changes": 2
+      }
+    ]
+  },
+  "skipped_artifact": {
+    "_source": "run 37652874843, Dependabot PR #1991 @ aaa68269 (success run, review skipped as untrusted); evidence from artifact 11497925673",
+    "run": {
+      "id": 37652874843,
+      "name": "Code review PR #1991 @ aaa68269064295c440fe5cfdfcc5477cda7a8b93",
+      "path": ".github/workflows/code-review.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "head_branch": "dependabot/github_actions/main/github-actions-01f9fbe353",
+      "head_sha": "aaa68269064295c440fe5cfdfcc5477cda7a8b93",
+      "display_title": "Code review PR #1991 @ aaa68269064295c440fe5cfdfcc5477cda7a8b93",
+      "pull_requests": [
+        {
+          "url": "https://api.github.com/repos/Osasuwu/jarvis/pulls/1991",
+          "id": 4771574422,
+          "number": 1991,
+          "head": {
+            "ref": "dependabot/github_actions/main/github-actions-01f9fbe353",
+            "sha": "a08799d56e0453e7ec45c0a5d4a401bb6bc6c675",
+            "repo": {
+              "id": 1135738556,
+              "url": "https://api.github.com/repos/Osasuwu/jarvis",
+              "name": "jarvis"
+            }
+          },
+          "base": {
+            "ref": "main",
+            "sha": "5eb3824fb5664938af17391c94690438dd3c5997",
+            "repo": {
+              "id": 1135738556,
+              "url": "https://api.github.com/repos/Osasuwu/jarvis",
+              "name": "jarvis"
+            }
+          }
+        }
+      ],
+      "run_attempt": 1,
+      "created_at": "2026-10-07T16:32:41Z",
+      "run_started_at": "2026-10-07T16:32:41Z",
+      "head_repository": {
+        "full_name": "Osasuwu/jarvis"
+      }
+    },
+    "artifacts": {
+      "total_count": 1,
+      "artifacts": [
+        {
+          "id": 11497925673,
+          "node_id": "MDg6QXJ0aWZhY3QxMTQ5NzkyNTY3Mw==",
+          "name": "review-evidence",
+          "size_in_bytes": 267,
+          "url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11497925673",
+          "archive_download_url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11497925673/zip",
+          "expired": false,
+          "digest": "sha256:af30e2d85d3a26a363c3d47bbbb824f578c229f10fa3c2dd0b134120c8a4c9e2",
+          "created_at": "2026-10-07T16:32:55Z",
+          "updated_at": "2026-10-07T16:32:55Z",
+          "expires_at": "2027-01-05T16:32:42Z",
+          "workflow_run": {
+            "id": 37652874843,
+            "repository_id": 1135738556,
+            "head_repository_id": 1135738556,
+            "head_branch": "dependabot/github_actions/main/github-actions-01f9fbe353",
+            "head_sha": "aaa68269064295c440fe5cfdfcc5477cda7a8b93"
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "schema": 1,
+      "status": "skipped",
+      "sha": "aaa68269064295c440fe5cfdfcc5477cda7a8b93",
+      "base_ref": "main",
+      "reason": "untrusted"
+    }
+  },
+  "cancelled_run": {
+    "_source": "workflow_dispatch run 37663450100 for PR #2021 @ 61e811f4, cancelled after uploading artifact 11502206475",
+    "run": {
+      "id": 37663450100,
+      "name": "Code review PR #2021 @ 61e811f4dd403247d20e79b6e3819017e5c3c080",
+      "path": ".github/workflows/code-review.yml",
+      "event": "workflow_dispatch",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "head_branch": "main",
+      "head_sha": "5eb3824fb5664938af17391c94690438dd3c5997",
+      "display_title": "Code review PR #2021 @ 61e811f4dd403247d20e79b6e3819017e5c3c080",
+      "pull_requests": [],
+      "run_attempt": 1,
+      "created_at": "2026-10-07T18:00:16Z",
+      "run_started_at": "2026-10-07T18:00:16Z",
+      "head_repository": {
+        "full_name": "Osasuwu/jarvis"
+      }
+    },
+    "artifacts": {
+      "total_count": 1,
+      "artifacts": [
+        {
+          "id": 11502206475,
+          "node_id": "MDg6QXJ0aWZhY3QxMTUwMjIwNjQ3NQ==",
+          "name": "review-evidence",
+          "size_in_bytes": 278,
+          "url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11502206475",
+          "archive_download_url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11502206475/zip",
+          "expired": false,
+          "digest": "sha256:2ce3c40020205be31725d24caa26c97ed6bbd2d73105c0e1b7ac235407dbde4f",
+          "created_at": "2026-10-07T18:01:40Z",
+          "updated_at": "2026-10-07T18:01:40Z",
+          "expires_at": "2027-01-05T18:00:18Z",
+          "workflow_run": {
+            "id": 37663450100,
+            "repository_id": 1135738556,
+            "head_repository_id": 1135738556,
+            "head_branch": "main",
+            "head_sha": "5eb3824fb5664938af17391c94690438dd3c5997"
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "schema": 1,
+      "status": "reviewed",
+      "sha": "61e811f4dd403247d20e79b6e3819017e5c3c080",
+      "base_ref": "main",
+      "blocking": false,
+      "findings": []
+    },
+    "pr_head_sha": "61e811f4dd403247d20e79b6e3819017e5c3c080"
+  },
+  "expired_artifact": {
+    "_derived": "artifacts[0].expired flipped false -> true; everything else is the real response for run 37610348363 (PR #1991 @ 7882a99d)",
+    "run": {
+      "id": 37610348363,
+      "name": "Code review PR #1991 @ 7882a99d038902e12fae42342adf7cdedf352094",
+      "path": ".github/workflows/code-review.yml",
+      "event": "pull_request",
+      "status": "completed",
+      "conclusion": "success",
+      "head_branch": "dependabot/github_actions/main/github-actions-01f9fbe353",
+      "head_sha": "7882a99d038902e12fae42342adf7cdedf352094",
+      "display_title": "Code review PR #1991 @ 7882a99d038902e12fae42342adf7cdedf352094",
+      "pull_requests": [
+        {
+          "url": "https://api.github.com/repos/Osasuwu/jarvis/pulls/1991",
+          "id": 4771574422,
+          "number": 1991,
+          "head": {
+            "ref": "dependabot/github_actions/main/github-actions-01f9fbe353",
+            "sha": "a08799d56e0453e7ec45c0a5d4a401bb6bc6c675",
+            "repo": {
+              "id": 1135738556,
+              "url": "https://api.github.com/repos/Osasuwu/jarvis",
+              "name": "jarvis"
+            }
+          },
+          "base": {
+            "ref": "main",
+            "sha": "5eb3824fb5664938af17391c94690438dd3c5997",
+            "repo": {
+              "id": 1135738556,
+              "url": "https://api.github.com/repos/Osasuwu/jarvis",
+              "name": "jarvis"
+            }
+          }
+        }
+      ],
+      "run_attempt": 1,
+      "created_at": "2026-10-07T10:53:15Z",
+      "run_started_at": "2026-10-07T10:53:15Z",
+      "head_repository": {
+        "full_name": "Osasuwu/jarvis"
+      }
+    },
+    "artifacts": {
+      "total_count": 1,
+      "artifacts": [
+        {
+          "id": 11477620828,
+          "node_id": "MDg6QXJ0aWZhY3QxMTQ3NzYyMDgyOA==",
+          "name": "review-evidence",
+          "size_in_bytes": 266,
+          "url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11477620828",
+          "archive_download_url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11477620828/zip",
+          "expired": true,
+          "digest": "sha256:bae7dd8cb3f31380f35a0958f421d038c0dbed05f944f797bb950df9deaaf768",
+          "created_at": "2026-10-07T10:53:28Z",
+          "updated_at": "2026-10-07T10:53:28Z",
+          "expires_at": "2027-01-05T10:53:15Z",
+          "workflow_run": {
+            "id": 37610348363,
+            "repository_id": 1135738556,
+            "head_repository_id": 1135738556,
+            "head_branch": "dependabot/github_actions/main/github-actions-01f9fbe353",
+            "head_sha": "7882a99d038902e12fae42342adf7cdedf352094"
+          }
+        }
+      ]
+    }
+  }
+}

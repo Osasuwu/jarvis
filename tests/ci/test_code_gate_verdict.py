@@ -6,7 +6,10 @@ files) and every expected value is a literal worked out from the locked design,
 not read back from the module.
 """
 
+import argparse
 import importlib.util
+import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -716,8 +719,12 @@ class FakeApi:
         self.calls.append((method, path, body))
         if method != "GET":
             return {}
-        for prefix, value in self.responses.items():
+        # longest matching prefix wins, so 'pulls/7/files' is never answered as 'pulls/7'
+        for prefix in sorted(self.responses, key=len, reverse=True):
             if path.startswith(prefix):
+                value = self.responses[prefix]
+                if isinstance(value, Exception):
+                    raise value
                 return value
         raise AssertionError(f"unexpected API call {method} {path}")
 
@@ -793,17 +800,36 @@ def test_snapshot_returns_pr_and_files():
     assert got_files == [{"filename": "a.py"}]
 
 
+class SequencedApi(FakeApi):
+    """Answers each read of PR #7 with the next of `prs`; the file list is empty."""
+
+    def __init__(self, *prs):
+        super().__init__()
+        self.prs = iter(prs)
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        if method != "GET":
+            return {}
+        return next(self.prs) if path == "repos/o/r/pulls/7" else []
+
+
+def _open_pr(head_sha=SHA, **over):
+    return _pr(
+        state="open",
+        merged=False,
+        head={"sha": head_sha, "repo": {"full_name": "Osasuwu/jarvis"}},
+        **over,
+    )
+
+
+def _moving_api(**over):
+    return SequencedApi(_open_pr(SHA, **over), _open_pr(OTHER_SHA, **over))
+
+
 def test_snapshot_fails_when_the_head_moves_mid_read():
-    heads = iter([SHA, OTHER_SHA])
-
-    class Moving(FakeApi):
-        def __call__(self, method, path, body=None):
-            if path == "repos/o/r/pulls/7":
-                return _pr(head={"sha": next(heads), "repo": {"full_name": "Osasuwu/jarvis"}})
-            return []
-
-    with pytest.raises(RuntimeError, match="head moved"):
-        gate.fetch_pr_snapshot(Moving(), "o/r", 7)
+    with pytest.raises(gate.HeadMovedError, match="head moved"):
+        gate.fetch_pr_snapshot(_moving_api(), "o/r", 7)
 
 
 # --- post_check (fake API) ------------------------------------------------
@@ -863,3 +889,347 @@ def test_build_diff_labels_added_removed_and_renamed_files():
         "diff --git a/gone.py b/gone.py\n--- a/gone.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
         "diff --git a/a.py b/b.py\n--- a/a.py\n+++ b/b.py\n@@ -1 +1 @@\n-x\n+y\n"
     )
+
+
+# --- dispatch target (#1978 L2) -------------------------------------------
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("https://api.github.com/x", code, "x", {}, None)
+
+
+def _target_api(pr):
+    return FakeApi({"repos/o/r/pulls/7/files": [{"filename": "a.py"}], "repos/o/r/pulls/7": pr})
+
+
+def _target(api, expected=SHA, event="workflow_dispatch"):
+    return gate.snapshot_review_target(api, "o/r", 7, expected, event)
+
+
+def test_dispatch_at_the_current_open_head_is_snapshotted():
+    pr, files = _target(_target_api(_pr(state="open", merged=False)))
+    assert pr["head"]["sha"] == SHA
+    assert files == [{"filename": "a.py"}]
+
+
+def test_dispatch_for_a_nonexistent_pr_names_the_cause():
+    api = FakeApi({"repos/o/r/pulls/7": _http_error(404)})
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(api)
+    assert str(exc.value) == (
+        "PR #7 was not found in o/r: no such pull request "
+        "(an issue number is not one), or the token cannot see it"
+    )
+
+
+def test_a_404_on_the_file_list_is_not_reported_as_a_missing_pr():
+    api = FakeApi(
+        {
+            "repos/o/r/pulls/7": _pr(state="open", merged=False),
+            "repos/o/r/pulls/7/files": _http_error(404),
+        }
+    )
+    with pytest.raises(urllib.error.HTTPError):
+        _target(api)
+
+
+def test_a_merged_pr_is_refused_before_its_files_are_paged():
+    api = _target_api(_pr(state="closed", merged=True))
+    with pytest.raises(gate.DispatchTargetError):
+        _target(api)
+    assert [path for _, path, _ in api.calls] == ["repos/o/r/pulls/7"]
+
+
+def test_dispatch_for_a_merged_pr_names_the_cause():
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(_target_api(_pr(state="closed", merged=True)))
+    assert str(exc.value) == "PR #7 is merged; there is nothing to review"
+
+
+def test_dispatch_for_a_closed_pr_names_the_cause():
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(_target_api(_pr(state="closed", merged=False)))
+    assert str(exc.value) == "PR #7 is closed; reopen it before dispatching a review"
+
+
+def test_dispatch_for_a_superseded_head_names_both_shas():
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(_target_api(_pr(state="open", merged=False)), expected=OTHER_SHA)
+    assert str(exc.value) == (
+        f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: "
+        "the head moved, dispatch again with the new head_sha"
+    )
+
+
+def test_a_non_404_api_failure_is_not_reported_as_a_missing_pr():
+    api = FakeApi({"repos/o/r/pulls/7": _http_error(500)})
+    with pytest.raises(urllib.error.HTTPError):
+        _target(api)
+
+
+def test_a_pull_request_run_for_a_since_merged_pr_is_not_a_dispatch_error():
+    pr, _ = _target(
+        _target_api(_pr(state="closed", merged=True)), expected="", event="pull_request"
+    )
+    assert pr["number"] == PR
+
+
+def test_a_pr_merged_while_its_files_are_read_is_not_reviewed_on_dispatch():
+    api = SequencedApi(_open_pr(), _pr(state="closed", merged=True))
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(api)
+    assert str(exc.value) == "PR #7 is merged; there is nothing to review"
+
+
+def test_a_pull_request_run_whose_head_moves_mid_read_is_not_told_to_dispatch():
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(_moving_api(), event="pull_request")
+    assert str(exc.value) == (
+        "PR #7 changed while its files were being read: "
+        "the head moved, the run on the new head reviews it"
+    )
+
+
+def test_a_fork_pull_request_run_on_a_moved_head_is_told_only_a_dispatch_reviews_it():
+    fork = {"sha": SHA, "repo": {"full_name": "stranger/jarvis"}}
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(
+            _target_api(_pr(state="open", merged=False, head=fork)),
+            expected=OTHER_SHA,
+            event="pull_request",
+        )
+    assert str(exc.value) == (
+        f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: the head moved; "
+        "a fork or Dependabot PR is reviewed only by a maintainer dispatch with the new head_sha"
+    )
+
+
+def test_a_runtime_error_from_the_snapshot_is_not_a_dispatch_error():
+    api = FakeApi({"repos/o/r/pulls/7": _pr(state="open", merged=False)})
+    api.responses["repos/o/r/pulls/7/files"] = RuntimeError("boom")
+    with pytest.raises(RuntimeError, match="boom"):
+        _target(api)
+
+
+def _prepare_env(monkeypatch, tmp_path, **overrides):
+    summary = tmp_path / "summary.md"
+    env = {
+        "GITHUB_REPOSITORY": "o/r",
+        "GH_TOKEN": "t",
+        "PR_NUMBER": "7",
+        "EVENT_NAME": "workflow_dispatch",
+        "EXPECTED_HEAD_SHA": SHA,
+        "GITHUB_STEP_SUMMARY": str(summary),
+    }
+    env.update(overrides)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    return summary
+
+
+@pytest.mark.parametrize(
+    ("make_api", "expected_head", "message"),
+    [
+        (
+            lambda: _target_api(_pr(state="closed", merged=False)),
+            SHA,
+            "PR #7 is closed; reopen it before dispatching a review",
+        ),
+        (
+            lambda: FakeApi({"repos/o/r/pulls/7": _http_error(404)}),
+            SHA,
+            "PR #7 was not found in o/r: no such pull request "
+            "(an issue number is not one), or the token cannot see it",
+        ),
+        (
+            lambda: _target_api(_pr(state="open", merged=False)),
+            OTHER_SHA,
+            f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: "
+            "the head moved, dispatch again with the new head_sha",
+        ),
+        (
+            _moving_api,
+            SHA,
+            "PR #7 changed while its files were being read: "
+            "the head moved, dispatch again with the new head_sha",
+        ),
+    ],
+    ids=["closed", "nonexistent", "superseded-head", "moved-mid-read"],
+)
+def test_prepare_fails_the_step_with_an_annotation_and_a_summary(
+    monkeypatch, tmp_path, capsys, make_api, expected_head, message
+):
+    summary = _prepare_env(monkeypatch, tmp_path, EXPECTED_HEAD_SHA=expected_head)
+    api = make_api()
+    monkeypatch.setattr(gate, "Api", lambda token: api)
+    code = gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
+    assert code == 1
+    assert f"::error::{message}" in capsys.readouterr().err
+    assert summary.read_text("utf-8") == f"**Review not run:** {message}\n"
+
+
+def test_prepare_lets_an_unrelated_api_failure_propagate(monkeypatch, tmp_path):
+    _prepare_env(monkeypatch, tmp_path)
+    api = FakeApi({"repos/o/r/pulls/7": _http_error(500)})
+    monkeypatch.setattr(gate, "Api", lambda token: api)
+    with pytest.raises(urllib.error.HTTPError):
+        gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
+
+
+def test_verdict_on_a_head_moving_mid_read_posts_nothing_and_exits_clean(monkeypatch, capsys):
+    for key, value in {
+        "GITHUB_REPOSITORY": "o/r",
+        "GH_TOKEN": "t",
+        "GATE_TOKEN": "t",
+        "GATE_APP_ID": "123",
+        "PR_NUMBER": "7",
+        "HEAD_SHA": SHA,
+    }.items():
+        monkeypatch.setenv(key, value)
+    api = _moving_api()
+    monkeypatch.setattr(gate, "Api", lambda token: api)
+    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert [m for m, _, _ in api.calls] == ["GET", "GET", "GET"]
+    assert capsys.readouterr().out == (
+        "PR head moved while its files were being read; the newer SHA has its own evaluation\n"
+    )
+
+
+def test_a_pull_request_run_on_a_moved_head_is_not_told_to_dispatch():
+    with pytest.raises(gate.DispatchTargetError) as exc:
+        _target(
+            _target_api(_pr(state="open", merged=False)), expected=OTHER_SHA, event="pull_request"
+        )
+    assert str(exc.value) == (
+        f"PR #7 head is {SHA}, this run was for {OTHER_SHA}: "
+        "the head moved, the run on the new head reviews it"
+    )
+
+
+# --- stale-evidence remediation (#1978 L3/L5) -----------------------------
+
+
+def test_no_evidence_message_covers_a_head_superseded_mid_run():
+    got = _ev([])
+    assert got.code == "evidence-none"
+    assert (
+        "superseded: wait for the run on the new head, or dispatch again with the new head_sha"
+        in got.message
+    )
+
+
+def test_no_evidence_message_covers_dispatch_before_the_final_push():
+    got = _ev([])
+    assert got.code == "evidence-none"
+    assert "Dispatch after the final push, with that push's head_sha" in got.message
+
+
+def test_untrusted_dispatch_message_says_to_dispatch_after_the_final_push():
+    pr = _pr(changed_files=1, head={"sha": SHA, "repo": {"full_name": "stranger/jarvis"}})
+    got = _eval(pr, _files("src/a.py"), [])
+    assert got.code == "untrusted-needs-dispatch"
+    assert "Dispatch after the final push" in got.message
+    assert "the head_sha must be the one pushed last" in got.message
+
+
+# --- real-API fixtures (#1978 L6) -----------------------------------------
+# Payloads captured from Osasuwu/jarvis on 2026-10-07; see the file's _about for
+# what was trimmed and the one entry that is derived rather than captured.
+
+REAL = json.loads(
+    (Path(__file__).parent / "fixtures" / "code_gate_real_api.json").read_text("utf-8")
+)
+
+
+def _real_entry(case, state="ok", artifact=None):
+    return {"run": REAL[case]["run"], "artifact": artifact, "state": state}
+
+
+def test_real_fork_head_run_is_not_evidence_and_needs_a_dispatch():
+    fx = REAL["fork_head"]
+    run = fx["run"]
+    assert run["head_repository"]["full_name"] == "DaNi64j/jarvis"  # the real shape: a fork run
+    assert run["pull_requests"] == []  # GitHub never links a fork-head run to the base repo's PR
+    assert gate.run_qualifies(run, 2020, fx["pr"]["head"]["sha"], "main") is False
+    got = gate.evaluate_pr(fx["pr"], fx["files"], [_real_entry("fork_head")], "main")
+    assert (got.green, got.code) == (False, "untrusted-needs-dispatch")
+    # The captured run failed, so evaluate_pr would skip it on that alone; a succeeded twin
+    # with clean evidence must still not count, or run_qualifies alone guards the fork.
+    sha = fx["pr"]["head"]["sha"]
+    clean = {
+        "schema": 1,
+        "status": "reviewed",
+        "sha": sha,
+        "base_ref": "main",
+        "blocking": False,
+        "findings": [],
+    }
+    twin = dict(run, status="completed", conclusion="success")
+    got = gate.evaluate_pr(
+        fx["pr"], fx["files"], [{"run": twin, "artifact": clean, "state": "ok"}], "main"
+    )
+    assert (got.green, got.code) == (False, "untrusted-needs-dispatch")
+
+
+def test_real_skipped_artifact_is_not_evidence():
+    fx = REAL["skipped_artifact"]
+    run = fx["run"]
+    assert fx["evidence"]["status"] == "skipped"
+    api = FakeApi(
+        {f"repos/o/r/actions/runs/{run['id']}/artifacts": fx["artifacts"]},
+        blob=_zip("review-evidence.json", json.dumps(fx["evidence"])),
+    )
+    entry = gate.load_entry(api, "o/r", run)
+    assert entry["state"] == "ok"
+    assert gate.run_qualifies(run, 1991, run["head_sha"], "main") is True
+    got = gate.evaluate_evidence([entry], 1991, run["head_sha"], "main", "main")
+    assert (got.green, got.code) == (False, "evidence-none")
+
+
+def test_real_cancelled_run_with_uploaded_evidence_neither_counts_nor_goes_missing():
+    fx = REAL["cancelled_run"]
+    run = fx["run"]
+    assert (run["status"], run["conclusion"]) == ("completed", "cancelled")
+    assert fx["evidence"]["status"] == "reviewed" and fx["evidence"]["blocking"] is False
+    sha = fx["pr_head_sha"]
+    assert (
+        gate.run_qualifies(run, 2021, sha, "main") is True
+    )  # bound, so the cancel is what decides
+    api = FakeApi()
+    entry = gate.load_entry(api, "o/r", run)
+    assert api.calls == []  # a cancelled run's artifact is never read
+    got = gate.evaluate_evidence([entry], 2021, sha, "main", "main")
+    assert (got.green, got.code) == (False, "evidence-none")  # not clean, and not evidence-missing
+
+
+def test_real_cancelled_run_does_not_hide_a_later_clean_run():
+    fx = REAL["cancelled_run"]
+    sha = fx["pr_head_sha"]
+    clean = {
+        "id": 1,
+        "path": ".github/workflows/code-review.yml@refs/heads/main",
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "success",
+        "head_branch": "main",
+        "display_title": f"Code review PR #2021 @ {sha}",
+    }
+    entries = [
+        gate.load_entry(FakeApi(), "o/r", fx["run"]),
+        {"run": clean, "artifact": fx["evidence"], "state": "ok"},
+    ]
+    got = gate.evaluate_evidence(entries, 2021, sha, "main", "main")
+    assert (got.green, got.code) == (True, "evidence-clean")
+
+
+def test_real_expired_artifact_response_is_red_expired():
+    fx = REAL["expired_artifact"]
+    run = fx["run"]
+    assert fx["artifacts"]["artifacts"][0]["expired"] is True  # derived: see _about
+    api = FakeApi({f"repos/o/r/actions/runs/{run['id']}/artifacts": fx["artifacts"]})
+    entry = gate.load_entry(api, "o/r", run)
+    assert entry["state"] == "expired"
+    assert not any(c[0] == "DOWNLOAD" for c in api.calls)
+    got = gate.evaluate_evidence([entry], 1991, run["head_sha"], "main", "main")
+    assert (got.green, got.code) == (False, "evidence-expired")
