@@ -257,13 +257,19 @@ jobs:
             # `pytest`, say — so they bind the agent's own tool calls, not
             # everything that runs in its shell.
             #
+            # Every path named here must exist: `tests/ci/test_workflow_denylist_paths.py` fails
+            # CI on a dead entry (#1965). `scripts/secret-scanner.py`, `scripts/protected-files.py`
+            # and `scripts/principal.py` were removed from this list for that reason: the first two
+            # moved to `.claude/hooks/` (#1800), already covered by the `.claude/hooks/**` rule
+            # above, and `principal.py` was deleted with no successor.
+            #
             # The Bash entries are defense-in-depth, not the boundary:
             # `Bash(...:*)` is a literal prefix match and no finite list
             # catches every spelling. The hard boundary is the read-only
             # token (a push fails at GitHub whatever the shell types) plus,
             # in `publish`, the exact branch name it pushes. `git push` is
             # denied anyway so a wasted attempt does not burn turns.
-            --disallowed-tools "Edit(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Bash(git push:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
+            --disallowed-tools "Edit(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Bash(git push:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
 
       # How the worker ended, read off the action's execution log: the `result`
       # entry's `subtype` (`error_max_turns` when the SDK cut it off) and
