@@ -253,6 +253,10 @@ def test_a_bot_review_is_not_a_touch():
     assert _touches(reviews=[{"user": {"login": "claude[bot]"}, "state": "COMMENTED"}]) == []
 
 
+def test_a_bot_login_in_other_case_is_not_a_touch():
+    assert _touches(commits=[_commit(author="Osasuwu-Bot", committer="Osasuwu-Bot")]) == []
+
+
 def test_a_pr_with_no_readable_commits_is_a_touch():
     assert _touches(commits=[]) == ["no commits readable; cannot show the PR is untouched"]
 

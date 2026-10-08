@@ -70,7 +70,7 @@ def _bot_labelled(facts, payload_body, bot, class2_host):
             "labeller-unknown",
             f"the `{DISPATCH}` labeller is unknown; a human re-applies `{DISPATCH}`",
         )
-    if sender == bot or sender.endswith("[bot]"):
+    if sender.casefold() == bot.casefold() or sender.endswith("[bot]"):
         return (
             "bot-labelled",
             f"`{DISPATCH}` was applied by `{sender}`, not a human; a human removes and"
@@ -248,7 +248,7 @@ def _remove_label(repo, number, name):
 def main():
     repo = os.environ["GITHUB_REPOSITORY"]
     number = os.environ["ISSUE_NUMBER"]
-    bot = os.environ.get("LANE_BOT_LOGIN", DEFAULT_BOT_LOGIN)
+    bot = os.environ.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
     class2_host = os.environ.get("LANE_CLASS2_AFK") == "true"
     facts = fetch_facts(repo, number)
     # Who applied the label comes from the event, not from the issue's current state.

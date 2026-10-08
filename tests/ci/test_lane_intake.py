@@ -109,6 +109,10 @@ def test_dispatch_label_applied_by_a_bot_app_login_is_refused():
     )
 
 
+def test_dispatch_label_applied_by_the_bot_in_other_case_is_refused():
+    assert _check(label_sender="Osasuwu-Bot")[0] == "bot-labelled"
+
+
 def test_dispatch_label_with_an_unknown_applier_is_refused():
     assert _check(label_sender="") == (
         "labeller-unknown",
@@ -292,3 +296,18 @@ def test_main_refuses_a_dispatch_label_applied_by_the_bot(monkeypatch, tmp_path)
             },
         )
     ]
+
+
+def test_main_treats_an_empty_bot_login_variable_as_the_default(monkeypatch, tmp_path):
+    """An unset repo variable reaches the step as `""`, not as a missing key."""
+    monkeypatch.setattr(lane_intake, "fetch_facts", lambda repo, number: _facts())
+    monkeypatch.setattr(lane_intake, "_request", lambda method, path, body=None: None)
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("ISSUE_NUMBER", "7")
+    monkeypatch.setenv("PAYLOAD_BODY", PAYLOAD_BODY)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("LABEL_SENDER", "osasuwu-bot")
+    monkeypatch.setenv("LANE_BOT_LOGIN", "")
+    lane_intake.main()
+    assert out.read_text(encoding="utf-8") == "pass=false\n"

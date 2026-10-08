@@ -167,7 +167,8 @@ def _run_main(monkeypatch, tmp_path, pr, events, event, post_error=None, bot_log
         if path.startswith("repos/owner/repo/issues/7/events"):
             if isinstance(events, Exception):
                 raise events
-            return events
+            page = int(path.rsplit("page=", 1)[1])
+            return events[(page - 1) * 100 : page * 100]
         raise AssertionError(f"unexpected {method} {path}")
 
     path = tmp_path / "event.json"
@@ -212,10 +213,56 @@ def test_main_is_red_when_the_events_cannot_be_read(monkeypatch, tmp_path):
 
 
 def test_main_is_red_when_the_release_history_exceeds_the_page_cap(monkeypatch, tmp_path):
-    full_page = [{"event": "labeled", "label": {"name": "x"}, "actor": {"login": "Osasuwu"}}] * 100
-    code, posts = _run_main(monkeypatch, tmp_path, _pr(), full_page, _event("synchronize"))
+    filler = {"event": "labeled", "label": {"name": "x"}, "actor": {"login": "Osasuwu"}}
+    code, posts = _run_main(monkeypatch, tmp_path, _pr(), [filler] * 1001, _event("synchronize"))
     assert code == 1
     assert posts == []
+
+
+def test_main_reads_every_page_of_the_release_history(monkeypatch, tmp_path):
+    """A bot release on page 2 (past a full first page) is still found."""
+    filler = {"event": "labeled", "label": {"name": "x"}, "actor": {"login": "Osasuwu"}}
+    events = [filler] * 100 + [_released(BOT)]
+    code, posts = _run_main(monkeypatch, tmp_path, _pr(), events, _event("synchronize"))
+    assert code == 1
+    assert posts == [("repos/owner/repo/issues/7/labels", {"labels": [LABEL_NAME]})]
+
+
+def test_main_is_red_when_the_api_times_out(monkeypatch, tmp_path):
+    code, posts = _run_main(
+        monkeypatch, tmp_path, _pr(), TimeoutError("slow"), _event("synchronize")
+    )
+    assert code == 1
+    assert posts == []
+
+
+def test_request_sets_a_timeout(monkeypatch):
+    seen = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout=None):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    monkeypatch.setenv("GITHUB_TOKEN", "x")
+    monkeypatch.setattr(whr.urllib.request, "urlopen", fake_urlopen)
+    whr._request("GET", "repos/owner/repo/pulls/7")
+    assert seen["timeout"] == 30
+
+
+def test_the_bot_login_matches_regardless_of_case():
+    assert whr.is_non_human("Osasuwu-Bot", BOT) is True
+    assert whr.is_non_human("osasuwu-bot", "Osasuwu-Bot") is True
+    assert whr.is_non_human("Osasuwu", BOT) is False
 
 
 def test_main_takes_the_bot_login_from_the_environment(monkeypatch, tmp_path):
@@ -274,6 +321,10 @@ def test_workflow_runs_the_script_from_the_base_ref():
     assert "python3 .github/scripts/waiting_human_review.py" in run["run"]
     assert run["env"]["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
     assert run["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
+
+
+def test_workflow_job_has_a_timeout():
+    assert _workflow()["jobs"]["waiting-human-review"]["timeout-minutes"] == 5
 
 
 def test_workflow_token_can_reapply_the_label():

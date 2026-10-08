@@ -21,11 +21,13 @@ import urllib.request
 LABEL = "waiting-human-review"
 DEFAULT_BOT_LOGIN = "osasuwu-bot"
 EVENT_PAGES = 10
+TIMEOUT = 30
 
 
 def is_non_human(login, bot):
     """The bot, any `*[bot]` login, or a missing one: an actor that cannot release a hold."""
-    return not login or login == bot or login.endswith("[bot]")
+    login = (login or "").casefold()
+    return not login or login == bot.casefold() or login.endswith("[bot]")
 
 
 def _is_release(action, label_name):
@@ -64,7 +66,7 @@ def _request(method, path, body=None):
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
         raw = resp.read()
     return json.loads(raw) if raw else None
 
@@ -91,14 +93,14 @@ def main():
     try:
         pr = _request("GET", f"repos/{repo}/pulls/{number}")
         events = _issue_events(repo, number)
-    except (urllib.error.URLError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError) as exc:
         print(f"::error::cannot read the hold state of #{number}: {exc}")
         return 1
     red, reason, reapply = decide(pr, events, event, bot)
     if reapply:
         try:
             _request("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [LABEL]})
-        except urllib.error.URLError as exc:
+        except (OSError, ValueError) as exc:
             print(f"::error::could not re-apply `{LABEL}` after a non-human release: {exc}")
     messages = {
         "review-requested": "A review has been requested and is still pending — a human look is"

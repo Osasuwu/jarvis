@@ -161,7 +161,8 @@ def run_outcome(has_pr, escalated):
 
 
 def _is_bot(login, bot):
-    return login == bot or login.endswith("[bot]")
+    login = login.casefold()
+    return login == bot.casefold() or login.endswith("[bot]")
 
 
 def _login(user):
