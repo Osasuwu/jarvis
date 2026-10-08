@@ -102,6 +102,21 @@ jobs:
           mkdir -p lane-out
           echo "lane-out/" >> .git/info/exclude
 
+      # The N-run gate counts a PR as unedited only when every commit on it is
+      # authored by osasuwu-bot (D13), so the worker's commits must carry that
+      # identity. Environment variables rather than `git config`: they win over
+      # any config the action or the worker writes. The noreply address is what
+      # GitHub maps back to the account, so the commit's author login reads
+      # `osasuwu-bot`.
+      - name: Commit as the bot
+        run: |
+          {
+            echo "GIT_AUTHOR_NAME=osasuwu-bot"
+            echo "GIT_AUTHOR_EMAIL=339131200+osasuwu-bot@users.noreply.github.com"
+            echo "GIT_COMMITTER_NAME=osasuwu-bot"
+            echo "GIT_COMMITTER_EMAIL=339131200+osasuwu-bot@users.noreply.github.com"
+          } >> "$GITHUB_ENV"
+
       - name: Run unattended worker
         uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
         with:
@@ -381,3 +396,45 @@ jobs:
           fi
           gh pr merge "$pr" --squash --auto
           echo "::notice::Auto-merge queued on PR #${pr} (squash); merges when all required checks pass."
+
+  # The N-run gate ledger (D13, #2012): one row per run that passed intake, as a
+  # comment by osasuwu-bot on the tracking issue named by the repository variable
+  # LANE_LEDGER_ISSUE (`owner/repo#N`; unset means no ledger, and the step only
+  # warns). The row is finalised when its PR closes, by lane-ledger-close.yml.
+  # Rules, columns and the tally: .github/scripts/lane_ledger.py.
+  #
+  # `always()` so a worker or publish failure still leaves its row, as
+  # `no-artifact`; the intake output keeps refusals and runs skipped by the
+  # job-level `if` out. Fresh checkout of the default branch, no `ref`: this job
+  # holds the PAT and runs nothing the worker wrote.
+  ledger:
+    needs: [intake, worker, publish]
+    if: always() && needs.intake.outputs.pass == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Download the worker's hand-off
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        continue-on-error: true
+        with:
+          name: lane-out
+          path: lane-out
+
+      - name: Add the run's ledger row
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_ID: ${{ github.run_id }}
+          LANE_SHA: ${{ github.sha }}
+          LANE_LEDGER_ISSUE: ${{ vars.LANE_LEDGER_ISSUE }}
+          # While this checkpoint issue is open, rows are `smoke` and never counted.
+          LANE_LEDGER_SMOKE_ISSUE: ${{ vars.LANE_LEDGER_SMOKE_ISSUE }}
+        run: python3 .github/scripts/lane_ledger.py add

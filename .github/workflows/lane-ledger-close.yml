@@ -1,0 +1,41 @@
+name: Lane Ledger Close
+
+# Finalises the N-run gate ledger row of a lane PR when it closes (D13, #2012):
+# `merged-unedited` (every commit authored by osasuwu-bot), `merged-edited` or
+# `closed-unmerged`. Rules and row format: .github/scripts/lane_ledger.py.
+#
+# `pull_request_target`, not `pull_request`: this job holds the bot PAT, and a
+# `pull_request` run would execute the PR's own copy of the script with it. Here
+# the checkout is the default branch only (no `ref`), so the code that runs is
+# never the PR's. The PR's branch name, number and merged flag are read as
+# data through `env`.
+on:
+  pull_request_target:
+    types: [closed]
+
+jobs:
+  finalise:
+    # Lane PRs only, and only same-repo ones: a fork cannot name a head branch
+    # `claude/issue-N-...` in this repository.
+    if: >-
+      startsWith(github.event.pull_request.head.ref, 'claude/issue-') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Finalise the ledger row
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          LANE_LEDGER_ISSUE: ${{ vars.LANE_LEDGER_ISSUE }}
+        run: python3 .github/scripts/lane_ledger.py close
