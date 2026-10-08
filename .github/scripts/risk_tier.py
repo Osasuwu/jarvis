@@ -136,7 +136,17 @@ def path_tier(paths, repo, host_root):
                 f"config/protected-paths.json has no entry for {repo} at the base commit: {adopt}"
             ]
         entry = data[repo]
-        globs = [g for key, value in entry.items() if not key.startswith("_") for g in value]
+        buckets = [value for key, value in entry.items() if not key.startswith("_")]
+        if not all(isinstance(b, list) and all(isinstance(g, str) for g in b) for b in buckets):
+            return "HIGH", [
+                f"protected-path list for {repo} has a bucket that is not a list of globs: "
+                "fail closed"
+            ]
+        globs = [g for bucket in buckets for g in bucket]
+        if not globs:
+            return "HIGH", [
+                f"protected-path list for {repo} has no globs at the base commit: {adopt}"
+            ]
     except FileNotFoundError:
         return "HIGH", [f"config/protected-paths.json not found at the base commit: {adopt}"]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:

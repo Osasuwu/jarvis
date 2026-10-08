@@ -523,7 +523,7 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           RUN_ID: ${{ github.run_id }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          LANE_REVIEWER: ${{ github.repository_owner }}
+          LANE_REVIEWER: ${{ inputs.operator || github.repository_owner }}
           LANE_BOT_LOGIN: ${{ inputs.bot-login }}
         run: python3 .lane-src/.github/scripts/lane_publish.py
 
@@ -598,8 +598,8 @@ jobs:
   # Rules and the cause table: .github/scripts/lane_escalation.py.
   #
   # `always()` so a failed worker or publish still reaches it; the intake output
-  # keeps refusals and skipped runs out. Fresh checkout of the default branch,
-  # no `ref`: this job holds the PAT and never runs anything the worker wrote
+  # keeps refusals and skipped runs out. No host checkout, only the lane's own
+  # pinned code: this job holds the PAT and never runs anything the worker wrote
   # (the worker's `escalation.md` is only ever read as text).
   #
   # NOT covered: a runner crash or Actions outage that kills this job before its
@@ -669,8 +669,8 @@ jobs:
   #
   # `always()` so a worker or publish failure still leaves its row, as
   # `no-artifact`; the intake output keeps refusals and runs skipped by the
-  # job-level `if` out. Fresh checkout of the default branch, no `ref`: this job
-  # holds the PAT and runs nothing the worker wrote.
+  # job-level `if` out. No host checkout, only the lane's own pinned code: this
+  # job holds the PAT and runs nothing the worker wrote.
   ledger:
     needs: [intake, worker, publish]
     if: always() && needs.intake.outputs.pass == 'true'

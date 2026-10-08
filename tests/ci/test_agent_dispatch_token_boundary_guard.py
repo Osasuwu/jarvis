@@ -91,8 +91,31 @@ class TestPublishJobHoldsThePat:
         assert step["run"] == "python3 .lane-src/.github/scripts/lane_publish.py"
         assert (REPO_ROOT / ".github" / "scripts" / "lane_publish.py").is_file()
 
+    def test_the_reviewer_is_the_callers_operator_not_the_repo_owner_alone(self, publish):
+        step = _step(publish, "Publish the worker's branch")
+        assert step["env"]["LANE_REVIEWER"] == "${{ inputs.operator || github.repository_owner }}"
+
     def test_publish_job_token_cannot_write(self, publish):
         assert "write" not in set(publish["permissions"].values())
+
+    def test_checkout_is_the_default_branch_without_persisted_credentials(self, publish):
+        checkout = next(
+            s
+            for s in publish["steps"]
+            if str(s.get("uses", "")).startswith("actions/checkout@") and "path" not in s["with"]
+        )
+        assert "ref" not in checkout["with"], "publish must not check out anything the worker chose"
+        # A persisted GITHUB_TOKEN would shadow the PAT's credential helper at push time.
+        assert checkout["with"]["persist-credentials"] is False
+
+    def test_the_other_pat_jobs_check_out_only_the_lane_source(self, workflow):
+        for name in ("escalate", "ledger"):
+            checkouts = [
+                s
+                for s in workflow["jobs"][name]["steps"]
+                if str(s.get("uses", "")).startswith("actions/checkout@")
+            ]
+            assert [c["with"]["path"] for c in checkouts] == [".lane-src"], name
 
     def test_no_agent_runs_in_the_publish_job(self, publish):
         uses = [str(s.get("uses", "")) for s in publish["steps"]]

@@ -35,8 +35,9 @@ on:
       AGENT_DISPATCH_PAT:
         required: true
 
-# One pass at a time per host repo, queued rather than cancelled: a pass reads
-# every open lane PR, so a later one sees what an earlier one wrote.
+# One pass at a time per host repo: a pass reads every open lane PR, so a later
+# one sees what an earlier one wrote. A running pass is never cancelled; a third
+# arrival replaces the pending second, which is safe because one pass covers all.
 concurrency:
   group: lane-red-check-watcher-${{ github.repository }}
   cancel-in-progress: false

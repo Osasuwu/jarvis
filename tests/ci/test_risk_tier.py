@@ -217,6 +217,23 @@ def test_a_corrupt_protected_list_reads_high(base):
     assert reasons[0].startswith("protected-path list unreadable at base (")
 
 
+@pytest.mark.parametrize(
+    ("entry", "reason"),
+    [
+        ({}, "has no globs at the base commit"),
+        ({"hitl": [], "guarded": [], "machinery": []}, "has no globs at the base commit"),
+        ({"machinery": ".github/**"}, "has a bucket that is not a list of globs"),
+        ({"machinery": [[".github/**"]]}, "has a bucket that is not a list of globs"),
+    ],
+)
+def test_an_empty_or_malformed_host_entry_reads_high_not_low(base, entry, reason):
+    (base / "config" / "protected-paths.json").write_text(json.dumps({REPO: entry}), "utf-8")
+    tier, reasons = _computed(base, [_file("scripts/x.py")])
+    assert tier == "HIGH"
+    assert len(reasons) == 1
+    assert reason in reasons[0]
+
+
 # A host that has not adopted the lane has no protected list: every diff is HIGH and the check
 # output says why and where the fix is (D2, D7; docs/reference/lane-host-setup.md).
 def test_a_host_without_a_protected_list_reads_high_with_the_reason(base):
@@ -627,6 +644,11 @@ def test_the_action_runs_the_classifier_from_its_own_pinned_checkout():
     assert step["env"]["LANE_BOT_LOGIN"] == "${{ inputs.bot-login }}"
     assert step["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
     assert step["shell"] == "bash"
+
+
+def test_the_actions_script_path_resolves_from_the_action_directory():
+    action_dir = _root / ".github" / "actions" / "risk-tier"
+    assert (action_dir / ".." / ".." / "scripts" / "risk_tier.py").is_file()
 
 
 def test_no_context_value_is_interpolated_into_an_action_shell_step():

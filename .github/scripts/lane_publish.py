@@ -124,7 +124,9 @@ def publish(*, issue, run_id, default_branch, out_dir, reviewer, repo_dir=None):
         "--body-file",
         str(final),
     ]
-    if needs_human_review(risk):
+    if needs_human_review(risk) and reviewer:
+        # No reviewer to ask is not a failure after the branch is pushed: the
+        # `waiting-human-review` and `risk-tier` holds still stop the merge.
         create += ["--reviewer", reviewer]
     url = gh(*create)
     gh("issue", "edit", str(issue), "--remove-label", IN_PROGRESS, "--add-label", REVIEW)
@@ -140,7 +142,7 @@ def main():
         run_id=os.environ["RUN_ID"],
         default_branch=os.environ["DEFAULT_BRANCH"],
         out_dir=os.environ.get("LANE_OUT", "lane-out"),
-        reviewer=os.environ["LANE_REVIEWER"],
+        reviewer=os.environ.get("LANE_REVIEWER", ""),
     )
     if number is not None and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:

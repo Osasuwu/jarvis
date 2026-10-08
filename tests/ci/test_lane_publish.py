@@ -179,6 +179,14 @@ def test_high_critical_or_unreadable_risk_requests_the_operator(lane, body):
     assert create[-2:] == ("--reviewer", "Osasuwu")
 
 
+def test_a_high_risk_pr_with_no_reviewer_still_opens_without_the_flag(lane):
+    # An org-owned host has no person to ask: the PR must still open, held by its labels.
+    (lane.out / "pr-body.md").write_text("Risk: HIGH — logic\n", encoding="utf-8")
+    _publish(lane, reviewer="")
+    create = next(c for c in lane.calls if c[:2] == ("pr", "create"))
+    assert "--reviewer" not in create
+
+
 def test_missing_pr_description_still_opens_a_pr_that_closes_the_issue(lane):
     _publish(lane)
     final = (lane.out / "pr-body.final.md").read_text(encoding="utf-8")

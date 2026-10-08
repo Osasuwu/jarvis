@@ -40,14 +40,31 @@ required) and `AGENT_DISPATCH_PAT`. `lane-close.yml` takes `bot-login`, `ledger-
 Never `secrets: inherit`: it hands the host's whole secret store to the pinned callee. A guard
 test in jarvis (`tests/ci/test_lane_distribution_guard.py`) fails on it in jarvis's own callers.
 
+## What the host repo must contain
+
+The worker and publish jobs read these from the host's own tree; a lane run fails before the
+model starts, or the PR opens malformed, without them:
+
+- `uv.lock` and a `pyproject.toml` that `uv sync --all-extras` can install, with `pytest` and
+  `ruff` available (the worker's toolchain step fails the job otherwise).
+- `AGENTS.md`, `.github/PULL_REQUEST_TEMPLATE.md` and `docs/reference/test-quality.md`: the
+  worker prompt cites them.
+- A GitHub.com repository: the lane locates its own code through `job.workflow_repository` and
+  `job.workflow_sha`, which GitHub Enterprise Server does not provide.
+- A reviewer for HIGH/CRITICAL lane PRs: the `operator` input, else the repository owner. An
+  org-owned repo should set `operator`; with neither a person nor a reviewer the PR still opens,
+  held by `waiting-human-review` and `risk-tier`, with no reviewer requested.
+
 ## Enablement order (D16)
 
 Do the steps in this order. A caller that goes live before its labels and `risk-tier` exist runs
 without the hold, and open PRs sit on a stale required-check set.
 
-1. **Labels.** Create `agent:dispatch`, `afk:1-auto`, `afk:2-plan`, `afk:3-human` and
-   `needs-human` (`gh label create <name> --description "…"`). `needs-human` is what an
-   escalation applies.
+1. **Labels.** Create `agent:dispatch`, `afk:1-auto`, `afk:2-plan`, `afk:3-human`,
+   `needs-human`, `status:in-progress` and `status:review` (`gh label create <name>
+   --description "…"`). `needs-human` is what an escalation applies; publish moves the issue
+   from `status:in-progress` to `status:review`, and `gh issue edit` errors on a missing label
+   after the PR is already open.
 2. **Bot invited, secrets set.** Invite the lane bot to the repo with write access (this is the
    access boundary: a caller in a repo the bot cannot reach cannot run). Set `AGENT_DISPATCH_PAT`
    (the bot's PAT) and `CLAUDE_CODE_OAUTH_TOKEN` as repository secrets. Set the `LANE_OPERATOR`,
@@ -174,8 +191,12 @@ does not.
 
 ## Residual: a PR that edits its own pin
 
-`risk-tier` runs the classifier from the pinned commit, and reads protected paths from the host's
-base commit. The workflow file that defines the check is, however, the one in the PR being
+`risk-tier` runs the classifier from the pinned commit, and reads protected paths from the tip of
+the PR's base branch ("the base commit" above and in the check output). The workflow file that defines the check is, however, the one in the PR being
 judged: a PR that rewrites the `risk-tier` job's pin runs the new pin on itself. The defence is
 the host's protected list: keep `.github/**` in the `machinery` bucket (step 3.1) so such a PR
-is HIGH by path, and a HIGH PR stays red until an admin human approves the head SHA.
+is HIGH by path, and a HIGH PR stays red until an admin human approves the head SHA. That
+defence is only as strong as the classifier it runs: a PR that repoints the pin to a commit whose
+`risk_tier.py` always passes judges itself. The independent control is human review of
+`.github/workflows/**` changes (CODEOWNERS or a ruleset on that path), plus the lane PAT having no
+`workflow` scope, so the lane cannot push such a change itself.
