@@ -322,6 +322,48 @@ def test_gather_anchors_window_on_last_published_release_ignoring_pending_draft(
     assert repo_result.window_start == "2026-08-01T00:00:00+00:00"
 
 
+def test_gather_anchors_window_on_last_semver_release_ignoring_non_semver_release():
+    # #2036: redrobot publishes non-semver releases (`film-*` video assets).
+    # A newer `film-*` release anchored the window and dropped every PR merged
+    # between the last vX.Y.Z and it. Only semver tags may anchor the window
+    # or appear in prior_releases (trust_ramp_state(), latest-tag arithmetic).
+    entries = [RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"})]
+
+    releases_ndjson = "\n".join(
+        json.dumps(r)
+        for r in [
+            {
+                "tag_name": "film-2352-f3",
+                "published_at": "2026-08-10T00:00:00Z",
+                "created_at": "2026-08-10T00:00:00Z",
+                "draft": False,
+            },
+            {
+                "tag_name": "v0.2.0",
+                "published_at": "2026-08-01T00:00:00Z",
+                "created_at": "2026-08-01T00:00:00Z",
+                "draft": False,
+            },
+        ]
+    )
+
+    def fake_run_gh(repo, args):
+        if args[0] == "api":
+            return {"stdout": releases_ndjson, "stderr": "", "returncode": 0}
+        return {"stdout": "[]", "stderr": "", "returncode": 0}
+
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=lambda path: entries,
+        run_gh_fn=fake_run_gh,
+        now_fn=lambda: 1786000000.0,
+    )
+    repo_result = result.repos[0]
+    assert repo_result.window_start == "2026-08-01T00:00:00+00:00"
+    assert [r["tag_name"] for r in repo_result.prior_releases] == ["v0.2.0"]
+
+
 def test_gather_second_run_with_pending_draft_still_yields_nonempty_window():
     # #1667 AC4 runnable check: two consecutive gather() runs on the same
     # window, with an existing pending (unpublished) draft already in
