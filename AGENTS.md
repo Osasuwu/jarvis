@@ -28,7 +28,7 @@ hardcoded on a shared code path.
   or user-visible-behavior change → open an issue first
   ([`docs/reference/dev-process-details.md`](docs/reference/dev-process-details.md)).
 - Milestone naming/closing rules: [`docs/reference/milestone-hygiene.md`](docs/reference/milestone-hygiene.md).
-- Check the code-review issue-comment before merging.
+- Before merging, read `code-gate`; review findings live in the Code Review run's `review-evidence` artifact.
 
 ## Merge rules
 

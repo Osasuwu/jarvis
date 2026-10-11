@@ -33,7 +33,6 @@ jobs:
             }
 
             // Hotfix escape: priority:critical label bypasses the linked-issue requirement.
-            // Aligns with issue-checks.yml which treats priority:critical as hotfix.
             if (labels.includes('priority:critical')) {
               console.log('priority:critical label present — skipping linked-issue requirement (hotfix).');
               return;
