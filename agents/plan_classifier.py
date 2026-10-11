@@ -14,8 +14,8 @@ change-set) and ex-post (on the actual diff, by the `risk-tier` check).
 
 :func:`classify` returns an ordinal ``1 | 2 | 3`` — not a ``class:N``
 string. :func:`label_for` is the single place that maps the ordinal to
-its board label (``2 -> "afk:2-plan"``, ``3 -> "afk:3-human"``, ``1 ->
-None`` — class 1 is labelless). Consumers must not re-derive label
+its board label (``1 -> "afk:1-auto"``, ``2 -> "afk:2-plan"``, ``3 ->
+"afk:3-human"``). Consumers must not re-derive label
 strings themselves.
 """
 
@@ -143,10 +143,10 @@ def classify(config: PlanReviewConfig, change: ChangeSet) -> int:
 def label_for(cls: int) -> str | None:
     """Map a :func:`classify` ordinal to its board label (#1707).
 
-    Class 1 is labelless — ``sandcastle`` alone already conveys it, so no
-    code path should write an ``afk:1-*`` label.
+    Class 1 is positive, not labelless: lane intake refuses an issue carrying
+    neither ``afk:1-auto`` nor ``afk:2-plan`` (D6, #2038).
     """
-    return {2: "afk:2-plan", 3: "afk:3-human"}.get(cls)
+    return {1: "afk:1-auto", 2: "afk:2-plan", 3: "afk:3-human"}.get(cls)
 
 
 def classify_task_row(config: PlanReviewConfig, row: dict[str, Any]) -> int:
