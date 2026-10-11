@@ -139,7 +139,7 @@ def test_classify_task_row_defaults_missing_fields() -> None:
 @pytest.mark.parametrize(
     "cls,expected_label",
     [
-        (1, None),
+        (1, "afk:1-auto"),
         (2, "afk:2-plan"),
         (3, "afk:3-human"),
     ],
