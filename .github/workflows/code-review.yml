@@ -32,9 +32,21 @@ on:
         required: true
         type: string
 
-# A newer push (or a dispatch) for the same PR supersedes the review in flight.
+# A newer push (or a dispatch, or a base change) for the same PR supersedes the
+# review in flight.
+#
+# Workflow-level concurrency is resolved when the run is queued, BEFORE the job
+# `if` below is evaluated (#2044). A title/body edit that shared the PR's group
+# would cancel the running review and then skip its own job, leaving no evidence
+# and a false-red `code-gate`. So an `edited` event that does not change the base
+# gets a group unique to its own run (`github.run_id`), as lane.yml does (#1936).
+# The condition here and the job `if` must stay in step:
+# tests/ci/test_code_review_concurrency_guard.py.
 concurrency:
-  group: code-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  group: >-
+    ${{ github.event.action == 'edited' && !github.event.changes.base
+    && format('code-review-noop-{0}', github.run_id)
+    || format('code-review-{0}', github.event.pull_request.number || inputs.pr_number) }}
   cancel-in-progress: true
 
 jobs:

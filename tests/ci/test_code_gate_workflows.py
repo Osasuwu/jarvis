@@ -108,11 +108,8 @@ def test_only_the_verdict_step_holds_the_app_token():
 # --- review workflow ------------------------------------------------------
 
 
-def test_review_concurrency_cancels_a_superseded_review():
-    assert REVIEW["concurrency"] == {
-        "group": "code-review-${{ github.event.pull_request.number || inputs.pr_number }}",
-        "cancel-in-progress": True,
-    }
+# Concurrency (a superseded review is cancelled, a body edit is not):
+# test_code_review_concurrency_guard.py.
 
 
 def test_review_run_name_embeds_pr_and_head_sha_for_dispatch_provenance():
