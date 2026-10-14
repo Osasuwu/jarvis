@@ -106,11 +106,24 @@ Two workflows, split so a PR can never change the rule that judges it:
   SHA only; PR head content is fetched through the API into `.pr-head/`. The reviewer's sole
   write grant is `Edit(./.review/findings.json)`. Deterministic base steps then validate the
   findings, enforce `blocking ⇔ findings non-empty`, check the tree is clean, stamp `sha` /
-  `base_ref`, and upload `review-evidence.json` (90-day retention). Skip paths (draft, fork,
-  Dependabot without dispatch, cosmetic-only) upload `status: skipped`. The reviewer gets one
-  retry; concurrency group `code-review-<pr>` cancels a superseded run (a push, a dispatch or a
-  base change); a title/body edit gets a per-run group so it never cancels the review in flight
-  (#2044). The PR comment is for humans only and is never parsed.
+  `base_ref`, and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
+  (one per attempt, `overwrite: false`, 90-day retention), so a re-run never replaces an earlier
+  attempt's verdict. Skip paths (draft, fork, Dependabot without dispatch, cosmetic-only) upload
+  `status: skipped`. The reviewer gets one retry; concurrency group `code-review-<pr>` cancels a
+  superseded run (a push, a dispatch or a base change); a title/body edit gets a per-run group so
+  it never cancels the review in flight (#2044). The PR comment is for humans only and is never
+  parsed.
+- **The reviewer is contained, not trusted** (#2024). The review job's token is `contents: read`
+  + `pull-requests: read` with no `id-token`, and both reviewer steps pass it as `github_token`,
+  so the reviewer's `gh` cannot write and the action cannot mint a write-scoped App token over
+  OIDC. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` scrubs secrets from the reviewer's subprocesses; it
+  needs bubblewrap, which a plain step installs before the first attempt and fails by name if it
+  cannot. `--allowed-tools` is an exact list of read verbs (`git log`/`show`/`diff`/`blame`/…,
+  `gh pr view`/`diff`/`list`/`checks`, …), pinned by `tests/ci/test_code_review_allowed_tools.py`
+  — it reverses #1850's wholesale `git`/`gh` grants, which admitted `git config`/`-c`/`grep -O`.
+  The allow/deny patterns steer; they are not a boundary (the harness matches command text). Every
+  `code_gate_verdict.py` call runs as `python -I`, so a module written next to the script is never
+  imported.
 - **`code-gate-verdict.yml` decides.** Triggered by `pull_request_target` and by a `workflow_run`
   hook on "Code Review", it runs from the default branch, checks out only `.github/scripts`
   there, and never touches PR code. The `osasuwu-ci` GitHub App (key in the
@@ -139,14 +152,36 @@ fail-open gate. Change the block and the live setting together
 `code-gate` is **green iff**:
 
 1. at least one successful `code-review.yml` run bound to the evaluated head SHA carries a valid
-   non-blocking artifact, **and** no bound run is blocking or missing its artifact (`skipped`
-   artifacts are ignored; the worst result sticks); **or**
+   non-blocking artifact, **and** no bound run is unfinished, and none of its attempts left a
+   blocking or unreadable one (`skipped` artifacts are ignored); **or**
 2. every changed file is cosmetic.
 
-Run provenance: a `pull_request` run counts only if its `pull_requests[]` contains this PR with
-the default branch as base; a `workflow_dispatch` run counts only if it ran on the default
-branch and its `run-name` is `Code review PR #<n> @ <40-hex sha>`. The artifact's `sha` and
-`base_ref` must match the evaluated SHA and the current base.
+Every live `review-evidence-<attempt>` artifact of a bound run is read, not only the latest
+attempt's. A run whose latest attempt failed or was cancelled contributes only its blocking
+artifacts, such as one an earlier attempt left.
+
+Run provenance: a `pull_request` run counts only if its `pull_requests[]` contains this PR and
+every PR it lists is into the default branch; one that also lists a PR into another base may have
+run that base's copy of the workflow, so it reads as `evidence-foreign-base` (its blocking
+artifact still counts as blocking). A `workflow_dispatch` run counts only if its `run-name` is
+`Code review PR #<n> @ <40-hex sha>` and its head commit is the default branch's tip or one of its
+ancestors (checked through the compare API, never taken from the run payload). The artifact's
+`sha` and `base_ref` must match the evaluated SHA and the current base.
+
+**What clears what.** A clean run for the SHA — a re-dispatch or a re-run — clears
+`evidence-missing`, `-expired`, `-invalid`, `-sha-mismatch`, `-base-mismatch` and
+`-foreign-base`: each is a failure to produce evidence, not a verdict on the code.
+`evidence-blocking` stays in force for the SHA across re-runs and re-dispatches; only a new
+commit clears it. `evidence-unreadable` (an artifact download failed or was cut off, so it may
+hide a blocking verdict) is not lifted by a clean run either; it clears when a re-run of the
+verdict job downloads the artifact. `verdict-error` (the verdict job crashed; it posts red, then
+fails) clears by re-running the verdict job. `shared-head` clears by closing the other PR or
+pushing a distinct commit.
+
+**No verdict, or a shared one.** A PR into a base other than the default branch gets no
+`code-gate` verdict at all: the check belongs to the commit, so its verdict would land on any PR
+into the default branch with the same head. When two open PRs into the default branch share a
+head commit, the commit is red (`shared-head`) until one moves or closes.
 
 **Cosmetic allow-list** (read from the default branch): `docs/**` with extension `md`, `png`,
 `jpg`, `gif`, `webp` excluding `docs/reference/**`; root `README.md`, `SECURITY.md`,

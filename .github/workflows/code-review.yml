@@ -2,7 +2,7 @@ name: Code Review
 
 # Produces review EVIDENCE only; it never decides anything. The `code-gate`
 # check is posted by code-gate-verdict.yml (base-pinned, run from the default
-# branch) from the `review-evidence` artifact uploaded here. Rule: "Review
+# branch) from the `review-evidence-<attempt>` artifacts uploaded here. Rule: "Review
 # evidence" — docs/reference/github-repo-setup.md §3.
 #
 # This job's workspace is the BASE branch, never the PR head: the reviewer is an
@@ -58,16 +58,22 @@ jobs:
     # environment so its secrets and required reviewers are scoped separately.
     environment: ${{ github.event_name == 'workflow_dispatch' && 'untrusted-review' || '' }}
     runs-on: ubuntu-latest
+    # Read-only, and no `id-token`: the reviewer's `gh` runs on this job token
+    # (`github_token` below), so a write it is talked into fails at the API
+    # whatever the command spelling. Without `github_token` the action would
+    # mint a write-scoped Claude App token through OIDC instead (#2024).
     permissions:
       contents: read
       pull-requests: read
-      id-token: write
     env:
       # PR-controlled values reach steps through env only, never a `run:` body.
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
       EVENT_NAME: ${{ github.event_name }}
       FINDINGS: .review/findings.json
+      # Best-effort scrub of Anthropic, cloud and Actions secrets from the
+      # reviewer's subprocess environments (claude-code-action docs/security.md).
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
 
     steps:
       - name: Validate dispatch inputs
@@ -97,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s\n' '.pr-head/' >> .git/info/exclude
-          python .github/scripts/code_gate_verdict.py prepare --head-dir .pr-head
+          python -I .github/scripts/code_gate_verdict.py prepare --head-dir .pr-head
 
       - name: Record skipped review
         if: steps.prepare.outputs.skip_reason != ''
@@ -105,7 +111,7 @@ jobs:
           HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
           BASE_REF: ${{ steps.prepare.outputs.base_ref }}
           SKIP_REASON: ${{ steps.prepare.outputs.skip_reason }}
-        run: python .github/scripts/code_gate_verdict.py skip --reason "$SKIP_REASON" --out review-evidence.json
+        run: python -I .github/scripts/code_gate_verdict.py skip --reason "$SKIP_REASON" --out review-evidence.json
 
       # The placeholder is not valid findings, so a reviewer that never records a
       # result leaves a file that fails validation rather than an empty "clean".
@@ -114,6 +120,30 @@ jobs:
         run: |
           mkdir -p .review
           printf '%s\n' '{"status":"unreviewed"}' > "$FINDINGS"
+
+      # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB needs bubblewrap, which the runner lacks,
+      # and Ubuntu 24.04 AppArmor blocks the unprivileged user namespaces bwrap
+      # makes (#2024). The action's own copy of this step runs only for
+      # `allowed_non_write_users` and swallows its failure; this one runs for every
+      # review and fails here, by name, before the reviewer would crash on it. The
+      # sysctl is runner-wide, which costs nothing on an ephemeral VM whose user
+      # already has passwordless sudo.
+      - name: Install subprocess isolation (bubblewrap)
+        if: steps.prepare.outputs.skip_reason == ''
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do
+            if sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends bubblewrap socat; then
+              break
+            fi
+            [ "$i" -lt 3 ] || { echo "::error::could not install bubblewrap"; exit 1; }
+            echo "apt-get attempt $i failed, retrying..."
+            sleep 5
+          done
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --ro-bind / / --unshare-all true
 
       - name: Run code review (attempt 1)
         id: review1
@@ -124,6 +154,7 @@ jobs:
         uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: "dependabot[bot]"
           prompt: |
             You are Layer B of a two-layer code-review gate (#1816). Layer A
@@ -165,7 +196,7 @@ jobs:
                linked issue's intent; read `.pr-head/changes.txt` and
                `.pr-head/changes.diff` for the change. Read the `.pr` copies for
                full-file context; read callers and history on the base checkout
-               with `git grep`/`git log`/`git blame`.
+               with `Grep`/`git log`/`git blame`.
             2. Evaluate the diff against EXACTLY these 8 finding classes — no
                others, no severity ladder, no nitpicks:
                - `regression` — reintroduces a bug a prior commit fixed. Use
@@ -179,7 +210,7 @@ jobs:
                - `intent-vs-logic` — the code does not do what the linked
                  issue/PR description says it should.
                - `breaking-contract` — a signature/behavior change breaks a
-                 caller outside this diff. Use `git grep`/`Grep` across the repo
+                 caller outside this diff. Use `Grep` across the repo
                  to check call sites before flagging.
                - `concurrency` — a race, deadlock, or ordering bug.
                - `requirement-semantics` — the diff doesn't actually satisfy an
@@ -210,22 +241,28 @@ jobs:
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
             (not available in this runner).
           claude_args: |
-            # Headless: any tool absent here is DENIED. Wholesale `git`/`gh`
-            # read grants with the mutating verbs carved back out (#1850);
-            # `gh api` stays on its own narrow patterns. The only write grant is
-            # `Edit` on the findings file (#1976: `Edit(path)` is the one
-            # path-scoped write rule the harness consults; an unscoped `Write`
-            # is deliberately absent). `gh pr comment` is denied: the PR comment
-            # is for humans and is not produced by this job.
+            # Headless: any tool absent here is DENIED. Read verbs only, one
+            # entry each (#2024, reversing #1850's wholesale `git`/`gh` grants):
+            # a wholesale `git` grant admits `git config`, `git -c` and
+            # `git grep -O`, which execute programs, and `node --check -r` runs
+            # a preload module. The only write grant is `Edit` on the findings
+            # file (#1976: `Edit(path)` is the one path-scoped write rule the
+            # harness consults; an unscoped `Write` is deliberately absent).
+            # `gh pr comment` is denied: the PR comment is for humans and is not
+            # produced by this job. These patterns steer the reviewer; they are
+            # not a boundary — the harness matches command text, so
+            # `git log --o''utput=<file>` passes the `--ou` deny. The read-only
+            # job token and the env scrub above bound what leaves the runner; a
+            # file written on the runner can still forge this job's evidence.
             # (tests/ci/test_code_review_allowed_tools.py pins both lists.)
-            --allowed-tools "Read,Grep,Glob,Edit(./.review/findings.json),Bash(git:*),Bash(gh pr:*),Bash(gh issue:*),Bash(gh search:*),Bash(gh label:*),Bash(gh api repos/*/commits/*:*),Bash(gh api repos/*/compare/*:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
-            --disallowed-tools "Bash(gh pr merge:*)" "Bash(gh pr close:*)" "Bash(gh pr edit:*)" "Bash(gh pr reopen:*)" "Bash(gh pr review:*)" "Bash(gh pr ready:*)" "Bash(gh pr create:*)" "Bash(gh pr lock:*)" "Bash(gh pr unlock:*)" "Bash(gh pr comment:*)" "Bash(gh issue create:*)" "Bash(gh issue edit:*)" "Bash(gh issue close:*)" "Bash(gh issue reopen:*)" "Bash(gh issue delete:*)" "Bash(gh issue lock:*)" "Bash(gh issue unlock:*)" "Bash(gh issue pin:*)" "Bash(gh issue unpin:*)" "Bash(gh issue transfer:*)" "Bash(gh issue comment:*)" "Bash(gh label create:*)" "Bash(gh label edit:*)" "Bash(gh label delete:*)" "Bash(git push:*)" "Bash(git commit:*)" "Bash(git merge:*)" "Bash(git reset:*)" "Bash(git rebase:*)" "Bash(git cherry-pick:*)" "Bash(git stash:*)" "Bash(git clean:*)" "Bash(git rm:*)" "Bash(git mv:*)" "Bash(git apply:*)" "Bash(git am:*)" "Bash(git checkout:*)" "Bash(git switch:*)" "Bash(git restore:*)"
+            --allowed-tools "Read,Grep,Glob,Edit(./.review/findings.json),Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git blame:*),Bash(git status:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git merge-base:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(gh api repos/*/commits/*:*),Bash(gh api repos/*/compare/*:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*)"
+            --disallowed-tools "Bash(gh pr merge:*)" "Bash(gh pr close:*)" "Bash(gh pr edit:*)" "Bash(gh pr reopen:*)" "Bash(gh pr review:*)" "Bash(gh pr ready:*)" "Bash(gh pr create:*)" "Bash(gh pr lock:*)" "Bash(gh pr unlock:*)" "Bash(gh pr comment:*)" "Bash(gh issue create:*)" "Bash(gh issue edit:*)" "Bash(gh issue close:*)" "Bash(gh issue reopen:*)" "Bash(gh issue delete:*)" "Bash(gh issue lock:*)" "Bash(gh issue unlock:*)" "Bash(gh issue pin:*)" "Bash(gh issue unpin:*)" "Bash(gh issue transfer:*)" "Bash(gh issue comment:*)" "Bash(gh label create:*)" "Bash(gh label edit:*)" "Bash(gh label delete:*)" "Bash(git push:*)" "Bash(git commit:*)" "Bash(git merge:*)" "Bash(git reset:*)" "Bash(git rebase:*)" "Bash(git cherry-pick:*)" "Bash(git stash:*)" "Bash(git clean:*)" "Bash(git rm:*)" "Bash(git mv:*)" "Bash(git apply:*)" "Bash(git am:*)" "Bash(git checkout:*)" "Bash(git switch:*)" "Bash(git restore:*)" "Bash(git *--ou*)"
 
       - name: Validate findings (attempt 1)
         id: v1
         if: steps.prepare.outputs.skip_reason == ''
         continue-on-error: true
-        run: python .github/scripts/code_gate_verdict.py validate --findings "$FINDINGS"
+        run: python -I .github/scripts/code_gate_verdict.py validate --findings "$FINDINGS"
 
       - name: Reseed findings file for the retry
         if: steps.v1.outcome == 'failure'
@@ -242,6 +279,7 @@ jobs:
         uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: "dependabot[bot]"
           prompt: |
             You are Layer B of a two-layer code-review gate. Layer A (ruff,
@@ -281,7 +319,7 @@ jobs:
                linked issue's intent; read `.pr-head/changes.txt` and
                `.pr-head/changes.diff` for the change. Read the `.pr` copies for
                full-file context; read callers and history on the base checkout
-               with `git grep`/`git log`/`git blame`.
+               with `Grep`/`git log`/`git blame`.
             2. Evaluate the diff against EXACTLY these 8 finding classes — no
                others, no severity ladder, no nitpicks:
                - `regression` — reintroduces a bug a prior commit fixed. Use
@@ -295,7 +333,7 @@ jobs:
                - `intent-vs-logic` — the code does not do what the linked
                  issue/PR description says it should.
                - `breaking-contract` — a signature/behavior change breaks a
-                 caller outside this diff. Use `git grep`/`Grep` across the repo
+                 caller outside this diff. Use `Grep` across the repo
                  to check call sites before flagging.
                - `concurrency` — a race, deadlock, or ordering bug.
                - `requirement-semantics` — the diff doesn't actually satisfy an
@@ -326,16 +364,22 @@ jobs:
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
             (not available in this runner).
           claude_args: |
-            # Headless: any tool absent here is DENIED. Wholesale `git`/`gh`
-            # read grants with the mutating verbs carved back out (#1850);
-            # `gh api` stays on its own narrow patterns. The only write grant is
-            # `Edit` on the findings file (#1976: `Edit(path)` is the one
-            # path-scoped write rule the harness consults; an unscoped `Write`
-            # is deliberately absent). `gh pr comment` is denied: the PR comment
-            # is for humans and is not produced by this job.
+            # Headless: any tool absent here is DENIED. Read verbs only, one
+            # entry each (#2024, reversing #1850's wholesale `git`/`gh` grants):
+            # a wholesale `git` grant admits `git config`, `git -c` and
+            # `git grep -O`, which execute programs, and `node --check -r` runs
+            # a preload module. The only write grant is `Edit` on the findings
+            # file (#1976: `Edit(path)` is the one path-scoped write rule the
+            # harness consults; an unscoped `Write` is deliberately absent).
+            # `gh pr comment` is denied: the PR comment is for humans and is not
+            # produced by this job. These patterns steer the reviewer; they are
+            # not a boundary — the harness matches command text, so
+            # `git log --o''utput=<file>` passes the `--ou` deny. The read-only
+            # job token and the env scrub above bound what leaves the runner; a
+            # file written on the runner can still forge this job's evidence.
             # (tests/ci/test_code_review_allowed_tools.py pins both lists.)
-            --allowed-tools "Read,Grep,Glob,Edit(./.review/findings.json),Bash(git:*),Bash(gh pr:*),Bash(gh issue:*),Bash(gh search:*),Bash(gh label:*),Bash(gh api repos/*/commits/*:*),Bash(gh api repos/*/compare/*:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
-            --disallowed-tools "Bash(gh pr merge:*)" "Bash(gh pr close:*)" "Bash(gh pr edit:*)" "Bash(gh pr reopen:*)" "Bash(gh pr review:*)" "Bash(gh pr ready:*)" "Bash(gh pr create:*)" "Bash(gh pr lock:*)" "Bash(gh pr unlock:*)" "Bash(gh pr comment:*)" "Bash(gh issue create:*)" "Bash(gh issue edit:*)" "Bash(gh issue close:*)" "Bash(gh issue reopen:*)" "Bash(gh issue delete:*)" "Bash(gh issue lock:*)" "Bash(gh issue unlock:*)" "Bash(gh issue pin:*)" "Bash(gh issue unpin:*)" "Bash(gh issue transfer:*)" "Bash(gh issue comment:*)" "Bash(gh label create:*)" "Bash(gh label edit:*)" "Bash(gh label delete:*)" "Bash(git push:*)" "Bash(git commit:*)" "Bash(git merge:*)" "Bash(git reset:*)" "Bash(git rebase:*)" "Bash(git cherry-pick:*)" "Bash(git stash:*)" "Bash(git clean:*)" "Bash(git rm:*)" "Bash(git mv:*)" "Bash(git apply:*)" "Bash(git am:*)" "Bash(git checkout:*)" "Bash(git switch:*)" "Bash(git restore:*)"
+            --allowed-tools "Read,Grep,Glob,Edit(./.review/findings.json),Bash(git log:*),Bash(git show:*),Bash(git diff:*),Bash(git blame:*),Bash(git status:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git merge-base:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr checks:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(gh api repos/*/commits/*:*),Bash(gh api repos/*/compare/*:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*)"
+            --disallowed-tools "Bash(gh pr merge:*)" "Bash(gh pr close:*)" "Bash(gh pr edit:*)" "Bash(gh pr reopen:*)" "Bash(gh pr review:*)" "Bash(gh pr ready:*)" "Bash(gh pr create:*)" "Bash(gh pr lock:*)" "Bash(gh pr unlock:*)" "Bash(gh pr comment:*)" "Bash(gh issue create:*)" "Bash(gh issue edit:*)" "Bash(gh issue close:*)" "Bash(gh issue reopen:*)" "Bash(gh issue delete:*)" "Bash(gh issue lock:*)" "Bash(gh issue unlock:*)" "Bash(gh issue pin:*)" "Bash(gh issue unpin:*)" "Bash(gh issue transfer:*)" "Bash(gh issue comment:*)" "Bash(gh label create:*)" "Bash(gh label edit:*)" "Bash(gh label delete:*)" "Bash(git push:*)" "Bash(git commit:*)" "Bash(git merge:*)" "Bash(git reset:*)" "Bash(git rebase:*)" "Bash(git cherry-pick:*)" "Bash(git stash:*)" "Bash(git clean:*)" "Bash(git rm:*)" "Bash(git mv:*)" "Bash(git apply:*)" "Bash(git am:*)" "Bash(git checkout:*)" "Bash(git switch:*)" "Bash(git restore:*)" "Bash(git *--ou*)"
 
       # Tripwire payload for silent no-review runs (#1239): the runner-local
       # execution log is the only copy of what the reviewer did. Short retention.
@@ -351,26 +395,28 @@ jobs:
       # Nothing but the findings file may differ from the base checkout.
       - name: Check workspace is clean
         if: steps.prepare.outputs.skip_reason == ''
-        run: python .github/scripts/code_gate_verdict.py check-tree --findings "$FINDINGS"
+        run: python -I .github/scripts/code_gate_verdict.py check-tree --findings "$FINDINGS"
 
       - name: Validate findings
         if: steps.prepare.outputs.skip_reason == ''
-        run: python .github/scripts/code_gate_verdict.py validate --findings "$FINDINGS"
+        run: python -I .github/scripts/code_gate_verdict.py validate --findings "$FINDINGS"
 
       - name: Stamp review evidence
         if: steps.prepare.outputs.skip_reason == ''
         env:
           HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
           BASE_REF: ${{ steps.prepare.outputs.base_ref }}
-        run: python .github/scripts/code_gate_verdict.py stamp --findings "$FINDINGS" --out review-evidence.json
+        run: python -I .github/scripts/code_gate_verdict.py stamp --findings "$FINDINGS" --out review-evidence.json
 
       # 90 days: the verdict re-reads this on every later event for the SHA; an
-      # expired artifact turns the gate red ("re-dispatch the review").
+      # expired artifact turns the gate red ("re-dispatch the review"). One
+      # artifact per run attempt, never overwritten: a re-run cannot replace the
+      # blocking evidence an earlier attempt left (#2024).
       - name: Upload review evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: review-evidence
+          name: review-evidence-${{ github.run_attempt }}
           path: review-evidence.json
           retention-days: 90
-          overwrite: true
+          overwrite: false
           if-no-files-found: error
