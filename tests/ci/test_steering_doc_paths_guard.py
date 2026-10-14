@@ -44,7 +44,7 @@ DEAD_PATH_ALLOWLIST: dict[str, str] = {
     "schema-drift-check.yml": "historical: the original WORKFLOW_TEST_OVERRIDES case",
     "auto-merge-enable.yml": (
         "stale: ci-guard-meta-tests.md's review-blind section still describes it as live; "
-        "rewrite tracked separately"
+        "rewrite is #2048"
     ),
 }
 
