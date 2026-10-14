@@ -34,7 +34,11 @@ WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
 # The key this guard exists to keep out of the workflow.
 PRE_2044_GROUP = "code-review-${{ github.event.pull_request.number || inputs.pr_number }}"
 
-PUSH_ACTIONS = ["opened", "synchronize", "reopened", "ready_for_review"]
+# Every `pull_request` type the workflow triggers on other than `edited`, read from the
+# file, so a type added later is covered without editing this guard. PyYAML parses the
+# bare key `on` as the boolean True.
+_TYPES = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))[True]["pull_request"]["types"]
+PUSH_ACTIONS = [t for t in _TYPES if t != "edited"]
 BASE_CHANGE = {"ref": {"from": "release"}}
 
 
@@ -100,6 +104,11 @@ class TestBodyEditLeavesTheReviewAlone:
 
 
 class TestNewHeadSupersedesTheReview:
+    def test_a_push_starts_a_review(self):
+        # The parametrized cases below read the trigger list; without `synchronize`
+        # a new head would not be reviewed at all, and they would not notice.
+        assert "synchronize" in PUSH_ACTIONS
+
     @pytest.mark.parametrize("action", PUSH_ACTIONS)
     def test_review_events_share_the_pr_group(self, concurrency, action):
         first = group_of(concurrency, pr_event("opened", pr=2044, run_id=100))

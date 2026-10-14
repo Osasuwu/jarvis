@@ -110,8 +110,7 @@ Two workflows, split so a PR can never change the rule that judges it:
   Dependabot without dispatch, cosmetic-only) upload `status: skipped`. The reviewer gets one
   retry; concurrency group `code-review-<pr>` cancels a superseded run (a push, a dispatch or a
   base change); a title/body edit gets a per-run group so it never cancels the review in flight
-  (#2044). The PR comment is for
-  humans only and is never parsed.
+  (#2044). The PR comment is for humans only and is never parsed.
 - **`code-gate-verdict.yml` decides.** Triggered by `pull_request_target` and by a `workflow_run`
   hook on "Code Review", it runs from the default branch, checks out only `.github/scripts`
   there, and never touches PR code. The `osasuwu-ci` GitHub App (key in the
