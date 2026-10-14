@@ -61,7 +61,8 @@ for a sprint.
 
 ## Where the meta-tests run
 
-`.github/workflows/ci-meta.yml`, on every PR. Deliberately **not** itself path-filtered —
+`.github/workflows/pytest.yml` (the `pytest` required check), which runs all of `tests/`,
+`tests/ci/` included, on every PR. Deliberately **not** itself path-filtered —
 path-filtering the suite that exists to catch path-filter bugs would be self-undermining.
 
 ## `review` can't see edits to its own workflow
