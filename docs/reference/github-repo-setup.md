@@ -107,8 +107,10 @@ Two workflows, split so a PR can never change the rule that judges it:
   write grant is `Edit(./.review/findings.json)`. Deterministic base steps then validate the
   findings, enforce `blocking ⇔ findings non-empty`, check the tree is clean, stamp `sha` /
   `base_ref`, and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
-  (one per attempt, `overwrite: false`, 90-day retention), so a re-run never replaces an earlier
-  attempt's verdict. Skip paths (draft, fork, Dependabot without dispatch, cosmetic-only) upload
+  (one per attempt, `overwrite: false`, 90-day retention). A re-run still deletes the earlier
+  attempts' artifacts, so the verdict keeps a blocking result in its own ledger, not in the
+  artifact (#2062); the upload is the review job's last step and runs unconditionally, so an
+  attempt that succeeded is one that uploaded evidence. Skip paths (draft, fork, Dependabot without dispatch, cosmetic-only) upload
   `status: skipped`. The reviewer gets one retry; concurrency group `code-review-<pr>` cancels a
   superseded run (a push, a dispatch or a base change); a title/body edit gets a per-run group so
   it never cancels the review in flight (#2044). The PR comment is for humans only and is never
@@ -156,9 +158,12 @@ fail-open gate. Change the block and the live setting together
    blocking or unreadable one (`skipped` artifacts are ignored); **or**
 2. every changed file is cosmetic.
 
-Every live `review-evidence-<attempt>` artifact of a bound run is read, not only the latest
-attempt's. A run whose latest attempt failed or was cancelled contributes only its blocking
-artifacts, such as one an earlier attempt left.
+Every attempt of a bound run is read, not only the latest: its live
+`review-evidence-<attempt>` artifact, or, when that artifact is listed but expired, an
+`evidence-expired` entry, or, when it is not listed at all although the attempt succeeded, an
+`evidence-missing` entry (a re-run deleted it). An attempt that did not succeed and left no
+artifact has no entry. A run whose latest attempt failed or was cancelled contributes only its
+blocking artifacts, such as one an earlier attempt left.
 
 Run provenance: a `pull_request` run counts only if its `pull_requests[]` contains this PR and
 every PR it lists is into the default branch; one that also lists a PR into another base may have
@@ -171,8 +176,18 @@ ancestors (checked through the compare API, never taken from the run payload). T
 **What clears what.** A clean run for the SHA — a re-dispatch or a re-run — clears
 `evidence-missing`, `-expired`, `-invalid`, `-sha-mismatch`, `-base-mismatch` and
 `-foreign-base`: each is a failure to produce evidence, not a verdict on the code.
-`evidence-blocking` stays in force for the SHA across re-runs and re-dispatches; only a new
-commit clears it. `evidence-unreadable` (an artifact download failed or was cut off, so it may
+`evidence-blocking` stays in force for the SHA across re-runs and re-dispatches, and after the
+blocking artifact itself is gone (a re-run deletes the earlier attempts' artifacts, and every
+artifact expires): the verdict records what it has read for the SHA in a ledger in the
+`osasuwu-ci` App's own `code-gate` check run, which only that App writes and which never
+expires. Each run is a `<!-- code-gate-ledger {...} -->` comment in the check run's
+`output.text`; the verdict merges the ledgers of all of the App's `code-gate` check runs for
+the SHA, ignores any other app's, and writes the result back to each. A review attempt that
+succeeded but whose artifact was gone before the verdict first read it is red as
+`evidence-unobserved` for the same reason: it may have been blocking. A ledger the verdict
+cannot parse reads as `evidence-unobserved`. Both are sticky over every other verdict,
+`verdict-error`, draft and cosmetic included; only a new commit, which starts a new check run
+with an empty ledger, clears either. `evidence-unreadable` (an artifact download failed or was cut off, so it may
 hide a blocking verdict) is not lifted by a clean run either; it clears when a re-run of the
 verdict job downloads the artifact. `verdict-error` (the verdict job crashed; it posts red, then
 fails) clears by re-running the verdict job. `shared-head` clears by closing the other PR or
