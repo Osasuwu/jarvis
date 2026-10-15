@@ -34,6 +34,7 @@ Stdlib only: the jobs need no dependency install.
 
 import argparse
 import base64
+import http.client
 import io
 import json
 import os
@@ -45,15 +46,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from typing import NamedTuple
 
 API_ROOT = "https://api.github.com"
 REVIEW_WORKFLOW = ".github/workflows/code-review.yml"
 CHECK_NAME = "code-gate"
 EVIDENCE_ARTIFACT = "review-evidence"
+# One evidence artifact per run attempt (`review-evidence-<run_attempt>`, never
+# overwritten): a re-run cannot replace the evidence an earlier attempt left.
+EVIDENCE_ARTIFACT_NAME = re.compile(rf"{EVIDENCE_ARTIFACT}-[1-9][0-9]*")
 EVIDENCE_FILE = "review-evidence.json"
 EVIDENCE_SCHEMA = 1
 MAX_EVIDENCE_BYTES = 1 << 20
+MAX_ARTIFACT_BYTES = MAX_EVIDENCE_BYTES * 8
 DEPENDABOT = "dependabot[bot]"
 
 FINDING_CLASSES = (
@@ -91,6 +97,7 @@ _IGNORED_CONCLUSIONS = frozenset(
 )
 
 MAX_RUN_PAGES = 3
+MAX_PR_PAGES = 10
 MAX_FILE_PAGES = 30  # the PR files API serves at most 3000 files
 MAX_HEAD_FILES = 200
 MAX_HEAD_FILE_BYTES = 1 << 20
@@ -229,40 +236,58 @@ def review_skip_reason(pr, files, event_name):
     return ""
 
 
-def resolve_run_target(event, display_title, head_sha, pull_requests):
-    """(pr_number, head_sha) a completed review run was for, or None."""
+def resolve_run_target(event, display_title, head_sha, pull_requests, default_branch):
+    """(pr_number, head_sha) a completed review run was for, or None.
+
+    A `pull_request` run resolves to the PR it lists into the default branch: the
+    list holds every open PR on the run's head, in no promised order, and only a
+    PR into the default branch has a `code-gate` to decide (#2024).
+    """
     if event == "workflow_dispatch":
         m = RUN_TITLE.match(display_title or "")
         return (int(m.group(1)), m.group(2)) if m else None
-    if event == "pull_request" and pull_requests:
-        return (pull_requests[0]["number"], head_sha)
+    if event == "pull_request":
+        for p in pull_requests or []:
+            if (p.get("base") or {}).get("ref") == default_branch:
+                return (p["number"], head_sha)
     return None
 
 
 # --- run provenance and evidence ------------------------------------------
 
 
-def run_qualifies(run, pr_number, head_sha, default_branch):
-    """Is this run bound to this PR at this SHA through something it cannot forge?"""
+# Set on a dispatch run by `gather_entries` (never taken from the API payload):
+# is the run's head commit the default branch's tip or one of its ancestors?
+IN_DEFAULT_HISTORY = "_in_default_history"
+
+
+def run_provenance(run, pr_number, head_sha, default_branch):
+    """How this run binds to this PR at this SHA, through something it cannot forge.
+
+    'bound': it is evidence. 'foreign-base': a `pull_request` run that lists this
+    PR and also a PR into another base, so it may have run that base's copy of the
+    workflow; it is evidence for no PR. '': it is not about this PR at this SHA.
+    """
     if (run.get("path") or "").split("@")[0] != REVIEW_WORKFLOW:
-        return False
+        return ""
     event = run.get("event")
     if event == "pull_request":
-        if run.get("head_sha") != head_sha:
-            return False
-        return any(
-            p.get("number") == pr_number and (p.get("base") or {}).get("ref") == default_branch
-            for p in run.get("pull_requests") or []
-        )
+        listed = run.get("pull_requests") or []
+        if run.get("head_sha") != head_sha or not any(p.get("number") == pr_number for p in listed):
+            return ""
+        if any((p.get("base") or {}).get("ref") != default_branch for p in listed):
+            return "foreign-base"
+        return "bound"
     if event == "workflow_dispatch":
-        if run.get("head_branch") != default_branch:
-            return False
         m = RUN_TITLE.match(run.get("display_title") or "")
-        return bool(m) and int(m.group(1)) == pr_number and m.group(2) == head_sha
-    return False
+        if not m or int(m.group(1)) != pr_number or m.group(2) != head_sha:
+            return ""
+        return "bound" if run.get(IN_DEFAULT_HISTORY) is True else ""
+    return ""
 
 
 _WORST_FIRST = (
+    "evidence-foreign-base",
     "evidence-sha-mismatch",
     "evidence-base-mismatch",
     "evidence-invalid",
@@ -272,13 +297,15 @@ _WORST_FIRST = (
 )
 
 _EVIDENCE_MESSAGES = {
+    "evidence-foreign-base": "A review run for this commit also lists an open PR into another base branch, so it may have run that branch's copy of the review workflow; it is evidence for no PR. Close or retarget that PR, or have a maintainer re-dispatch the review.",
     "evidence-pending": "A bound review run is not finished (or awaits approval). Wait for it, or approve/cancel it.",
     "evidence-sha-mismatch": "A review artifact is stamped for a different commit than the one evaluated. Re-dispatch the review.",
     "evidence-base-mismatch": "A review artifact was produced against a different base branch. Re-dispatch the review.",
     "evidence-invalid": "A review artifact is malformed. Re-dispatch the review.",
-    "evidence-blocking": "A review run reported blocking findings. Fix them and push, or re-dispatch the review once resolved.",
+    "evidence-blocking": "A review run reported blocking findings for this commit; that stays in force for the SHA, across re-runs. Fix them and push a new commit.",
+    "evidence-unreadable": "A review artifact could not be downloaded, so it may hide a blocking verdict. Re-run the verdict job.",
     "evidence-expired": "A review artifact has expired (90-day retention). Re-dispatch the review.",
-    "evidence-missing": "A successful review run has no review-evidence artifact. Re-dispatch the review.",
+    "evidence-missing": "A successful review run has no review-evidence-<attempt> artifact. Re-dispatch the review.",
     "evidence-none": (
         "No successful review run is bound to this commit. Push to trigger one, or "
         "re-dispatch the review. A push that lands while a review runs leaves that run "
@@ -312,31 +339,60 @@ def _judge_artifact(art, head_sha, base_ref):
 
 
 def evaluate_evidence(entries, pr_number, head_sha, base_ref, default_branch):
-    """The evidence half of the rule. `entries`: {run, artifact, state} per candidate run."""
+    """The evidence half of the rule. `entries`: {run, artifact, state}, one per
+    evidence artifact of a candidate run (see `load_entries`)."""
     reds = set()
     clean = 0
     for e in entries:
         run = e["run"]
-        if not run_qualifies(run, pr_number, head_sha, default_branch):
+        provenance = run_provenance(run, pr_number, head_sha, default_branch)
+        if not provenance:
             continue
         if run.get("status") != "completed" or run.get("conclusion") == "action_required":
             return _verdict("evidence-pending")
-        if run.get("conclusion") != "success":
+        state = e.get("state")
+        if state == "unreadable":
+            reds.add("evidence-unreadable")
             continue
-        if e.get("state") == "expired":
-            reds.add("evidence-expired")
-        elif e.get("state") != "ok" or e.get("artifact") is None:
-            reds.add("evidence-missing")
+        if state == "expired":
+            result = "evidence-expired"
+        elif state != "ok" or e.get("artifact") is None:
+            result = "evidence-missing"
         else:
             result = _judge_artifact(e["artifact"], head_sha, base_ref)
-            if result == "clean":
-                clean += 1
-            elif result != "skipped":
+        if provenance == "foreign-base":
+            # Its evidence cannot clear this PR; a blocking verdict it carries can
+            # only be stricter, so that one still sticks.
+            reds.add(
+                "evidence-blocking" if result == "evidence-blocking" else "evidence-foreign-base"
+            )
+            continue
+        if run.get("conclusion") != "success":
+            # The run's latest attempt failed or was cancelled. Blocking evidence an
+            # earlier attempt left still counts; nothing else from the run does.
+            if result == "evidence-blocking":
                 reds.add(result)
+            continue
+        if result == "clean":
+            clean += 1
+        elif result != "skipped":
+            reds.add(result)
+    # Blocking is the one sticky red: a later clean run or attempt for the same SHA
+    # cannot lift it, the fix is a new commit. An artifact that could not be read
+    # might be a blocking one, so a clean run does not lift that either. Every other
+    # red is a failure to produce evidence, not a verdict on the code, so a clean
+    # run for the SHA supersedes it — that is what "re-dispatch the review" in its
+    # message relies on.
+    if "evidence-blocking" in reds:
+        return _verdict("evidence-blocking")
+    if "evidence-unreadable" in reds:
+        return _verdict("evidence-unreadable")
+    if clean:
+        return _verdict("evidence-clean")
     for code in _WORST_FIRST:
         if code in reds:
             return _verdict(code)
-    return _verdict("evidence-clean" if clean else "evidence-none")
+    return _verdict("evidence-none")
 
 
 def evaluate_pr(pr, files, entries, default_branch):
@@ -428,7 +484,7 @@ class Api:
         req = urllib.request.Request(f"{API_ROOT}/{path}", headers=self._headers())
         try:
             with urllib.request.build_opener(_Stop).open(req, timeout=60) as resp:
-                return resp.read(MAX_EVIDENCE_BYTES * 8)
+                return read_capped(resp)
         except urllib.error.HTTPError as exc:
             location = (
                 exc.headers.get("Location") if exc.code in (301, 302, 303, 307, 308) else None
@@ -437,7 +493,24 @@ class Api:
                 raise
         bare = urllib.request.Request(location, headers={"User-Agent": "code-gate-verdict"})
         with urllib.request.urlopen(bare, timeout=60) as resp:
-            return resp.read(MAX_EVIDENCE_BYTES * 8)
+            return read_capped(resp)
+
+
+class UnreadableArtifact(Exception):
+    """The artifact bytes are not the whole zip upload-artifact wrote: its verdict is unknown."""
+
+
+def read_capped(resp, limit=MAX_ARTIFACT_BYTES):
+    """The whole body, or raise. `HTTPResponse.read(amt)` returns a short body
+    silently when the connection closes early, and a cut-off zip must not read as
+    a merely malformed artifact (which a clean run lifts)."""
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise UnreadableArtifact(f"artifact is over {limit} bytes")
+    expected = (resp.headers.get("Content-Length") or "").strip()
+    if expected.isdigit() and int(expected) != len(body):
+        raise UnreadableArtifact(f"artifact body is {len(body)} of {expected} bytes")
+    return body
 
 
 def paged(api, path, key=None, per_page=100, max_pages=10):
@@ -533,39 +606,63 @@ def snapshot_review_target(api, repo, number, expected_head_sha, event_name):
 
 
 def read_evidence_zip(blob):
-    """The artifact object inside the downloaded zip; a malformed one becomes an invalid stub."""
+    """The artifact object inside the downloaded zip.
+
+    Bytes that are not a readable zip raise `UnreadableArtifact`: upload-artifact
+    never writes one, so a cut-off or corrupt download is the cause, and its
+    verdict is unknown. A readable zip whose evidence file is absent, oversized or
+    not JSON becomes a malformed stub.
+    """
     try:
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
-            info = z.getinfo(EVIDENCE_FILE)
+            try:
+                info = z.getinfo(EVIDENCE_FILE)
+            except KeyError:
+                return {"status": "malformed"}
             if info.file_size > MAX_EVIDENCE_BYTES:
                 return {"status": "malformed"}
-            return json.loads(z.read(info))
-    except (zipfile.BadZipFile, KeyError, ValueError):
+            raw = z.read(info)
+    except (zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError) as exc:
+        raise UnreadableArtifact(f"artifact zip is unreadable: {exc}") from exc
+    try:
+        return json.loads(raw)
+    except ValueError:
         return {"status": "malformed"}
 
 
-def load_entry(api, repo, run):
-    """One candidate run plus its artifact and the artifact's state (ok / missing / expired)."""
-    entry = {"run": run, "artifact": None, "state": "missing"}
-    if run.get("status") != "completed" or run.get("conclusion") != "success":
-        return entry
-    data = api(
-        "GET",
-        f"repos/{repo}/actions/runs/{run['id']}/artifacts?name={EVIDENCE_ARTIFACT}&per_page=100",
-    )
-    arts = data.get("artifacts", [])
+def load_entries(api, repo, run):
+    """A candidate run's entries: one per live evidence artifact (one per attempt).
+
+    State per entry: ok / unreadable (the download failed), or a single missing /
+    expired entry when the run has no live evidence artifact. A completed run is
+    read whatever its conclusion: an earlier attempt's blocking artifact outlives
+    a failed or cancelled re-run.
+    """
+    bare = {"run": run, "artifact": None, "state": "missing"}
+    if run.get("status") != "completed" or run.get("conclusion") == "action_required":
+        return [bare]
+    arts = [
+        a
+        for a in paged(api, f"repos/{repo}/actions/runs/{run['id']}/artifacts", key="artifacts")
+        if EVIDENCE_ARTIFACT_NAME.fullmatch(a.get("name") or "")
+    ]
     live = [a for a in arts if not a.get("expired")]
     if not live:
-        entry["state"] = "expired" if arts else "missing"
-        return entry
-    newest = max(live, key=lambda a: a.get("created_at") or "")
-    try:
-        blob = api.download(f"repos/{repo}/actions/artifacts/{newest['id']}/zip")
-    except urllib.error.HTTPError:
-        return entry
-    entry["artifact"] = read_evidence_zip(blob)
-    entry["state"] = "ok"
-    return entry
+        return [dict(bare, state="expired" if arts else "missing")]
+    entries = []
+    for a in live:
+        try:
+            artifact = read_evidence_zip(
+                api.download(f"repos/{repo}/actions/artifacts/{a['id']}/zip")
+            )
+        except (OSError, http.client.HTTPException, UnreadableArtifact):
+            # URLError/HTTPError, a timeout, a reset, a cut-off or corrupt body:
+            # whatever the artifact said is unknown, so it must not read as
+            # "missing" or "malformed", both of which a clean run lifts.
+            entries.append(dict(bare, state="unreadable"))
+            continue
+        entries.append(dict(bare, artifact=artifact, state="ok"))
+    return entries
 
 
 def gather_entries(api, repo, pr_number, head_sha, default_branch):
@@ -579,8 +676,66 @@ def gather_entries(api, repo, pr_number, head_sha, default_branch):
     for q in queries:
         for run in paged(api, f"{base}?{q}", key="workflow_runs", max_pages=MAX_RUN_PAGES):
             seen[run["id"]] = run
-    runs = [r for r in seen.values() if run_qualifies(r, pr_number, head_sha, default_branch)]
-    return [load_entry(api, repo, r) for r in runs]
+    entries = []
+    for run in seen.values():
+        # The history fact is always the compare's, whatever the payload carried: a
+        # dispatch run that would be bound if in history gets it set here, and any
+        # other run is never bound through it.
+        if (
+            run.get("event") == "workflow_dispatch"
+            and run_provenance(
+                {**run, IN_DEFAULT_HISTORY: True}, pr_number, head_sha, default_branch
+            )
+            == "bound"
+        ):
+            run[IN_DEFAULT_HISTORY] = in_default_history(
+                api, repo, default_branch, run.get("head_sha") or ""
+            )
+        # A foreign-base run is loaded too: a blocking artifact it carries still sticks.
+        if run_provenance(run, pr_number, head_sha, default_branch):
+            entries.extend(load_entries(api, repo, run))
+    return entries
+
+
+def in_default_history(api, repo, default_branch, sha):
+    """Is `sha` the default branch's tip or one of its ancestors? Holds after the
+    branch moves on; false for a tag or any ref off that history."""
+    try:
+        cmp = api(
+            "GET",
+            f"repos/{repo}/compare/{urllib.parse.quote(default_branch)}...{sha}?per_page=1",
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code in (404, 422):  # unknown commit, or no common history
+            return False
+        raise
+    return cmp.get("status") in ("behind", "identical")
+
+
+def shared_head_verdict(pr, open_prs):
+    """Red when another open PR into the same base has the same head SHA, else None.
+
+    The check attaches to the commit, so two such PRs would overwrite each other's
+    verdict and either could show the other's green (#2024). The conservative
+    combination: the commit is red until one PR moves or closes.
+    """
+    others = sorted(
+        p["number"]
+        for p in open_prs
+        if p["number"] != pr["number"]
+        and p["head"]["sha"] == pr["head"]["sha"]
+        and p["base"]["ref"] == pr["base"]["ref"]
+    )
+    if not others:
+        return None
+    listed = ", ".join(f"#{n}" for n in others)
+    return Verdict(
+        False,
+        "shared-head",
+        f"Open PR(s) {listed} into the same base have this same head commit, and the "
+        "check belongs to the commit, so it cannot carry one verdict per PR. Close all "
+        "but one, or push a distinct commit to each.",
+    )
 
 
 def post_check(api, repo, head_sha, verdict, app_id):
@@ -795,6 +950,7 @@ def cmd_resolve(_args):
             os.environ.get("RUN_TITLE", ""),
             os.environ.get("RUN_HEAD_SHA", ""),
             json.loads(os.environ.get("RUN_PULL_REQUESTS") or "[]"),
+            os.environ["DEFAULT_BRANCH"],
         )
     if target is None:
         print("event is not bound to a PR; nothing to evaluate")
@@ -808,26 +964,53 @@ def cmd_resolve(_args):
 
 def cmd_verdict(_args):
     repo = os.environ["GITHUB_REPOSITORY"]
+    head_sha = os.environ["HEAD_SHA"]
     read = Api(os.environ["GH_TOKEN"])
     number = int(os.environ["PR_NUMBER"])
+    failure = None
     try:
         pr, files = fetch_pr_snapshot(read, repo, number)
+        if pr["head"]["sha"] != head_sha:
+            print("PR head moved past the event's SHA; the newer SHA has its own evaluation")
+            return 0
+        default_branch = read("GET", f"repos/{repo}")["default_branch"]
+        if pr["base"]["ref"] != default_branch:
+            # The check belongs to the commit: a verdict for this PR would land on a
+            # PR into the default branch that shares the head (#2024).
+            print(f"PR is into {pr['base']['ref']}, not {default_branch}; no verdict to post")
+            return 0
+        open_prs = paged(
+            read,
+            f"repos/{repo}/pulls?state=open&base={urllib.parse.quote(default_branch)}",
+            max_pages=MAX_PR_PAGES,
+        )
+        if len(open_prs) >= 100 * MAX_PR_PAGES:
+            raise RuntimeError("too many open PRs to check for a shared head")
+        verdict = shared_head_verdict(pr, open_prs) or evaluate_pr(
+            pr, files, gather_entries(read, repo, number, head_sha, default_branch), default_branch
+        )
     except HeadMovedError:
         print("PR head moved while its files were being read; the newer SHA has its own evaluation")
         return 0
-    if pr["head"]["sha"] != os.environ["HEAD_SHA"]:
-        print("PR head moved past the event's SHA; the newer SHA has its own evaluation")
-        return 0
-    default_branch = read("GET", f"repos/{repo}")["default_branch"]
-    entries = gather_entries(read, repo, number, pr["head"]["sha"], default_branch)
-    verdict = evaluate_pr(pr, files, entries, default_branch)
+    except Exception as exc:
+        # Fail closed: a crash must not leave an earlier green check standing for
+        # this SHA (attempt 1 clean, the re-run blocking, its listing reset).
+        failure = exc
+        verdict = Verdict(
+            False,
+            "verdict-error",
+            f"The verdict could not be computed ({type(exc).__name__}: {str(exc)[:200]}). "
+            "Re-run the verdict job.",
+        )
     how = post_check(
-        Api(os.environ["GATE_TOKEN"]), repo, pr["head"]["sha"], verdict, os.environ["GATE_APP_ID"]
+        Api(os.environ["GATE_TOKEN"]), repo, head_sha, verdict, os.environ["GATE_APP_ID"]
     )
     _summary(
         f"### {CHECK_NAME}: {'green' if verdict.green else 'red'} — `{verdict.code}`\n\n{verdict.message}"
     )
     print(f"{CHECK_NAME} {how}: green={verdict.green} code={verdict.code}")
+    if failure is not None:
+        raise failure
     return 0
 
 
