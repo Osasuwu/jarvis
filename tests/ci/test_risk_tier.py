@@ -56,10 +56,18 @@ class FakeGitHub:
     """GET-only GitHub API; unknown routes fail the test instead of answering."""
 
     def __init__(
-        self, body=GOOD_BODY, files=(), reviews=(), permissions=None, head=HEAD, changed_files=None
+        self,
+        body=GOOD_BODY,
+        files=(),
+        reviews=(),
+        permissions=None,
+        head=HEAD,
+        changed_files=None,
+        author=("carol", "User"),
     ):
         self.pr = {
             "body": body,
+            "user": {"login": author[0], "type": author[1]},
             "head": {"sha": head},
             "changed_files": len(files) if changed_files is None else changed_files,
         }
@@ -690,3 +698,73 @@ def test_the_github_call_is_authenticated_and_bounded_by_a_timeout(monkeypatch):
 
 def test_a_review_event_does_not_skip_the_linked_issue_job():
     assert "if" not in WORKFLOW["jobs"]["require-linked-issue"]  # a skipped job reads as passing
+
+
+# --- #2059: a Dependabot PR's body is not read; its declared tier is fixed at HIGH --------
+
+DEPENDABOT = ("dependabot[bot]", "Bot")
+# uv.lock is outside BASE_LIST and the classifier exempts a dependency bump, so the
+# computed tier is LOW: only the fixed declared tier holds the PR.
+LOCK_BUMP = [_file("uv.lock")]
+DEPENDABOT_HOLD = (
+    "HIGH holds until an admin human (not osasuwu-bot) leaves an APPROVED review on the "
+    "current head aaaaaaa; a new push needs a new approval. See "
+    ".github/scripts/risk_tier.md (residual risks)."
+)
+DEPENDABOT_SUMMARY = (
+    "declared HIGH (fixed: dependabot[bot] PR, body not read), computed LOW, final HIGH"
+)
+
+
+def test_a_dependabot_pr_without_a_risk_line_holds_as_high_until_an_admin_approves_at_head(
+    base,
+):
+    notes = "Bumps the python-dependencies group with 1 update: pyyaml."
+    held = _run(base, FakeGitHub(body=notes, files=LOCK_BUMP, author=DEPENDABOT))
+    assert held == (False, [DEPENDABOT_SUMMARY, DEPENDABOT_HOLD])
+    released = _run(
+        base,
+        FakeGitHub(
+            body=notes,
+            files=LOCK_BUMP,
+            author=DEPENDABOT,
+            reviews=[_review("alice", "APPROVED")],
+            permissions={"alice": "admin"},
+        ),
+    )
+    assert released == (
+        True,
+        [DEPENDABOT_SUMMARY, "released by an APPROVED review from admin alice at aaaaaaa"],
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Risk: LOW — upstream release notes",
+        "Risk: CRITICAL — upstream release notes",
+        "Risk: oops",
+        "Risk: LOW — a\nRisk: HIGH — b",
+        None,
+    ],
+    ids=["low", "critical", "malformed", "duplicate", "no body"],
+)
+def test_a_risk_line_in_a_dependabot_body_changes_nothing(base, body):
+    api = FakeGitHub(body=body, files=LOCK_BUMP, author=DEPENDABOT)
+    assert _run(base, api) == (False, [DEPENDABOT_SUMMARY, DEPENDABOT_HOLD])
+
+
+@pytest.mark.parametrize(
+    "author",
+    [("dependabot[bot]", "User"), ("renovate[bot]", "Bot"), ("dependabot", "User")],
+    ids=["dependabot login, not a Bot", "another bot", "look-alike human login"],
+)
+def test_only_the_dependabot_bot_account_skips_the_risk_line(base, author):
+    api = FakeGitHub(body="Bumps pyyaml.", files=LOCK_BUMP, author=author)
+    assert _run(base, api) == (
+        False,
+        [
+            "The PR body has a missing Risk line. Expected exactly one line "
+            f"`{GRAMMAR_LINE}` (grammar and examples: .github/scripts/risk_tier.md)."
+        ],
+    )
