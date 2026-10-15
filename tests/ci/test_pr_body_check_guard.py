@@ -9,6 +9,7 @@ re-implements the rule in Python (#1967; the mirror class is #1944).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -28,15 +29,28 @@ NO_LINK = (
 NOTICE_NO_ISSUE = "require-linked-issue bypassed: [no-issue] — fix-inline drive-by per #428."
 PASSED_NO_LOOKUP = {"failed": [], "notices": [], "lookups": []}
 BLOCKED = {"failed": [NO_LINK], "notices": [], "lookups": []}
+# D14 (#2055): the lane's machine user gets no [no-issue] / refactor: bypass.
+BOT_BLOCKED = {
+    "failed": [
+        "require-linked-issue: osasuwu-bot PRs get no [no-issue] or refactor: bypass "
+        '(D14, #2055); link an issue with "Closes #N" or "Refs #N".'
+    ],
+    "notices": [],
+    "lookups": [],
+}
 
 
-def _script() -> str:
+def _step() -> dict:
     doc = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
     return next(
-        step["with"]["script"]
+        step
         for step in doc["jobs"]["require-linked-issue"]["steps"]
         if "script" in (step.get("with") or {})
     )
+
+
+def _script() -> str:
+    return _step()["with"]["script"]
 
 
 def run(
@@ -45,7 +59,9 @@ def run(
     labels: tuple[str, ...] = (),
     author: str = "Osasuwu",
     issues: tuple[str, ...] = ("Osasuwu/jarvis#42",),
+    step_env: dict | None = None,
 ) -> dict:
+    """`step_env` replaces the step's own `env:` (read from the workflow by default)."""
     node = shutil.which("node")
     assert node, "node is not on PATH; the pytest job runs on ubuntu-latest, which ships it"
     payload = {
@@ -66,6 +82,10 @@ def run(
         encoding="utf-8",
         timeout=30,
         check=False,
+        env={
+            **{k: v for k, v in os.environ.items() if k != "LANE_BOT_LOGIN"},
+            **(_step().get("env") or {} if step_env is None else step_env),
+        },
     )
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
@@ -190,3 +210,47 @@ def test_refactor_outside_the_title_prefix_does_not_bypass():
     titles = ["Refactoring the auth module", "feat: include refactor: in description"]
     wrong = {t: r for t in titles if (r := run("body", title=t)) != BLOCKED}
     assert wrong == {}
+
+
+# --- D14 (#2055): the lane bot links an issue, always ----------------------------------------
+
+
+def test_lane_bot_gets_no_no_issue_or_refactor_bypass():
+    """AC1-3: every bypass a human may use is refused to osasuwu-bot, in any login case."""
+    cases = [
+        ("Drive-by.\n\n[no-issue]\n", "fix: x", "osasuwu-bot"),
+        ("", "fix(tests): isolate env [no-issue]", "osasuwu-bot"),
+        ("", "refactor: split foo", "osasuwu-bot"),
+        ("", "refactor(api): narrow", "Osasuwu-Bot"),
+        ("No link at all.", "feat: x", "osasuwu-bot"),
+    ]
+    wrong = {c: r for c in cases if (r := run(c[0], title=c[1], author=c[2])) != BOT_BLOCKED}
+    assert wrong == {}
+
+
+def test_lane_bot_linking_an_issue_passes_without_a_bypass_notice():
+    """AC4: the link is what passes it — the [no-issue] line and refactor: title are ignored."""
+    result = run("Closes #42\n\n[no-issue]\n", title="refactor: x", author="osasuwu-bot")
+    assert result == {"failed": [], "notices": [], "lookups": ["Osasuwu/jarvis#42"]}
+
+
+def test_lane_bot_keeps_the_priority_critical_bypass():
+    """AC6: D14 removes only the two paperwork bypasses; the hotfix label is unchanged."""
+    assert run("urgent", labels=("priority:critical",), author="osasuwu-bot") == {
+        "failed": [],
+        "notices": ["require-linked-issue bypassed: priority:critical — hotfix label present."],
+        "lookups": [],
+    }
+
+
+def test_missing_lane_bot_login_fails_closed():
+    """AC7: without the login the deny rule cannot apply, so no bypass is granted to anyone."""
+    expected = {
+        "failed": [
+            "require-linked-issue: LANE_BOT_LOGIN is empty; the step must set it so the "
+            "D14 deny rule (#2055) can apply."
+        ],
+        "notices": [],
+        "lookups": [],
+    }
+    assert run("Drive-by.\n\n[no-issue]\n", step_env={}) == expected

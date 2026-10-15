@@ -17,6 +17,10 @@ jobs:
       pull-requests: read
     steps:
       - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        # D14 (#2055): the lane's machine user is named here, not in the script, so the
+        # script's literals stay a bypass list that never names it (bot-bypass guard (c)).
+        env:
+          LANE_BOT_LOGIN: osasuwu-bot
         with:
           script: |
             const repo = { owner: context.repo.owner, repo: context.repo.repo };
@@ -31,8 +35,17 @@ jobs:
               core.notice(`require-linked-issue bypassed: ${name} — ${why}`);
             };
 
+            // D14 (#2055): the lane bot gets no [no-issue] / refactor: bypass, so an agent PR
+            // always links its issue. Without the login the deny rule cannot apply: fail closed.
+            const laneBot = (process.env.LANE_BOT_LOGIN || '').trim().toLowerCase();
+            if (!laneBot) {
+              core.setFailed('require-linked-issue: LANE_BOT_LOGIN is empty; the step must set it so the D14 deny rule (#2055) can apply.');
+              return;
+            }
+
             // Bot bypass: dependabot/renovate cannot author linked issues. Paperwork-only — pytest, gitleaks, meta-tests still gate.
             const author = (pr.user && pr.user.login) || '';
+            const isLaneBot = author.toLowerCase() === laneBot;
             if (author === 'dependabot[bot]' || author === 'renovate[bot]') {
               bypass('bot author', `${author} cannot author linked issues.`);
               return;
@@ -48,7 +61,7 @@ jobs:
             // own or as the title's last token (the squash commit title, matching the
             // commit-msg convention in .pre-commit-config.yaml, #329). Anywhere else it
             // is prose about the marker, not the directive (#1967).
-            if (/^\s*\[no-issue\]\s*$/im.test(body) || /(?:^|\s)\[no-issue\]\s*$/i.test(title)) {
+            if (!isLaneBot && (/^\s*\[no-issue\]\s*$/im.test(body) || /(?:^|\s)\[no-issue\]\s*$/i.test(title))) {
               bypass('[no-issue]', 'fix-inline drive-by per #428.');
               return;
             }
@@ -57,7 +70,7 @@ jobs:
             // bypasses the requirement. Refactors are usually structural cleanup with
             // no parent feature/bug issue; the [no-issue] marker is redundant paperwork
             // for this class. Same posture as #428 but auto-detected from title prefix.
-            if (/^refactor(\([^)]*\))?:/i.test(title)) {
+            if (!isLaneBot && /^refactor(\([^)]*\))?:/i.test(title)) {
               bypass('refactor: title prefix', 'structural cleanup without a parent issue.');
               return;
             }
@@ -78,6 +91,10 @@ jobs:
               links.set(`${owner}/${name}#${ref.issue_number}`.toLowerCase(), ref);
             }
 
+            if (links.size === 0 && isLaneBot) {
+              core.setFailed(`require-linked-issue: ${author.toLowerCase()} PRs get no [no-issue] or refactor: bypass (D14, #2055); link an issue with "Closes #N" or "Refs #N".`);
+              return;
+            }
             if (links.size === 0) {
               core.setFailed('PR body must include a linked issue reference (e.g. "Closes #123" to auto-close, or "Refs #123" to link a partial-work PR without closing), a [no-issue] line for trivial fix-inline drive-bys (#428), or the priority:critical label for hotfixes.');
               return;

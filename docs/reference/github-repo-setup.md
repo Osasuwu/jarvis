@@ -67,7 +67,7 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | Gate (check name) | Workflow | What it blocks |
 |---|---|---|
 | `code-gate` | `code-gate-verdict.yml` (evidence from `code-review.yml`) | "Review evidence" rule, see below — red unless a SHA-bound non-blocking review artifact exists or the diff is all cosmetic |
-| `require-linked-issue` | `pr-body-check.yml` | PR body has no closing keyword or `Refs` reference to an existing issue (`#N`, `owner/repo#N` or issue URL), no `[no-issue]` line (or title-final marker), no `refactor:` prefix, no `priority:critical` hotfix bypass; each bypass leaves a notice on the run |
+| `require-linked-issue` | `pr-body-check.yml` | PR body has no closing keyword or `Refs` reference to an existing issue (`#N`, `owner/repo#N` or issue URL), no `[no-issue]` line (or title-final marker), no `refactor:` prefix, no `priority:critical` hotfix bypass; each bypass leaves a notice on the run. `osasuwu-bot` PRs get no `[no-issue]` / `refactor:` bypass (D14, #2055) |
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
 | `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
