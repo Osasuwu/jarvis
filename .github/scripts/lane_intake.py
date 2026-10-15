@@ -4,7 +4,9 @@ Runs from the `intake` job of `.github/workflows/agent-dispatch.yml` on an
 `agent:dispatch` label event (decisions D6, D8, D9 in docs/decisions/2026-Q4.md).
 The label is a human's go signal, but the issue body is attacker-reachable text
 the worker will follow, so the gate binds the signal to the exact body the human
-saw and refuses anything already claimed, finished or blocked.
+saw and refuses anything already claimed, finished or blocked. It also carries the
+readiness gate: an issue with any `needs-*` label, or with no `## Acceptance criteria`
+heading in its body, is refused.
 
 On a refusal it leaves exactly one issue comment naming the rule and the worker
 does not start. On a pass it removes `agent:dispatch` and sets
@@ -28,6 +30,7 @@ dependency install, only a sparse checkout of `.github/scripts` and `agents`.
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -44,6 +47,11 @@ CLASS_LABELS = ("afk:1-auto", "afk:2-plan")
 PLAN_CLASS = "afk:2-plan"
 HUMAN_ONLY = "afk:3-human"
 NEEDS_HUMAN = "needs-human"
+NEEDS_PREFIX = "needs-"
+# Copied from scripts/delegate_predispatch_gate.py::_AC_HEADING_RE: the intake job's sparse
+# checkout has only `.github/scripts` and `agents`, so it cannot import `scripts/`, and that
+# module is orphaned — this is the one live matcher.
+AC_HEADING_RE = re.compile(r"(?m)^##\s+acceptance\s+criteria\b", re.IGNORECASE)
 IN_FLIGHT = (IN_PROGRESS, "status:review", "status:rework-in-progress")
 
 FACTS_QUERY = """
@@ -145,13 +153,32 @@ def _claimed_by_pr(facts, payload_body, bot, class2_host):
         return "claimed-by-pr", f"open PR #{facts['closing_prs'][0]} already closes this issue"
 
 
-def _needs_human(facts, payload_body, bot, class2_host):
-    # Set by the escalation job (lane_escalation.py) when a run ends without a PR; the human
-    # clears it, then re-applies `agent:dispatch`.
-    if NEEDS_HUMAN in facts["labels"]:
+def _needs_label(facts, payload_body, bot, class2_host):
+    # Every `needs-*` label blocks intake (label contract, docs/decisions/2026-Q4.md).
+    # `needs-human` keeps its own refusal: the escalation job (lane_escalation.py) sets it when
+    # a run ends without a PR, and the human clears it, then re-applies `agent:dispatch`.
+    labels = facts["labels"]
+    if NEEDS_HUMAN in labels:
         return (
             NEEDS_HUMAN,
             f"a human decides first: remove `{NEEDS_HUMAN}`, then re-apply `agent:dispatch`",
+        )
+    blocking = sorted(name for name in labels if name.startswith(NEEDS_PREFIX))
+    if blocking:
+        return (
+            "needs-label",
+            "a `needs-*` label blocks intake: resolve and remove "
+            + ", ".join(f"`{name}`" for name in blocking)
+            + ", then re-apply `agent:dispatch`",
+        )
+
+
+def _ac_missing(facts, payload_body, bot, class2_host):
+    if not AC_HEADING_RE.search(facts["body"] or ""):
+        return (
+            "ac-missing",
+            "no `## Acceptance criteria` heading in the issue body; add one, then re-apply"
+            " `agent:dispatch`",
         )
 
 
@@ -176,7 +203,8 @@ RULES = (
     _plan_lock,
     _closed,
     _claimed_by_pr,
-    _needs_human,
+    _needs_label,
+    _ac_missing,
     _in_flight,
     _blocked,
 )

@@ -375,8 +375,9 @@ def test_redispatch_after_an_escalation_needs_the_human_to_clear_the_marker(gh, 
     edit = gh.writes[0]
     after = [n for n in labels if n not in edit[edit.index("--remove-label") + 1 :]]
     after.append(edit[edit.index("--add-label") + 1])
+    body = "Do the thing.\n\n## Acceptance criteria\n\n- [ ] it works\n"
     facts = {
-        "body": "Do the thing.",
+        "body": body,
         "state": "open",
         "labels": after,
         "editors": ["Osasuwu"],
@@ -384,9 +385,9 @@ def test_redispatch_after_an_escalation_needs_the_human_to_clear_the_marker(gh, 
         "blocked_by": 0,
         "label_sender": "Osasuwu",
     }
-    assert lane_intake.check(facts, "Do the thing.", "osasuwu-bot")[0] == "needs-human"
+    assert lane_intake.check(facts, body, "osasuwu-bot")[0] == "needs-human"
     facts["labels"] = [n for n in after if n != "needs-human"]
-    assert lane_intake.check(facts, "Do the thing.", "osasuwu-bot") is None
+    assert lane_intake.check(facts, body, "osasuwu-bot") is None
 
 
 # --- watch: the PR side ---------------------------------------------------------------
