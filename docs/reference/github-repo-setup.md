@@ -351,8 +351,8 @@ in sync with that doc if either changes.
 `.github/ISSUE_TEMPLATE/` — at minimum a `task.yml` and a `bug.yml` form, plus a `config.yml`
 disabling blank issues (`blank_issues_enabled: false`) so every issue goes through a
 structured form. Match the label vocabulary from §1 in the form's default/required fields
-(e.g. an `Area` dropdown that emits `area:<x>` so `issue-checks.yml`-equivalent automation can
-read it back out of the body).
+(e.g. an `Area` dropdown that emits `area:<x>` so automation can read it back out of the
+body).
 
 ## 8. Merge discipline
 
