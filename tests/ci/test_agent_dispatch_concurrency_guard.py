@@ -25,7 +25,7 @@ so a batch of dispatches would lose its middle run with no artifact. #2011 made
 The invariant pinned here is the one the workflow has to hold, stated without
 reference to how the key is spelled: **a run joins the dispatch group if and
 only if its intake job runs** (the worker is gated on intake's output). The tests evaluate the expressions actually
-written in the workflow file (``evaluate`` below covers the subset of GitHub's
+written in the workflow file (``_gh_expr.evaluate`` covers the subset of GitHub's
 expression syntax they use), so a rewrite that keeps the behaviour passes and
 one that drops the label from the key fails.
 
@@ -37,11 +37,12 @@ test_agent_dispatch_automerge_guard.py and test_agent_dispatch_max_turns_guard.p
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
 import yaml
+
+from ._gh_expr import evaluate, evaluate_expression
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lane.yml"
@@ -51,77 +52,6 @@ OTHER_LABELS = ["status:ready", "priority:medium", "bug", "area:infrastructure"]
 
 # The key this guard exists to keep out of the workflow.
 PRE_1936_GROUP = "agent-dispatch-issue-${{ github.event.issue.number }}"
-
-_TOKEN = re.compile(
-    r"""
-    \s*(?:
-        (?P<string>'(?:[^']|'')*')
-      | (?P<number>\d+)
-      | (?P<op>&&|\|\||==|!=|!|\(|\)|,)
-      | (?P<name>[A-Za-z_][A-Za-z0-9_.-]*)
-    )
-    """,
-    re.VERBOSE,
-)
-
-
-def _gh_format(template: str, *args: object) -> str:
-    for i, arg in enumerate(args):
-        template = template.replace("{%d}" % i, str(arg))
-    return template
-
-
-def _evaluate_expression(expr: str, context: dict[str, object]) -> object:
-    """Evaluate one GitHub Actions expression (the text inside ``${{ }}``).
-
-    Covers string/number literals, dotted context lookups, ``&& || == != !``,
-    parentheses and ``format()``. ``&&``/``||`` return an operand rather than a
-    boolean in both GitHub's language and Python's, which is what makes the
-    ``cond && a || b`` idiom translate directly. Anything outside the subset
-    fails loudly: extend this function, don't route around it.
-    """
-    out: list[str] = []
-    pos = 0
-    expr = expr.strip()
-    while pos < len(expr):
-        m = _TOKEN.match(expr, pos)
-        if not m:
-            pytest.fail(f"unsupported expression syntax at {expr[pos:]!r}")
-        pos = m.end()
-        if m.group("string"):
-            out.append(repr(m.group("string")[1:-1].replace("''", "'")))
-        elif m.group("number"):
-            out.append(m.group("number"))
-        elif m.group("op"):
-            out.append({"&&": "and", "||": "or", "!": "not"}.get(m.group("op"), m.group("op")))
-        elif m.group("name") == "format":
-            out.append("format")
-        else:
-            name = m.group("name")
-            if name not in context:
-                pytest.fail(f"expression reads {name!r}, which this guard does not model")
-            out.append(repr(context[name]))
-    return eval(" ".join(out), {"__builtins__": {}, "format": _gh_format})
-
-
-def evaluate(value: object, context: dict[str, object]) -> object:
-    """Render a workflow value the way Actions does.
-
-    A value that is exactly one ``${{ }}`` keeps its type (needed for the
-    boolean ``cancel-in-progress``); otherwise each ``${{ }}`` is interpolated
-    into the surrounding text.
-    """
-    if not isinstance(value, str):
-        return value
-    whole = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", value, re.DOTALL)
-    if whole and "${{" not in whole.group(1):
-        return _evaluate_expression(whole.group(1), context)
-    return re.sub(
-        r"\$\{\{(.*?)\}\}",
-        lambda m: str(_evaluate_expression(m.group(1), context)),
-        value,
-        flags=re.DOTALL,
-    )
 
 
 def event(label: str, issue: int, run_id: int) -> dict[str, object]:
@@ -203,7 +133,7 @@ class TestGroupAndJobConditionAgree:
         # group key). If they drift, either intake runs unguarded or a skipped
         # run holds the queue.
         ctx = event(label, issue=1936, run_id=200)
-        worker_runs = bool(_evaluate_expression(str(workflow["jobs"]["intake"]["if"]), ctx))
+        worker_runs = bool(evaluate_expression(str(workflow["jobs"]["intake"]["if"]), ctx))
         worker_group = group_of(concurrency, event(DISPATCH_LABEL, issue=1936, run_id=100))
         assert (group_of(concurrency, ctx) == worker_group) is worker_runs
 

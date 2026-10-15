@@ -10,9 +10,11 @@ not the file text.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
@@ -108,11 +110,8 @@ def test_only_the_verdict_step_holds_the_app_token():
 # --- review workflow ------------------------------------------------------
 
 
-def test_review_concurrency_cancels_a_superseded_review():
-    assert REVIEW["concurrency"] == {
-        "group": "code-review-${{ github.event.pull_request.number || inputs.pr_number }}",
-        "cancel-in-progress": True,
-    }
+# Concurrency (a superseded review is cancelled, a body edit is not):
+# test_code_review_concurrency_guard.py.
 
 
 def test_review_run_name_embeds_pr_and_head_sha_for_dispatch_provenance():
@@ -141,12 +140,36 @@ def _upload_steps() -> list[dict]:
     ]
 
 
-def test_evidence_artifact_is_retained_90_days_and_overwritable():
-    (evidence,) = [s for s in _upload_steps() if s["with"]["name"] == "review-evidence"]
+EVIDENCE_UPLOAD_NAME = "review-evidence-${{ github.run_attempt }}"
+
+
+def test_evidence_artifact_is_retained_90_days_one_per_attempt():
+    """A re-run attempt uploads its own artifact and cannot overwrite an earlier
+    attempt's, so blocking evidence survives a re-run (#2024)."""
+    (evidence,) = [s for s in _upload_steps() if s["with"]["name"] == EVIDENCE_UPLOAD_NAME]
     assert evidence["with"]["retention-days"] == 90
-    assert evidence["with"]["overwrite"] is True  # a re-run of the same run must not conflict
+    assert evidence["with"]["overwrite"] is False
     assert evidence["with"]["if-no-files-found"] == "error"
     assert "if" not in evidence, "every run uploads evidence, including skipped ones"
+
+
+@pytest.mark.parametrize("attempt", ["1", "2", "17"])
+def test_uploaded_evidence_name_is_what_the_verdict_reads(attempt):
+    """The verdict only reads artifacts whose name fullmatches its pattern; an
+    upload name it does not match would read as "missing" for every run. The step
+    is found by what it uploads, not by the name under test."""
+    (evidence,) = [s for s in _upload_steps() if s["with"]["path"] == "review-evidence.json"]
+    name = evidence["with"]["name"].replace("${{ github.run_attempt }}", attempt)
+    assert _gate().EVIDENCE_ARTIFACT_NAME.fullmatch(name)
+
+
+def _gate():
+    spec = importlib.util.spec_from_file_location(
+        "code_gate_verdict", WORKFLOWS.parent / "scripts" / "code_gate_verdict.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_second_reviewer_attempt_runs_only_when_the_first_findings_are_invalid():
@@ -162,6 +185,13 @@ def test_second_reviewer_attempt_runs_only_when_the_first_findings_are_invalid()
     assert reseed["if"] == "steps.v1.outcome == 'failure'"
     assert names.index(reseed["name"]) < names.index(second["name"])
     assert "unreviewed" in reseed["run"]
+
+
+def test_resolve_step_gets_the_default_branch():
+    """resolve_run_target picks the listed PR into the default branch (#2024); the
+    step reads DEFAULT_BRANCH, so without it every workflow_run resolve fails."""
+    (step,) = [s for s in VERDICT["jobs"]["resolve"]["steps"] if s.get("id") == "resolve"]
+    assert step["env"]["DEFAULT_BRANCH"] == "${{ github.event.repository.default_branch }}"
 
 
 def test_decision_rests_on_the_findings_file_not_on_reviewer_outcome():
@@ -182,3 +212,41 @@ def test_decision_rests_on_the_findings_file_not_on_reviewer_outcome():
             "if", ""
         )
     assert "permission_denials" not in yaml.safe_dump(REVIEW)
+
+
+SCRUB = "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"
+
+
+def test_bubblewrap_is_installed_before_the_reviewer_with_the_scrub_on():
+    """#2024: the scrub needs bwrap, which the runner lacks. The install is a plain
+    step before the first reviewer attempt — a failure is a named red step, never
+    swallowed — and the scrub stays on rather than being switched off to pass."""
+    steps = REVIEW["jobs"]["review"]["steps"]
+    ids = [s.get("id") for s in steps]
+    (bwrap,) = [s for s in steps if s.get("name") == "Install subprocess isolation (bubblewrap)"]
+    at = steps.index(bwrap)
+    assert ids.index("prepare") < at < ids.index("review1")
+    assert bwrap["if"] == "steps.prepare.outputs.skip_reason == ''"
+    assert "continue-on-error" not in bwrap
+    lines = [line.strip() for line in bwrap["run"].splitlines()]
+    assert lines[0] == "set -euo pipefail"
+    (install,) = [line for line in lines if "apt-get install" in line]
+    assert "bubblewrap" in install.split()
+    assert "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" in lines
+    assert lines[-1] == "bwrap --ro-bind / / --unshare-all true"
+    assert REVIEW["jobs"]["review"]["env"][SCRUB] == "1"
+    overrides = [s.get("name") for s in steps if SCRUB in (s.get("env") or {})]
+    assert overrides == []
+
+
+_GATE_SCRIPT = re.compile(r"(\S+(?:\s+-\S+)*)\s+\.github/scripts/code_gate_verdict\.py\b")
+
+
+@pytest.mark.parametrize("spec", [REVIEW, VERDICT], ids=["code-review", "code-gate-verdict"])
+def test_every_gate_script_call_runs_isolated(spec):
+    """`python -I` keeps the script's directory and PYTHON* variables off the import
+    path, so a module the reviewer manages to write next to the script is never
+    imported by the steps that decide the evidence and the verdict (#2024)."""
+    calls = [m for body in _run_bodies(spec) for m in _GATE_SCRIPT.findall(body)]
+    assert calls, "no code_gate_verdict.py call found"
+    assert calls == ["python -I"] * len(calls)
