@@ -27,7 +27,6 @@ forged row from anyone else is ignored. Stdlib only.
 import json
 import os
 import re
-import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -216,9 +215,7 @@ def split_ref(ref):
     return (match.group(1), int(match.group(2))) if match else None
 
 
-def gh(*args):
-    result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
-    return result.stdout.strip()
+gh = lane_publish.gh  # the lane's one gh helper; it prints gh's stderr when a call fails
 
 
 def _comments(ledger_repo, ledger_issue):

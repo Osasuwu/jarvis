@@ -10,6 +10,7 @@ edit ever. `gh` is recorded, not run.
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,8 @@ def _load(name):
 
 lane_escalation = _load("lane_escalation")
 lane_intake = _load("lane_intake")
+lane_ledger = _load("lane_ledger")
+lane_publish = _load("lane_publish")
 
 REPO = "Osasuwu/jarvis"
 SHA = "a" * 40
@@ -624,3 +627,76 @@ def test_escalation_without_a_bot_login_fails_naming_the_variable(gh, monkeypatc
     assert exit_info.value.code == 1
     assert "::error::lane_escalation: LANE_BOT_LOGIN" in capsys.readouterr().out
     assert gh.writes == []
+
+
+# --- a failed gh call says why (#2057) ------------------------------------------------
+
+
+def _run_gh_as(monkeypatch, *, stdout="", stderr="", code=0):
+    """Replace the `gh` binary with a child process that prints and exits as told.
+
+    Only the command line is swapped: the flags `gh()` passes to `subprocess.run`
+    (`check`, `capture_output`, `text`) still decide what comes back.
+    """
+    real_run = subprocess.run
+    script = (
+        f"import sys; sys.stdout.write({stdout!r}); sys.stderr.write({stderr!r}); sys.exit({code})"
+    )
+    monkeypatch.setattr(
+        subprocess, "run", lambda cmd, **kw: real_run([sys.executable, "-c", script], **kw)
+    )
+
+
+GH_HELPERS = [lane_publish, lane_escalation, lane_ledger]
+
+
+@pytest.mark.parametrize("module", GH_HELPERS, ids=lambda m: m.__name__)
+def test_a_failed_gh_call_prints_its_stderr_and_still_raises(module, monkeypatch, capsys):
+    _run_gh_as(monkeypatch, stderr="HTTP 401: Bad credentials\n", code=1)
+    with pytest.raises(subprocess.CalledProcessError) as raised:
+        module.gh("pr", "list", "--repo", REPO, "--json", "number")
+    assert raised.value.returncode == 1
+    assert capsys.readouterr().err == "gh pr list exited 1:\n  HTTP 401: Bad credentials\n"
+
+
+@pytest.mark.parametrize("module", GH_HELPERS, ids=lambda m: m.__name__)
+def test_a_successful_gh_call_returns_stdout_and_prints_nothing(module, monkeypatch, capsys):
+    _run_gh_as(monkeypatch, stdout="[1]\n", stderr="a warning gh printed anyway\n", code=0)
+    assert module.gh("pr", "list") == "[1]"
+    assert capsys.readouterr().err == ""
+
+
+def test_surfaced_stderr_cannot_open_a_workflow_command(monkeypatch, capsys):
+    _run_gh_as(monkeypatch, stderr="first\n::add-mask::x\n::error::boom", code=1)
+    with pytest.raises(subprocess.CalledProcessError):
+        lane_escalation.gh("pr", "list")
+    lines = capsys.readouterr().err.splitlines()
+    assert lines == ["gh pr list exited 1:", "  first", "  ::add-mask::x", "  ::error::boom"]
+
+
+def test_the_arguments_after_the_subcommand_are_not_printed(monkeypatch, capsys):
+    _run_gh_as(monkeypatch, stderr="HTTP 403", code=1)
+    with pytest.raises(subprocess.CalledProcessError):
+        lane_escalation.gh("pr", "comment", "40", "private words", "--repo", REPO, "--body", "more")
+    assert capsys.readouterr().err == "gh pr comment 40 exited 1:\n  HTTP 403\n"
+
+
+def test_a_flag_ends_the_printed_command_words(monkeypatch, capsys):
+    _run_gh_as(monkeypatch, stderr="HTTP 403", code=1)
+    with pytest.raises(subprocess.CalledProcessError):
+        lane_escalation.gh("pr", "--repo", REPO, "list")
+    assert capsys.readouterr().err == "gh pr exited 1:\n  HTTP 403\n"
+
+
+def test_watch_with_a_rejected_token_shows_the_reason_in_the_log(monkeypatch, capsys):
+    _run_gh_as(monkeypatch, stderr="HTTP 401: Bad credentials", code=1)
+    with pytest.raises(subprocess.CalledProcessError):
+        lane_escalation.watch(
+            {
+                "GH_REPO": REPO,
+                "LANE_OPERATOR": "Osasuwu",
+                "LANE_BOT_LOGIN": "osasuwu-bot",
+                "LANE_WATCHED_CHECKS": WATCHED,
+            }
+        )
+    assert capsys.readouterr().err == "gh pr list exited 1:\n  HTTP 401: Bad credentials\n"
