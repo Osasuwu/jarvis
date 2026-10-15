@@ -79,8 +79,7 @@ def _bash(command: str) -> subprocess.CompletedProcess:
 # `cat` plus a later mention of an env file in the same tool call was blocked.
 ENV_MENTION_NOT_READ = [
     'cat README.md\ngh issue create --title "no .env reads"',
-    "cat > b.md <<'EOF'\nbody\nEOF\n"
-    'gh issue create --title "x: .env* not read" --body-file b.md',
+    "cat > b.md <<'EOF'\nbody\nEOF\ngh issue create --title \"x: .env* not read\" --body-file b.md",
     "cat a.txt && echo .env",
 ]
 
