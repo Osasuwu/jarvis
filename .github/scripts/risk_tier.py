@@ -23,17 +23,17 @@ Verdict, in order:
 
 Stdlib plus `agents.plan_classifier` / `agents.plan_review_config` (PyYAML) and
 `agents.path_policy` (the protected-list reader and its glob dialect, #2067), all read from
-the pinned code root.
+the pinned code root, and the shared GitHub client `github_client.py` beside this script
+(#2068), loaded by file path at import.
 """
 
 import collections
 import fnmatch
-import json
+import importlib.util
 import os
 import re
 import sys
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 CODE_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +42,24 @@ sys.path.insert(0, str(CODE_ROOT))
 from agents.plan_classifier import ChangeSet, classify, prod_areas_from_paths  # noqa: E402
 from agents.plan_review_config import load_plan_review_config  # noqa: E402
 from agents import path_policy  # noqa: E402
+
+
+def _load_client():
+    """`github_client.py` beside this script, shared through `sys.modules` so that
+    `ListingTruncated` is one class within the process."""
+    name = "_jarvis_github_client"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().with_name("github_client.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+github_client = _load_client()
 
 SEVERITY = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 HOLD_TIERS = ("HIGH", "CRITICAL")
@@ -52,6 +70,10 @@ HOST_SETUP_DOC = "docs/reference/lane-host-setup.md"
 # its declared tier is fixed (#2059). HIGH: only an admin's head-SHA approval releases it.
 DEPENDABOT = "dependabot[bot]"
 DEPENDABOT_TIER = "HIGH"
+# Listing caps (#2068). Files: GitHub serves at most 3000 per PR. A listing that
+# reaches its cap fails closed, never reads as whole.
+MAX_FILE_PAGES = 30
+MAX_REVIEW_PAGES = 10
 
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
@@ -240,20 +262,15 @@ def computed_tier(files, changed_files, repo, host_root, code_root=CODE_ROOT):
     return max(tiers or ["LOW"], key=SEVERITY.index), reasons
 
 
-def _paged(api, path):
-    items, page = [], 1
-    while True:
-        batch = api(f"{path}?per_page=100&page={page}")
-        items.extend(batch)
-        if len(batch) < 100:
-            return items
-        page += 1
-
-
 def releasing_reviewer(api, repo, number, head_sha, bot):
-    """The login of an admin human whose latest review is APPROVED at `head_sha`, or None."""
+    """The login of an admin human whose latest review is APPROVED at `head_sha`, or None.
+
+    A reviews listing past its cap raises `ListingTruncated` to the caller."""
     latest = {}
-    for review in _paged(api, f"repos/{repo}/pulls/{number}/reviews"):
+    reviews = github_client.paged(
+        api, f"repos/{repo}/pulls/{number}/reviews", max_pages=MAX_REVIEW_PAGES
+    )
+    for review in reviews:
         user = review.get("user") or {}
         if review.get("state") == "COMMENTED" or not user.get("login"):
             continue
@@ -264,7 +281,9 @@ def releasing_reviewer(api, repo, number, head_sha, bot):
         if (review["user"].get("type") == "Bot") or login.lower() == bot.lower():
             continue
         try:
-            permission = api(f"repos/{repo}/collaborators/{urllib.parse.quote(login)}/permission")
+            permission = api(
+                "GET", f"repos/{repo}/collaborators/{urllib.parse.quote(login)}/permission"
+            )
         except Exception as exc:  # an unreadable permission is not an admin
             print(f"::warning::permission lookup for {login} failed: {exc}")
             continue
@@ -274,8 +293,9 @@ def releasing_reviewer(api, repo, number, head_sha, bot):
 
 
 def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_ROOT):
-    """`(ok, messages)` for one PR. `api(path)` GETs a JSON document from the GitHub API."""
-    pr = api(f"repos/{repo}/pulls/{number}")
+    """`(ok, messages)` for one PR. `api` is a `github_client.Client`: `api("GET", path)`
+    returns a JSON document from the GitHub API."""
+    pr = api("GET", f"repos/{repo}/pulls/{number}")
     head = pr["head"]["sha"]
     if head != event_head_sha:
         return False, [
@@ -292,17 +312,31 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
             f"The PR body has a {problem} Risk line. Expected exactly one line `{GRAMMAR}` "
             f"(grammar and examples: {DOC})."
         ]
-    files = _paged(api, f"repos/{repo}/pulls/{number}/files")
+    truncated = None
+    try:
+        files = github_client.paged(
+            api, f"repos/{repo}/pulls/{number}/files", max_pages=MAX_FILE_PAGES
+        )
+    except github_client.ListingTruncated as exc:
+        files, truncated = exc.items, f"files listing truncated at {MAX_FILE_PAGES} pages"
     computed, reasons = computed_tier(
         files, pr.get("changed_files", len(files)), repo, host_root, code_root
     )
+    if truncated:  # what went unread could be any path: a hold tier, CRITICAL still reachable
+        computed = max(computed, "HIGH", key=SEVERITY.index)
+        reasons.append(truncated)
     final = max(declared, computed, key=SEVERITY.index)
     summary = f"declared {declared}{note}, computed {computed}, final {final}" + "".join(
         f"\n  - {r}" for r in reasons
     )
     if final not in HOLD_TIERS:
         return True, [summary]
-    releaser = releasing_reviewer(api, repo, number, head, bot)
+    unread = []
+    try:
+        releaser = releasing_reviewer(api, repo, number, head, bot)
+    except github_client.ListingTruncated:  # an unread review cannot release
+        releaser = None
+        unread = [f"reviews listing truncated at {MAX_REVIEW_PAGES} pages"]
     if releaser:
         return True, [
             summary,
@@ -310,25 +344,17 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
         ]
     return False, [
         summary,
+        *unread,
         f"{final} holds until an admin human (not {bot}) leaves an APPROVED review on the "
         f"current head {head[:7]}; a new push needs a new approval. See {DOC} (residual risks).",
     ]
 
 
-def _github_get(path):
-    req = urllib.request.Request(
-        f"https://api.github.com/{path}",
-        headers={
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read())
+def _make_client(token):
+    return github_client.Client(token, user_agent="risk-tier")
 
 
-def main():
+def main(make_client=None):
     bot = os.environ.get("LANE_BOT_LOGIN", "")
     if not bot:
         print(
@@ -337,8 +363,9 @@ def main():
         )
         sys.exit(1)
     host_root = os.environ.get("RISK_TIER_HOST_ROOT")
+    client = (make_client or _make_client)(os.environ["GITHUB_TOKEN"])
     ok, messages = evaluate(
-        _github_get,
+        client,
         os.environ["GITHUB_REPOSITORY"],
         os.environ["PR_NUMBER"],
         os.environ["HEAD_SHA"],

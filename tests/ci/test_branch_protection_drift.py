@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ._github_fake import FakeApi
+
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 _spec = importlib.util.spec_from_file_location(
     "branch_protection_drift", _root / ".github" / "scripts" / "branch_protection_drift.py"
@@ -144,6 +146,29 @@ def test_run_exits_zero_when_in_step(capsys):
     doc = '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n'
     assert drift.run(doc, lambda: live) == 0
     assert capsys.readouterr().out == "No drift: 1 required checks match the documented binding.\n"
+
+
+def test_main_reads_the_default_branch_with_the_job_token_and_exits_on_drift(
+    monkeypatch, tmp_path, capsys
+):
+    doc = tmp_path / "binding.md"
+    doc.write_text(
+        '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
+        encoding="utf-8",
+    )
+    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": None})})
+    tokens = []
+    for key, value in {
+        "GITHUB_REPOSITORY": "owner/repo",
+        "DEFAULT_BRANCH": "main",
+        "GH_TOKEN": "t0ken",
+        "BINDING_DOC": str(doc),
+    }.items():
+        monkeypatch.setenv(key, value)
+    assert drift.main(make_client=lambda token: tokens.append(token) or api) == 1
+    assert tokens == ["t0ken"]
+    assert api.calls == [("GET", "repos/owner/repo/branches/main", None)]
+    assert "code-gate: documented app_id 3969106, live None" in capsys.readouterr().out
 
 
 def test_the_probe_runs_unattended_on_a_schedule_and_on_demand():

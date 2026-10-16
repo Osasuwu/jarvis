@@ -10,14 +10,34 @@ merge gate; this probe is what notices.
 The branch object (`GET /repos/{owner}/{repo}/branches/{branch}`) carries the protection
 settings for any token that can read the repo, so the probe needs no admin credential.
 
-Stdlib only: the job needs no dependency install.
+Stdlib only: the job needs no dependency install. The branch is read through the shared
+client `github_client.py` beside this script (#2068), loaded by file path at import.
 """
 
+import importlib.util
 import json
 import os
 import re
 import sys
-import urllib.request
+from pathlib import Path
+
+
+def _load_client():
+    """`github_client.py` beside this script, shared through `sys.modules` so that
+    `ListingTruncated` is one class within the process."""
+    name = "_jarvis_github_client"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().with_name("github_client.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+github_client = _load_client()
 
 MARKER = "<!-- required-checks-binding -->"
 _BLOCK = re.compile(re.escape(MARKER) + r"\s*```json\s*\n(.*?)\n```", re.DOTALL)
@@ -85,24 +105,16 @@ def run(doc_text, fetch_branch):
     return 0
 
 
-def _fetch_branch():
+def _make_client(token):
+    return github_client.Client(token, user_agent="branch-protection-drift")
+
+
+def main(make_client=None):
     repo = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ["DEFAULT_BRANCH"]
-    request = urllib.request.Request(
-        f"https://api.github.com/repos/{repo}/branches/{branch}",
-        headers={
-            "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
-
-
-def main():
+    client = (make_client or _make_client)(os.environ["GH_TOKEN"])
     with open(os.environ.get("BINDING_DOC", DEFAULT_DOC), encoding="utf-8") as doc:
-        return run(doc.read(), _fetch_branch)
+        return run(doc.read(), lambda: client("GET", f"repos/{repo}/branches/{branch}"))
 
 
 if __name__ == "__main__":

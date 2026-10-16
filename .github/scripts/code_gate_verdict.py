@@ -30,7 +30,8 @@ artifact's own `sha` and `base_ref` must equal the evaluated SHA and the PR's
 base: a mismatch is red.
 
 Gate machinery. A PR touching the review workflow, the verdict workflow, this
-script, a local action, the protected-path list or its reader is always red: its
+script, its GitHub client, a local action, the protected-path list or its reader
+is always red: its
 own review cannot be trusted, since it is the thing under change. The set is the
 `gate` bucket of the base repo's entry in `config/protected-paths.json`, matched by
 `agents/path_policy.py` (#2067); both are read from this script's own checkout. The sanctioned unblock is a human review-blind
@@ -38,10 +39,11 @@ admin-merge (`~/.claude/reference/merge-gates.md`) backed by a fresh-session
 `/code-review` posted with the final SHA.
 
 Every decision below is a pure function over plain dicts and lists; the API
-access (`Api`, `gather_entries`, `post_check`) is a thin wrapper around them.
-Stdlib only: the jobs need no dependency install. `verdict` alone loads
-`agents/path_policy.py` (stdlib too) by file path; every other subcommand runs from
-the script alone.
+access (`gather_entries`, `post_check`) is a thin wrapper around them, over the
+shared client `github_client.py` beside this script (#2068).
+Stdlib only: the jobs need no dependency install. `prepare` and `verdict` load
+`github_client.py`, and `verdict` also `agents/path_policy.py` (stdlib too), by file
+path from this script's checkout; every other subcommand runs from the script alone.
 """
 
 import argparse
@@ -55,16 +57,13 @@ import importlib.util
 import re
 import subprocess
 import sys
-import time
 import urllib.error
 import urllib.parse
-import urllib.request
 import zipfile
 import zlib
 from pathlib import Path
 from typing import NamedTuple
 
-API_ROOT = "https://api.github.com"
 REVIEW_WORKFLOW = ".github/workflows/code-review.yml"
 CHECK_NAME = "code-gate"
 EVIDENCE_ARTIFACT = "review-evidence"
@@ -587,59 +586,26 @@ def evaluate_pr(pr, files, entries, default_branch):
 # --- GitHub API wrapper ---------------------------------------------------
 
 
-class Api:
-    def __init__(self, token, sleep=time.sleep):
-        self._token = token
-        self._sleep = sleep
+def _github_client():
+    """The shared client module, `github_client.py` beside this script.
 
-    def _headers(self):
-        return {
-            "Authorization": f"Bearer {self._token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "code-gate-verdict",
-        }
+    Loaded by file path on first use, from the API code paths only, so the
+    subcommands that make no API call (`validate`, `check-tree`, `stamp`, `skip`,
+    `resolve`) still run from this script alone under `python -I`."""
+    name = "_jarvis_github_client"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().with_name("github_client.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
-    def __call__(self, method, path, body=None, attempts=3):
-        headers = self._headers()
-        data = None
-        if body is not None:
-            data = json.dumps(body).encode()
-            headers["Content-Type"] = "application/json"
-        for attempt in range(1, attempts + 1):
-            req = urllib.request.Request(
-                f"{API_ROOT}/{path}", data=data, method=method, headers=headers
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    raw = resp.read()
-                    return json.loads(raw) if raw else {}
-            except urllib.error.HTTPError as exc:
-                if exc.code in (502, 503, 504) and attempt < attempts:
-                    self._sleep(2**attempt)
-                    continue
-                raise
 
-    def download(self, path):
-        """A zip behind a redirect: the signed blob URL must not see our token."""
-
-        class _Stop(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *args, **kwargs):
-                return None
-
-        req = urllib.request.Request(f"{API_ROOT}/{path}", headers=self._headers())
-        try:
-            with urllib.request.build_opener(_Stop).open(req, timeout=60) as resp:
-                return read_capped(resp)
-        except urllib.error.HTTPError as exc:
-            location = (
-                exc.headers.get("Location") if exc.code in (301, 302, 303, 307, 308) else None
-            )
-            if not location or not location.startswith("https://"):
-                raise
-        bare = urllib.request.Request(location, headers={"User-Agent": "code-gate-verdict"})
-        with urllib.request.urlopen(bare, timeout=60) as resp:
-            return read_capped(resp)
+def _make_client(token):
+    return _github_client().Client(token, user_agent="code-gate-verdict")
 
 
 class UnreadableArtifact(Exception):
@@ -657,38 +623,6 @@ def read_capped(resp, limit=MAX_ARTIFACT_BYTES):
     if expected.isdigit() and int(expected) != len(body):
         raise UnreadableArtifact(f"artifact body is {len(body)} of {expected} bytes")
     return body
-
-
-class ListingTruncated(RuntimeError):
-    """A listing the verdict depends on did not end within its page cap (#2076).
-
-    `items` holds what was read; it is not the whole list."""
-
-    def __init__(self, path, max_pages, per_page, items):
-        super().__init__(
-            f"listing {path} truncated: its last allowed page ({max_pages} of "
-            f"{per_page}) was full, so it may go on unread"
-        )
-        self.items = items
-
-
-def paged(api, path, key=None, per_page=100, max_pages=10):
-    """All items of a paginated list endpoint.
-
-    A listing whose last allowed page is still full raises `ListingTruncated`
-    rather than be handed on as whole: what it leaves unread could be the one
-    item that decides the verdict. A page past the cap is not probed, since an
-    endpoint that stops serving at a result limit (the runs API, 1000) would read
-    empty there and look complete."""
-    joiner = "&" if "?" in path else "?"
-    items = []
-    for page in range(1, max_pages + 1):
-        data = api("GET", f"{path}{joiner}per_page={per_page}&page={page}")
-        batch = data[key] if key else data
-        items.extend(batch)
-        if len(batch) < per_page:
-            return items
-    raise ListingTruncated(path, max_pages, per_page, items)
 
 
 def truncated_verdict(exc):
@@ -720,7 +654,9 @@ def fetch_pr_snapshot(api, repo, number, before=None):
     """
     if before is None:
         before = api("GET", f"repos/{repo}/pulls/{number}")
-    files = paged(api, f"repos/{repo}/pulls/{number}/files", max_pages=MAX_FILE_PAGES)
+    files = _github_client().paged(
+        api, f"repos/{repo}/pulls/{number}/files", max_pages=MAX_FILE_PAGES
+    )
     after = api("GET", f"repos/{repo}/pulls/{number}")
     if before["head"]["sha"] != after["head"]["sha"]:
         raise HeadMovedError("PR head moved while its files were being read")
@@ -830,7 +766,8 @@ def load_entries(api, repo, run):
     if run.get("status") != "completed" or run.get("conclusion") == "action_required":
         return [bare]
     by_attempt = {}
-    for a in paged(api, f"repos/{repo}/actions/runs/{run['id']}/artifacts", key="artifacts"):
+    listing = f"repos/{repo}/actions/runs/{run['id']}/artifacts"
+    for a in _github_client().paged(api, listing, key="artifacts"):
         m = EVIDENCE_ARTIFACT_NAME.fullmatch(a.get("name") or "")
         if m:
             by_attempt.setdefault(int(m.group(1)), []).append(a)
@@ -856,7 +793,7 @@ def load_entries(api, repo, run):
         for a in live:
             try:
                 artifact = read_evidence_zip(
-                    api.download(f"repos/{repo}/actions/artifacts/{a['id']}/zip")
+                    api.download(f"repos/{repo}/actions/artifacts/{a['id']}/zip", read_capped)
                 )
             except (OSError, http.client.HTTPException, UnreadableArtifact):
                 # URLError/HTTPError, a timeout, a reset, a cut-off or corrupt body:
@@ -880,7 +817,10 @@ def gather_entries(api, repo, pr_number, head_sha, default_branch, pr_created_at
     )
     seen = {}
     for q in queries:
-        for run in paged(api, f"{base}?{q}", key="workflow_runs", max_pages=MAX_RUN_PAGES):
+        runs = _github_client().paged(
+            api, f"{base}?{q}", key="workflow_runs", max_pages=MAX_RUN_PAGES
+        )
+        for run in runs:
             seen[run["id"]] = run
     entries = []
     for run in seen.values():
@@ -952,13 +892,13 @@ def post_check(api, repo, head_sha, verdict, app_id, observation=None):
     Returns (how, the verdict posted)."""
     truncated = None
     try:
-        existing = paged(
+        existing = _github_client().paged(
             api,
             f"repos/{repo}/commits/{head_sha}/check-runs?check_name={CHECK_NAME}&filter=all",
             key="check_runs",
             max_pages=MAX_CHECK_PAGES,
         )
-    except ListingTruncated as exc:
+    except _github_client().ListingTruncated as exc:
         # A check of ours (and its sticky red) could sit past the cap: what was
         # read goes red, and a new red check is posted below.
         existing, truncated = exc.items, exc
@@ -1092,7 +1032,7 @@ def _summary(text):
 def cmd_prepare(args):
     """Review job: snapshot the PR, decide skip/review, stage head content."""
     repo = os.environ["GITHUB_REPOSITORY"]
-    api = Api(os.environ["GH_TOKEN"])
+    api = args.make_client(os.environ["GH_TOKEN"])
     try:
         pr, files = snapshot_review_target(
             api,
@@ -1191,10 +1131,10 @@ def cmd_resolve(_args):
     return 0
 
 
-def cmd_verdict(_args):
+def cmd_verdict(args):
     repo = os.environ["GITHUB_REPOSITORY"]
     head_sha = os.environ["HEAD_SHA"]
-    read = Api(os.environ["GH_TOKEN"])
+    read = args.make_client(os.environ["GH_TOKEN"])
     number = int(os.environ["PR_NUMBER"])
     failure = None
     observation = None
@@ -1209,7 +1149,7 @@ def cmd_verdict(_args):
             # PR into the default branch that shares the head (#2024).
             print(f"PR is into {pr['base']['ref']}, not {default_branch}; no verdict to post")
             return 0
-        open_prs = paged(
+        open_prs = _github_client().paged(
             read,
             f"repos/{repo}/pulls?state=open&base={urllib.parse.quote(default_branch)}",
             max_pages=MAX_PR_PAGES,
@@ -1222,7 +1162,7 @@ def cmd_verdict(_args):
     except HeadMovedError:
         print("PR head moved while its files were being read; the newer SHA has its own evaluation")
         return 0
-    except ListingTruncated as exc:
+    except _github_client().ListingTruncated as exc:
         failure = exc
         verdict = truncated_verdict(exc)
     except Exception as exc:
@@ -1238,7 +1178,7 @@ def cmd_verdict(_args):
     # The ledger (see `apply_ledger`) is read and written even on a crash: a
     # verdict-error must not erase a sticky red.
     how, verdict = post_check(
-        Api(os.environ["GATE_TOKEN"]),
+        args.make_client(os.environ["GATE_TOKEN"]),
         repo,
         head_sha,
         verdict,
@@ -1276,6 +1216,7 @@ def main(argv=None):
     p.set_defaults(fn=cmd_skip)
     sub.add_parser("resolve").set_defaults(fn=cmd_resolve)
     sub.add_parser("verdict").set_defaults(fn=cmd_verdict)
+    parser.set_defaults(make_client=_make_client)
     args = parser.parse_args(argv)
     return args.fn(args)
 

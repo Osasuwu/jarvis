@@ -22,7 +22,8 @@ Rows that changed with the move, each a drift fix #2067 names: `supabase` (bare)
 1 -> 2; `config/repos.conf` to_tickets none -> guarded and path_tier LOW -> HIGH;
 `agents/plan_lock.py` and `agents/path_policy.py` path_tier LOW -> HIGH; gate machinery for
 `.github/actions` (bare), `agents/path_policy.py` and `config/protected-paths.json`
-False -> True.
+False -> True. Added since: `.github/scripts/github_client.py`, which the verdict job
+executes, joined the gate bucket (#2068).
 """
 
 from __future__ import annotations
@@ -101,6 +102,7 @@ EXPECTED = {
     ".github/workflows/code-review.yml": (NONE, NONE, "HIGH", "LOW", 1, True),
     ".github/workflows/code-gate-verdict.yml": (NONE, NONE, "HIGH", "LOW", 1, True),
     ".github/scripts/code_gate_verdict.py": (NONE, NONE, "HIGH", "LOW", 1, True),
+    ".github/scripts/github_client.py": (NONE, NONE, "HIGH", "LOW", 1, True),
     ".github/actions/sub/f.py": (NONE, NONE, "HIGH", "LOW", 1, True),
     ".github/actions": (NONE, NONE, "HIGH", "LOW", 1, True),
     # outside every list today

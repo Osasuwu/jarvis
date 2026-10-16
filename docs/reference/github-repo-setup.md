@@ -125,7 +125,9 @@ Two workflows, split so a PR can never change the rule that judges it:
   — it reverses #1850's wholesale `git`/`gh` grants, which admitted `git config`/`-c`/`grep -O`.
   The allow/deny patterns steer; they are not a boundary (the harness matches command text). Every
   `code_gate_verdict.py` call runs as `python -I`, so a module written next to the script is never
-  imported.
+  imported. `prepare` and `verdict` also load `github_client.py` (the shared GitHub client) by
+  file path from the same checkout as the script; `validate`/`check-tree`/`stamp` load nothing
+  beside the script.
 - **`code-gate-verdict.yml` decides.** Triggered by `pull_request_target` and by a `workflow_run`
   hook on "Code Review", it runs from the default branch, checks out only `.github/scripts`
   there, and never touches PR code. The `osasuwu-ci` GitHub App (key in the
@@ -215,8 +217,9 @@ Renames and deletes are judged on both paths.
 **Always red, never skipped:** draft PRs ("draft"); fork and Dependabot PRs until a maintainer
 dispatches the review (`workflow_dispatch` with `pr_number` + `head_sha`, run in the
 `untrusted-review` environment — red message carries the remediation); and PRs touching the
-gate machinery (`code-review.yml`, `code-gate-verdict.yml`, `code_gate_verdict.py`, local
-actions), which merge only through the review-blind admin-merge carve-out in
+gate machinery (`code-review.yml`, `code-gate-verdict.yml`, `code_gate_verdict.py`,
+`github_client.py`, local actions, `agents/path_policy.py`, `config/protected-paths.json`),
+which merge only through the review-blind admin-merge carve-out in
 `~/.claude/reference/merge-gates.md`, backed by a fresh-session `/code-review` posted against
 the final SHA.
 
@@ -266,7 +269,8 @@ optional third, below):
   and `guarded` floors.
 - **`gate`** (jarvis only today) — the code-review gate's own machinery. `code_gate_verdict.py`
   reads it and posts a `gate-machinery` red for any PR touching it; `risk-tier` floors it at
-  HIGH like any other bucket.
+  HIGH like any other bucket. It holds `.github/scripts/github_client.py` too, since the
+  verdict job executes it (#2068).
 
 Every reader matches these globs through `agents/path_policy.py`, whose docstring defines the
 dialect (case-insensitive; `x/**` also matches bare `x`) (#2067).

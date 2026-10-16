@@ -26,6 +26,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ._github_fake import FakeApi
+
 _ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = _ROOT / ".github" / "workflows" / "waiting-human-review.yml"
 
@@ -153,34 +155,40 @@ def test_is_non_human_names_the_bot_apps_and_the_unknown():
 
 
 def _run_main(monkeypatch, tmp_path, pr, events, event, post_error=None, bot_login=None):
-    """Drive `main()` with a fake API; return (exit code, recorded POSTs)."""
-    posts = []
+    """Drive `main()` with the shared fake API; return (exit code, recorded POSTs)."""
 
-    def fake_request(method, path, body=None):
-        if method == "POST":
-            posts.append((path, body))
-            if post_error:
-                raise post_error
-            return None
-        if path == "repos/owner/repo/pulls/7":
-            return pr
-        if path.startswith("repos/owner/repo/issues/7/events"):
-            if isinstance(events, Exception):
-                raise events
-            page = int(path.rsplit("page=", 1)[1])
-            return events[(page - 1) * 100 : page * 100]
-        raise AssertionError(f"unexpected {method} {path}")
+    def pr_route(method, path, body):
+        if path != "repos/owner/repo/pulls/7":
+            return AssertionError(f"unexpected {method} {path}")
+        return pr
 
+    def events_route(method, path, body):
+        if isinstance(events, Exception):
+            return events
+        page = int(path.rsplit("page=", 1)[1])
+        return events[(page - 1) * 100 : page * 100]
+
+    api = FakeApi(
+        {
+            "repos/owner/repo/pulls/7": pr_route,
+            "repos/owner/repo/issues/7/events?": events_route,
+        },
+        writes={"repos/owner/repo/issues/7/labels": post_error or {}},
+    )
+    tokens = []
     path = tmp_path / "event.json"
     path.write_text(json.dumps(event), encoding="utf-8")
-    monkeypatch.setattr(whr, "_request", fake_request)
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
     monkeypatch.setenv("PR_NUMBER", "7")
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(path))
     monkeypatch.delenv("LANE_BOT_LOGIN", raising=False)
     if bot_login:
         monkeypatch.setenv("LANE_BOT_LOGIN", bot_login)
-    return whr.main(), posts
+    code = whr.main(make_client=lambda token: tokens.append(token) or api)
+    assert tokens == ["t0ken"]
+    posts = [(p, b) for m, p, b in api.calls if m == "POST"]
+    return code, posts
 
 
 def test_main_reapplies_the_label_after_a_bot_release_and_stays_red(monkeypatch, tmp_path):
@@ -234,29 +242,6 @@ def test_main_is_red_when_the_api_times_out(monkeypatch, tmp_path):
     )
     assert code == 1
     assert posts == []
-
-
-def test_request_sets_a_timeout(monkeypatch):
-    seen = {}
-
-    class _Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return b"{}"
-
-    def fake_urlopen(req, timeout=None):
-        seen["timeout"] = timeout
-        return _Resp()
-
-    monkeypatch.setenv("GITHUB_TOKEN", "x")
-    monkeypatch.setattr(whr.urllib.request, "urlopen", fake_urlopen)
-    whr._request("GET", "repos/owner/repo/pulls/7")
-    assert seen["timeout"] == 30
 
 
 def test_the_bot_login_matches_regardless_of_case():
