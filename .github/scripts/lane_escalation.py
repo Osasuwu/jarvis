@@ -58,9 +58,7 @@ _WORD = re.compile(r"^[a-z_]+$")
 _BACKTICKS = re.compile(r"`+")
 
 
-def gh(*args):
-    result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
-    return result.stdout.strip()
+gh = lane_publish.gh  # the lane's one gh helper; it prints gh's stderr when a call fails
 
 
 def operator_handle(raw):

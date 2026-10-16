@@ -86,7 +86,24 @@ def git(*args, cwd=None):
 
 
 def gh(*args):
-    result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
+    """Run `gh`, return its stdout; on failure print why to stderr, then re-raise (#2057).
+
+    The lane scripts share this helper: `capture_output` hides gh's own message, so a
+    rejected token or a missing permission ended as a bare `CalledProcessError`. Only the
+    leading words of the command are printed (its arguments carry comment bodies), and each
+    stderr line is indented so the runner cannot read one as a workflow command (`::...`).
+    """
+    try:
+        result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        words = []
+        for arg in args[:3]:
+            if arg.startswith("-"):
+                break
+            words.append(arg)
+        reason = "".join(f"  {line}\n" for line in (exc.stderr or "").splitlines())
+        print(f"gh {' '.join(words)} exited {exc.returncode}:\n{reason}", end="", file=sys.stderr)
+        raise
     return result.stdout.strip()
 
 
