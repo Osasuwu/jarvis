@@ -153,6 +153,17 @@ def test_evidence_artifact_is_retained_90_days_one_per_attempt():
     assert "if" not in evidence, "every run uploads evidence, including skipped ones"
 
 
+def test_evidence_upload_is_the_review_jobs_last_step():
+    """The verdict reads an attempt that succeeded but left no listed artifact as
+    one whose evidence was deleted, sticky `evidence-unobserved` (#2062). That holds
+    only while a successful attempt is one that reached the upload: a step after it
+    could fail an attempt that did upload, one before it could not skip it."""
+    (job,) = [j for j in REVIEW["jobs"].values() if any(s in _upload_steps() for s in j["steps"])]
+    last = job["steps"][-1]
+    assert last["with"]["name"] == EVIDENCE_UPLOAD_NAME
+    assert "if" not in last
+
+
 @pytest.mark.parametrize("attempt", ["1", "2", "17"])
 def test_uploaded_evidence_name_is_what_the_verdict_reads(attempt):
     """The verdict only reads artifacts whose name fullmatches its pattern; an
