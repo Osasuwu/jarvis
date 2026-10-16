@@ -12,13 +12,16 @@ _spec = importlib.util.spec_from_file_location(
 lane_intake = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lane_intake)
 
-PAYLOAD_BODY = "Do the thing."
+PAYLOAD_BODY = "Do the thing.\n\n## Acceptance criteria\n\n- [ ] it works\n"
 BOT = "osasuwu-bot"
 
 # sha256 of the canonical steps "- step one\n- step two", worked out independently of
 # agents.plan_lock.
 _PLAN_LOCK = "035a13d652a610f5cf65f81c9136c91c5f07bf2a17be43c95a5af0d1fd8ac218"
-LOCKED_BODY = f"Do the thing.\n\n## Plan\n\n- step one\n- step two\n\nlock: {_PLAN_LOCK}\n"
+LOCKED_BODY = (
+    "Do the thing.\n\n## Acceptance criteria\n\n- [ ] it works\n\n"
+    f"## Plan\n\n- step one\n- step two\n\nlock: {_PLAN_LOCK}\n"
+)
 
 
 def _facts(**over):
@@ -138,7 +141,9 @@ def test_body_edited_after_label_is_refused():
 
 
 def test_empty_payload_body_matches_empty_live_body():
-    assert lane_intake.check(_facts(body=""), None, BOT) is None
+    # The empty live body matches the `None` payload (it gets past `body-changed`) and is then
+    # refused for having no acceptance-criteria heading.
+    assert lane_intake.check(_facts(body=""), None, BOT)[0] == "ac-missing"
 
 
 def test_bot_edit_in_history_is_refused():
@@ -189,6 +194,60 @@ def test_needs_human_issue_is_refused_until_the_human_clears_it():
 def test_needs_human_is_named_ahead_of_a_stale_in_flight_status():
     refusal = _check(labels=["afk:1-auto", "status:in-progress", "needs-human"])
     assert refusal[0] == "needs-human"
+
+
+# `needs-*` blocks intake: label contract in docs/decisions/2026-Q4.md (#2039).
+def test_needs_star_label_is_refused_naming_it():
+    assert _check(labels=["afk:1-auto", "agent:dispatch", "needs-grill"]) == (
+        "needs-label",
+        "a `needs-*` label blocks intake: resolve and remove `needs-grill`, then re-apply"
+        " `agent:dispatch`",
+    )
+
+
+def test_every_needs_star_label_is_named_in_sorted_order():
+    assert _check(labels=["afk:1-auto", "needs-research", "needs-grill"]) == (
+        "needs-label",
+        "a `needs-*` label blocks intake: resolve and remove `needs-grill`, `needs-research`,"
+        " then re-apply `agent:dispatch`",
+    )
+
+
+def test_a_label_only_containing_needs_is_not_a_needs_label():
+    assert _check(labels=["afk:1-auto", "area:needs-x"]) is None
+
+
+# An issue must carry `## Acceptance criteria` to enter the lane (#2039).
+def _check_body(body):
+    """An `afk:1-auto` issue whose live body equals the body the human labelled."""
+    return lane_intake.check(_facts(body=body), body, BOT)
+
+
+def test_issue_without_an_acceptance_criteria_heading_is_refused():
+    assert _check_body("Do the thing.") == (
+        "ac-missing",
+        "no `## Acceptance criteria` heading in the issue body; add one, then re-apply"
+        " `agent:dispatch`",
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Issue-form bodies (.github/ISSUE_TEMPLATE/task.yml) render this level-3 heading;
+        # the contract names `## Acceptance criteria`, so they are refused by design.
+        "### Acceptance Criteria\n\n- [ ] x\n",
+        "Acceptance criteria:\n- [ ] x\n",
+        "## Acceptance\n\n- [ ] x\n",
+    ],
+)
+def test_ac_text_that_is_not_a_level_two_heading_is_refused(body):
+    assert _check_body(body)[0] == "ac-missing"
+
+
+def test_ac_heading_match_is_case_insensitive():
+    assert _check_body("## ACCEPTANCE CRITERIA\n\n- [ ] x\n") is None
+    assert _check_body("## Acceptance Criteria (brief)\n\n- [ ] x\n") is None
 
 
 def test_open_blocker_is_refused():
@@ -318,6 +377,61 @@ def test_main_refuses_a_dispatch_label_applied_by_the_bot(monkeypatch, tmp_path)
             {
                 "body": "Lane intake refused dispatch: `bot-labelled`. `agent:dispatch` was applied"
                 " by `osasuwu-bot`, not a human; a human removes and re-applies it."
+            },
+        )
+    ]
+
+
+def _run_main_refusal(monkeypatch, tmp_path, facts, payload_body):
+    """Drive `main()` with a human labeller; return the requests made and the output file."""
+    calls = []
+    monkeypatch.setattr(lane_intake, "fetch_facts", lambda repo, number: facts)
+    monkeypatch.setattr(
+        lane_intake, "_request", lambda method, path, body=None: calls.append((method, path, body))
+    )
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("ISSUE_NUMBER", "7")
+    monkeypatch.setenv("PAYLOAD_BODY", payload_body)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("LABEL_SENDER", "Osasuwu")
+    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
+    lane_intake.main()
+    return calls, out.read_text(encoding="utf-8")
+
+
+def test_main_refuses_a_needs_star_label_with_one_comment_and_no_worker(monkeypatch, tmp_path):
+    calls, output = _run_main_refusal(
+        monkeypatch,
+        tmp_path,
+        _facts(labels=["afk:1-auto", "agent:dispatch", "needs-grill"]),
+        PAYLOAD_BODY,
+    )
+    assert output == "pass=false\n"
+    assert calls == [
+        (
+            "POST",
+            "repos/owner/repo/issues/7/comments",
+            {
+                "body": "Lane intake refused dispatch: `needs-label`. a `needs-*` label blocks"
+                " intake: resolve and remove `needs-grill`, then re-apply `agent:dispatch`."
+            },
+        )
+    ]
+
+
+def test_main_refuses_a_body_without_ac_with_one_comment_and_no_worker(monkeypatch, tmp_path):
+    calls, output = _run_main_refusal(
+        monkeypatch, tmp_path, _facts(body="Do the thing."), "Do the thing."
+    )
+    assert output == "pass=false\n"
+    assert calls == [
+        (
+            "POST",
+            "repos/owner/repo/issues/7/comments",
+            {
+                "body": "Lane intake refused dispatch: `ac-missing`. no `## Acceptance criteria`"
+                " heading in the issue body; add one, then re-apply `agent:dispatch`."
             },
         )
     ]
