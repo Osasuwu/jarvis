@@ -14,8 +14,9 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
    malformed or duplicate → red.
 2. The **computed tier** is the highest of:
    - **path tier** — HIGH when a changed path (or a rename's old path) matches any bucket
-     (`hitl`, `guarded`, `machinery`) of this repo's entry in the host's
-     `config/protected-paths.json` at the base commit. A missing file, or no entry for the repo,
+     (`hitl`, `guarded`, `machinery`, `gate`) of this repo's entry in the host's
+     `config/protected-paths.json` at the base commit, in the glob dialect of
+     `agents/path_policy.py` (#2067). A missing file, or no entry for the repo,
      is HIGH on every diff (D2), with a reason that points at `docs/reference/lane-host-setup.md`;
    - **test weakening** — HIGH when the PR removes a test function that no file of the PR
      re-adds, removes a test file, touches a test file GitHub could not diff, or adds

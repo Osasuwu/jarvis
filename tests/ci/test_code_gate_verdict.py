@@ -11,6 +11,9 @@ import http.client
 import importlib.util
 import json
 import re
+import shutil
+import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 
@@ -106,6 +109,8 @@ def test_deleted_file_keeps_its_path():
 
 # --- is_gate_machinery ----------------------------------------------------
 
+REPO = "Osasuwu/jarvis"
+
 
 @pytest.mark.parametrize(
     "path",
@@ -114,10 +119,12 @@ def test_deleted_file_keeps_its_path():
         ".github/workflows/code-gate-verdict.yml",
         ".github/scripts/code_gate_verdict.py",
         ".github/actions/anything/action.yml",
+        "agents/path_policy.py",  # the list moved out of this script (#2067): its reader
+        "config/protected-paths.json",  # and the list itself are gate machinery now
     ],
 )
 def test_gate_machinery_paths(path):
-    assert gate.is_gate_machinery([path]) is True
+    assert gate.is_gate_machinery([path], REPO) is True
 
 
 @pytest.mark.parametrize(
@@ -130,7 +137,7 @@ def test_gate_machinery_paths(path):
     ],
 )
 def test_non_machinery_paths(path):
-    assert gate.is_gate_machinery([path]) is False
+    assert gate.is_gate_machinery([path], REPO) is False
 
 
 def test_machinery_on_the_old_side_of_a_rename_counts():
@@ -141,7 +148,60 @@ def test_machinery_on_the_old_side_of_a_rename_counts():
             "status": "renamed",
         }
     ]
-    assert gate.is_gate_machinery(gate.changed_paths(files)) is True
+    assert gate.is_gate_machinery(gate.changed_paths(files), REPO) is True
+
+
+def _gate_tree(tmp_path, policy):
+    """A checkout holding the script, path_policy.py and a literal protected list."""
+    (tmp_path / ".github" / "scripts").mkdir(parents=True)
+    (tmp_path / "agents").mkdir()
+    (tmp_path / "config").mkdir()
+    shutil.copy(
+        _root / ".github" / "scripts" / "code_gate_verdict.py", tmp_path / ".github" / "scripts"
+    )
+    shutil.copy(_root / "agents" / "path_policy.py", tmp_path / "agents")
+    (tmp_path / "config" / "protected-paths.json").write_text(json.dumps(policy), "utf-8")
+    spec = importlib.util.spec_from_file_location(
+        "code_gate_verdict_tree", tmp_path / ".github" / "scripts" / "code_gate_verdict.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_gate_set_is_the_lists_gate_bucket_not_a_literal_in_the_script(tmp_path):
+    tree = _gate_tree(tmp_path, {REPO: {"gate": ["only/this.py"], "machinery": ["m/**"]}})
+    assert tree.is_gate_machinery(["only/this.py"], REPO) is True
+    assert tree.is_gate_machinery([".github/workflows/code-review.yml", "m/x.py"], REPO) is False
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [{"other/repo": {"gate": ["x"]}}, {REPO: {"machinery": ["x"]}}],
+    ids=["no-entry-for-the-repo", "no-gate-bucket"],
+)
+def test_a_list_that_cannot_name_the_gate_set_raises(tmp_path, policy):
+    """Fail closed: `cmd_verdict` posts a raise as `verdict-error` red, never as a pass."""
+    tree = _gate_tree(tmp_path, policy)
+    with pytest.raises(ValueError, match=REPO):
+        tree.is_gate_machinery(["src/a.py"], REPO)
+
+
+def test_the_review_side_subcommands_run_from_the_script_alone(tmp_path):
+    """code-review.yml runs `prepare`/`validate`/`check-tree`/`stamp`/`skip` under
+    `python -I` in a workspace the reviewer can write to (#2024): they must not import
+    path_policy, so a copy of the script alone still validates."""
+    script = tmp_path / "code_gate_verdict.py"
+    shutil.copy(_root / ".github" / "scripts" / "code_gate_verdict.py", script)
+    findings = tmp_path / "findings.json"
+    findings.write_text(json.dumps({"blocking": False, "findings": []}), "utf-8")
+    run = subprocess.run(
+        [sys.executable, "-I", str(script), "validate", "--findings", str(findings)],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+    )
+    assert (run.returncode, run.stderr) == (0, "")
 
 
 # --- is_untrusted_author / is_draft ---------------------------------------
@@ -758,6 +818,12 @@ def test_gate_machinery_with_clean_evidence_is_red():
         [_entry(_pr_run())],
     )
     assert (got.green, got.code) == (False, "gate-machinery")
+
+
+def test_the_gate_set_is_read_for_the_prs_base_repo():
+    pr = _pr(changed_files=1, base={"ref": "main", "repo": {"full_name": "stranger/other"}})
+    with pytest.raises(ValueError, match="stranger/other"):
+        _eval(pr, _files("src/a.py"), [_entry(_pr_run())])
 
 
 def test_dependabot_pr_without_evidence_is_red_with_dispatch_remediation():

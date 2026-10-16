@@ -1,12 +1,15 @@
 """Plan-review change-set classifier (issue #1685; ordinal vocabulary +
 :func:`label_for` per #1707).
 
-Deep module, narrow interface: :func:`classify` is the single entry point
-consumed by three call sites (interactive lane, drain, container pick) —
-classification logic lives here once, not re-derived
+Deep module, narrow interface: :func:`classify` is the single entry point —
+`.github/scripts/risk_tier.py` (`classifier_tier`, on a PR's diff) calls it
+directly, `agents/implement_plan_gate.py` (`evaluate_trigger`) through
+:func:`classify_task_row`, and `scripts/to_tickets_afk_fit.py` imports
+:func:`label_for` — so classification logic lives here once, not re-derived
 per caller. Every threshold, glob, and criterion comes from a
 :class:`~agents.plan_review_config.PlanReviewConfig` — nothing here is
-hardcoded.
+hardcoded; shared-surface globs are matched in the dialect of
+:mod:`agents.path_policy`.
 
 Classification is two-point per decision `d34dd65a`: the same
 :func:`classify` call is used ex-ante (at admission, from an estimated
@@ -21,10 +24,10 @@ strings themselves.
 
 from __future__ import annotations
 
-import fnmatch
 from dataclasses import dataclass
 from typing import Any
 
+from agents import path_policy
 from agents.plan_review_config import PlanReviewConfig
 
 
@@ -39,7 +42,7 @@ class ChangeSet:
 
 
 def _touches_shared_surface(paths: tuple[str, ...], globs: tuple[str, ...]) -> bool:
-    return any(fnmatch.fnmatch(p, g) for p in paths for g in globs)
+    return bool(path_policy.matched_paths(paths, globs))
 
 
 def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
@@ -152,9 +155,10 @@ def label_for(cls: int) -> str | None:
 def classify_task_row(config: PlanReviewConfig, row: dict[str, Any]) -> int:
     """Named class-2 bundle policy, readable per task row (AC7).
 
-    The single entry point every consumer (interactive lane, drain,
-    container pick) calls against a ``task_queue``-shaped
-    dict — same ``scope_files`` key convention as the reactive-core modules
+    The entry point for a caller holding a ``task_queue``-shaped dict rather
+    than a :class:`ChangeSet` — today `agents/implement_plan_gate.py`
+    (`evaluate_trigger`); `risk_tier.classifier_tier` calls :func:`classify`
+    directly. Same ``scope_files`` key convention as the reactive-core modules
     this classified for before they were demolished in #1802. Callers never
     re-derive the threshold conditions themselves; they read a task row and
     call this function.

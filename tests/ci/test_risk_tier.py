@@ -204,11 +204,42 @@ def test_a_path_in_any_bucket_of_the_base_list_reads_high_whatever_the_declared_
         ".github/workflows/x.yml",
         "config/plan_review.yaml",
         "pyproject.toml",
+        "agents/plan_lock.py",
+        "config/repos.conf",
     ],
 )
 def test_the_real_protected_list_floors_the_gate_machinery_at_high(path):
     tier, reasons = risk_tier.path_tier([path], REPO, _root)
     assert (tier, reasons) == ("HIGH", [f"protected path(s): {path}"])
+
+
+def test_repos_conf_is_a_shared_surface_to_the_classifier_and_to_afk_fit():
+    """#2067 AC3: the plan classifier and /to-tickets Q1 read the same `guarded` bucket, so
+    `config/repos.conf` is class 2 to both — it used to be class 2 to the classifier only."""
+    from scripts.to_tickets_afk_fit import classify_static_paths, load_protected_paths
+
+    assert risk_tier.classifier_tier([_file("config/repos.conf")], _root) == (
+        "MEDIUM",
+        ["classifier ordinal 2"],
+    )
+    protected = load_protected_paths(_root / "config" / "protected-paths.json")
+    assert classify_static_paths(["config/repos.conf"], REPO, protected).cls == 2
+
+
+def test_risk_tier_imports_no_private_name_from_the_afk_fit_script():
+    """#2067 AC2: risk_tier reads the protected list through `agents.path_policy`, not a
+    `_`-prefixed helper reached into from another script."""
+    import ast
+
+    tree = ast.parse((_root / ".github" / "scripts" / "risk_tier.py").read_text("utf-8"))
+    private = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "scripts.to_tickets_afk_fit"
+        for alias in node.names
+        if alias.name.startswith("_")
+    ]
+    assert private == []
 
 
 def test_a_rename_out_of_a_protected_path_reads_high(base):

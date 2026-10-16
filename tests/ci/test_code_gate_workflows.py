@@ -53,8 +53,18 @@ def test_verdict_never_checks_out_the_pr_head():
     assert len(checkouts) == 2  # resolve + verdict, both base-pinned
     for step in checkouts:
         assert step["with"]["ref"] == "${{ github.event.repository.default_branch }}"
-        assert step["with"]["sparse-checkout"] == ".github/scripts"
         assert step["with"]["persist-credentials"] is False
+    sparse = {
+        name: step["with"]["sparse-checkout"].split()
+        for name, job in VERDICT["jobs"].items()
+        for step in job["steps"]
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    }
+    # verdict reads the gate set from the base's protected list through path_policy (#2067)
+    assert sparse == {
+        "resolve": [".github/scripts"],
+        "verdict": [".github/scripts", "agents", "config"],
+    }
 
 
 def test_verdict_triggers_pull_request_target_and_review_workflow_run():

@@ -255,6 +255,12 @@ optional third, below):
   by the `risk-tier` check, from the base commit, never by `/to-tickets`; any changed file
   matching these globs floors the PR at HIGH. A repo without the bucket still gets the `hitl`
   and `guarded` floors.
+- **`gate`** (jarvis only today) — the code-review gate's own machinery. `code_gate_verdict.py`
+  reads it and posts a `gate-machinery` red for any PR touching it; `risk-tier` floors it at
+  HIGH like any other bucket.
+
+Every reader matches these globs through `agents/path_policy.py`, whose docstring defines the
+dialect (case-insensitive; `x/**` also matches bare `x`) (#2067).
 
 A repo with no shared surfaces and no identity-adjacent files can have both arrays empty.
 Adding a new repo to this file should never require touching skill logic — it's pure data.

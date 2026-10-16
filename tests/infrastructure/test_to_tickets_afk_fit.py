@@ -129,6 +129,7 @@ def test_redrobot_empty_hitl_guarded_hit_is_class_2():
     assert verdict.bucket == "guarded"
     assert verdict.label == "afk:2-plan"
     assert verdict.matched_files == ("driver/main.py",)
+    assert verdict.reason == "matched guarded path(s): driver/main.py"
 
 
 # ── hitl wins over guarded when both buckets match ──────────────────────────
@@ -202,6 +203,29 @@ def test_load_protected_paths_rejects_legacy_flat_list_shape(tmp_path):
         assert "Owner/repo" in str(exc)
     else:
         raise AssertionError("expected ValueError on legacy flat-list schema")
+
+
+def test_load_protected_paths_rejects_a_bucket_that_is_not_a_list(tmp_path):
+    """#2067: a bucket written as a bare string used to be split into
+    one-character globs; it is now a malformed entry and raises."""
+    path = tmp_path / "paths.json"
+    path.write_text(json.dumps({"Owner/repo": {"hitl": "config/SOUL.md", "guarded": []}}))
+    try:
+        load_protected_paths(path)
+    except ValueError as exc:
+        assert "'hitl'" in str(exc)
+    else:
+        raise AssertionError("expected ValueError on a non-list bucket")
+
+
+def test_a_case_or_separator_variant_of_a_protected_path_still_matches():
+    """#2067: the path_policy dialect folds case and `\\` on every OS, so a
+    variant spelling cannot slip past Q1 on Linux."""
+    config = {"Owner/repo": {"hitl": ["config/SOUL.md"], "guarded": []}}
+    verdict = classify_static_paths(["CONFIG\\soul.md"], repo="Owner/repo", config=config)
+    assert verdict.cls == 3
+    assert verdict.matched_files == ("CONFIG\\soul.md",)
+    assert verdict.reason == "matched hitl path(s): CONFIG\\soul.md"
 
 
 def test_intersects_protected_removed():
@@ -325,3 +349,12 @@ def test_real_config_jarvis_supabase_path_is_class_2():
     assert verdict.cls == 2
     assert verdict.bucket == "guarded"
     assert verdict.label == "afk:2-plan"
+
+
+def test_real_config_jarvis_repos_conf_is_class_2():
+    """#2067: config/repos.conf was a shared surface for the plan classifier
+    only; with one list it is guarded for /to-tickets Q1 as well."""
+    repo_root = Path(__file__).resolve().parents[2]
+    config = load_protected_paths(repo_root / "config" / "protected-paths.json")
+    verdict = classify_static_paths(["config/repos.conf"], repo="Osasuwu/jarvis", config=config)
+    assert (verdict.cls, verdict.bucket, verdict.label) == (2, "guarded", "afk:2-plan")
