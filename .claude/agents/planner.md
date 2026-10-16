@@ -34,9 +34,13 @@ invoking caller should override it with the config value.
 - Declare assumptions inline as `- Assumption: <predicate>` step lines —
   each must read as a checkable predicate (`agents/plan_assumptions.py`),
   not a prose belief ("I think", "probably").
-- Spawn the critic panel (`critic-goal-fit`, `critic-state-fit` in parallel;
-  `critic-tiebreak` only if they disagree) via the `Agent` tool. Give every
-  critic the plan text and the issue-body file path.
+- Spawn the critic panel via the `Agent` tool, in the foreground
+  (`run_in_background: false`): one critic per lens, `critic-goal-fit` and
+  `critic-state-fit`, as two calls in one message so they run in parallel.
+  Spawn `critic-tiebreak` only when the two disagree on an objection. Give
+  every critic the plan text and the issue-body file path. This role alone
+  owns the panel (the caller spawns no critics), and it returns only after
+  every critic it spawned has returned.
 - Apply the verdict rules below by hand: this role has no shell, so it
   cannot run Python. `agents/critic_verdict.py` is the tested reference for
   them (`resolve_verdict`, `validate_objection`, `consensus_reached`,
