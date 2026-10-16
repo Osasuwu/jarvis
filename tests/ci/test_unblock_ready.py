@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from ._github_fake import FakeApi, http_error, load_client
+from ._github_fake import FakeApi, FakeTransport, http_error, load_client
 
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 _spec = importlib.util.spec_from_file_location(
@@ -377,6 +377,62 @@ def test_a_truncated_closed_listing_is_swept_as_far_as_it_was_read_and_then_rais
     assert len(deletes) == 999
     assert deletes[0] == "repos/owner/repo/issues/1/labels/status%3Areview"
     assert deletes[-1] == "repos/owner/repo/issues/999/labels/status%3Areview"
+
+
+def test_a_truncated_labels_listing_raises_before_any_closed_listing_is_read_or_written():
+    # A sweep over part of the labels would skip every `status:*` label past the cap
+    # with a green run; it must raise before reading a closed listing or writing.
+    pages = [[{"name": f"status:s{page}-{n}"} for n in range(100)] for page in range(10)]
+
+    def labels(method, path, body):
+        return pages[int(path.rsplit("page=", 1)[1]) - 1]
+
+    closed = [{"number": 9, "state": "closed", "labels": [{"name": "status:review"}]}]
+    api = FakeApi(
+        responses={
+            "repos/owner/repo/labels": labels,
+            "repos/owner/repo/issues?state=closed": closed,
+        }
+    )
+    with pytest.raises(
+        load_client().ListingTruncated, match=r"^listing repos/owner/repo/labels truncated: "
+    ):
+        unblock_ready.sweep_closed(api, "owner/repo")
+    assert api.calls == [
+        ("GET", f"repos/owner/repo/labels?per_page=100&page={n}", None) for n in range(1, 11)
+    ]
+
+
+def test_main_builds_its_own_client_with_the_job_token_and_the_unblock_ready_agent(monkeypatch):
+    """The production `_make_client`, not an injected one: `main()` runs with only the
+    transport patched, so a wrong token, user agent or constructor call goes red here."""
+    gh = load_client()
+    issue = dict(_issue(["status:ready"], state="closed"), number=5)
+    transport = FakeTransport([issue, b""])
+    monkeypatch.setattr(gh, "urllib_transport", transport)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("GITHUB_TOKEN", "job-token")
+    monkeypatch.setenv("MODE", "apply")
+    monkeypatch.setenv("TARGET_ISSUE", "5")
+    monkeypatch.setenv("TARGET_MODE", "close")
+    unblock_ready.main()
+    assert [
+        (r.method, r.url, r.headers["authorization"], r.headers["user-agent"])
+        for r in transport.requests
+    ] == [
+        (
+            "GET",
+            "https://api.github.com/repos/owner/repo/issues/5",
+            "Bearer job-token",
+            "unblock-ready",
+        ),
+        (
+            "DELETE",
+            "https://api.github.com/repos/owner/repo/issues/5/labels/status%3Aready",
+            "Bearer job-token",
+            "unblock-ready",
+        ),
+    ]
 
 
 def test_an_unlabel_promotes_only_an_issue_that_was_once_blocked():

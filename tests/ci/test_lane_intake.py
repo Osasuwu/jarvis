@@ -457,6 +457,86 @@ def test_main_refuses_a_body_without_ac_with_one_comment_and_no_worker(monkeypat
     ]
 
 
+def test_main_refuses_an_issue_whose_body_the_bot_edited(monkeypatch, tmp_path):
+    """The edit history reaches the rule through `fetch_facts`' GraphQL mapping (#2068):
+    an editor dropped there would let a bot-edited body dispatch."""
+    api, output = _run_main_refusal(
+        monkeypatch, tmp_path, _facts(editors=["Osasuwu", "osasuwu-bot"]), PAYLOAD_BODY
+    )
+    assert output == "pass=false\n"
+    assert _writes(api) == [
+        (
+            "POST",
+            "repos/owner/repo/issues/7/comments",
+            {
+                "body": "Lane intake refused dispatch: `bot-edited`. issue body carries an edit"
+                " by `osasuwu-bot`."
+            },
+        )
+    ]
+
+
+def test_main_refuses_an_issue_an_open_pr_already_closes(monkeypatch, tmp_path):
+    """The closing PRs reach the rule through `fetch_facts`' GraphQL mapping (#2068):
+    one dropped there would dispatch a worker onto an issue a PR already claims."""
+    api, output = _run_main_refusal(monkeypatch, tmp_path, _facts(closing_prs=[412]), PAYLOAD_BODY)
+    assert output == "pass=false\n"
+    assert _writes(api) == [
+        (
+            "POST",
+            "repos/owner/repo/issues/7/comments",
+            {
+                "body": "Lane intake refused dispatch: `claimed-by-pr`. open PR #412 already"
+                " closes this issue."
+            },
+        )
+    ]
+
+
+def test_main_builds_its_own_client_with_the_job_token_and_the_lane_intake_agent(
+    monkeypatch, tmp_path
+):
+    """The production `_make_client`, not an injected one: `main()` runs with only the
+    transport patched, so a wrong token, user agent or constructor call goes red here."""
+    gh = load_client()
+    node = {"userContentEdits": {"nodes": []}, "closedByPullRequestsReferences": {"nodes": []}}
+    issue = {
+        "body": PAYLOAD_BODY,
+        "state": "open",
+        "labels": [{"name": "afk:1-auto"}, {"name": "agent:dispatch"}],
+        "issue_dependencies_summary": {"blocked_by": 0},
+    }
+    transport = FakeTransport([issue, {"data": {"repository": {"issue": node}}}, [], b""])
+    monkeypatch.setattr(gh, "urllib_transport", transport)
+    out = _env(monkeypatch, tmp_path, PAYLOAD_BODY)
+    lane_intake.main()
+    assert out.read_text(encoding="utf-8") == "pass=true\n"
+    assert [
+        (r.method, r.url, r.headers["authorization"], r.headers["user-agent"])
+        for r in transport.requests
+    ] == [
+        (
+            "GET",
+            "https://api.github.com/repos/owner/repo/issues/7",
+            "Bearer job-token",
+            "lane-intake",
+        ),
+        ("POST", "https://api.github.com/graphql", "Bearer job-token", "lane-intake"),
+        (
+            "POST",
+            "https://api.github.com/repos/owner/repo/issues/7/labels",
+            "Bearer job-token",
+            "lane-intake",
+        ),
+        (
+            "DELETE",
+            "https://api.github.com/repos/owner/repo/issues/7/labels/agent%3Adispatch",
+            "Bearer job-token",
+            "lane-intake",
+        ),
+    ]
+
+
 def test_main_posts_its_refusal_comment_without_a_5xx_retry(monkeypatch, tmp_path):
     """A 5xx can follow a committed comment; a retry would post the refusal twice (#2068)."""
     api, _ = _run_main_refusal(monkeypatch, tmp_path, _facts(body="Do the thing."), "Do the thing.")

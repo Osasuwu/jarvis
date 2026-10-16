@@ -98,8 +98,10 @@ class SequencedApi(FakeApi):
         super().__init__()
         self.prs = iter(prs)
 
-    def __call__(self, method, path, body=None):
+    def __call__(self, method, path, body=None, *, idempotent=True):
         self.calls.append((method, path, body))
+        if not idempotent:
+            self.once.append((method, path))
         if method != "GET":
             return {}
         return next(self.prs) if path == "repos/o/r/pulls/7" else []
