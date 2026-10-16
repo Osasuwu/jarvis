@@ -13,6 +13,12 @@ Schema v2 (#1707) split what v1 called ``class_3`` into two distinct keys:
 and a new ``class_3`` (true HITL: the change cannot close without a human).
 A v1 document is rejected with a rename-explaining error rather than
 silently misread.
+
+The shared-surface globs are not in the YAML (#2067): ``class_2.shared_surface_repo``
+names a repo entry in the sibling ``protected-paths.json``, and that entry's
+``guarded`` bucket, read through :mod:`agents.path_policy`, fills
+``Class2Thresholds.shared_surface_globs``. A YAML still carrying
+``shared_surface_globs`` is rejected rather than silently ignored.
 """
 
 from __future__ import annotations
@@ -21,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
+from agents import path_policy
 
 _SCHEMA_VERSION = "v2"
 
@@ -66,7 +74,7 @@ class PlanReviewConfig:
     models: ModelFloors
 
 
-_REQUIRED_CLASS_2_KEYS = ("shared_surface_globs", "churn_threshold", "min_prod_areas")
+_REQUIRED_CLASS_2_KEYS = ("shared_surface_repo", "churn_threshold", "min_prod_areas")
 _REQUIRED_EXEMPT_KEYS = ("mechanical_criteria",)
 _REQUIRED_CLASS_3_KEYS = ("mechanical_criteria",)
 _REQUIRED_MODELS_KEYS = ("planner", "critic")
@@ -78,8 +86,10 @@ def load_plan_review_config(path: str | Path) -> PlanReviewConfig:
     ``path`` may be a ``str`` or a ``Path`` (#1983: the /implement plan step
     passes a plain string).
 
-    Raises ``FileNotFoundError`` if ``path`` does not exist, ``ValueError``
-    if the file is missing a required key or is on a stale schema version.
+    Raises ``FileNotFoundError`` if ``path`` or its sibling
+    ``protected-paths.json`` does not exist, ``ValueError`` if the file is
+    missing a required key, is on a stale schema version, still lists
+    ``shared_surface_globs``, or names a repo with no ``guarded`` bucket.
     """
     path = Path(path)
     if not path.exists():
@@ -98,6 +108,12 @@ def load_plan_review_config(path: str | Path) -> PlanReviewConfig:
         )
 
     class_2_raw = raw.get("class_2") or {}
+    if "shared_surface_globs" in class_2_raw:
+        raise ValueError(
+            f"plan-review config {path}: class_2.shared_surface_globs moved in #2067 to the "
+            "`guarded` bucket of the sibling protected-paths.json — replace it with "
+            "class_2.shared_surface_repo naming that repo entry"
+        )
     missing_2 = [k for k in _REQUIRED_CLASS_2_KEYS if k not in class_2_raw]
     if missing_2:
         raise ValueError(f"plan-review config {path}: class_2 missing keys {missing_2}")
@@ -117,9 +133,17 @@ def load_plan_review_config(path: str | Path) -> PlanReviewConfig:
     if missing_models:
         raise ValueError(f"plan-review config {path}: models missing keys {missing_models}")
 
+    surface_repo = str(class_2_raw["shared_surface_repo"])
+    buckets = path_policy.load_policy(path.parent / "protected-paths.json").buckets(surface_repo)
+    if "guarded" not in buckets:
+        raise ValueError(
+            f"plan-review config {path}: protected-paths.json entry {surface_repo!r} "
+            "has no `guarded` bucket to read the shared-surface globs from"
+        )
+
     return PlanReviewConfig(
         class_2=Class2Thresholds(
-            shared_surface_globs=tuple(class_2_raw["shared_surface_globs"]),
+            shared_surface_globs=buckets["guarded"],
             churn_threshold=int(class_2_raw["churn_threshold"]),
             min_prod_areas=int(class_2_raw["min_prod_areas"]),
         ),

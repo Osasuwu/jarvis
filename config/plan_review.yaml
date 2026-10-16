@@ -15,7 +15,11 @@
 #
 # Schema:
 #   class_2:
-#     shared_surface_globs: list[str]   — glob patterns; a change touching any
+#     shared_surface_repo: str          — repo entry in the sibling
+#                                          protected-paths.json whose `guarded`
+#                                          bucket is the shared-surface glob
+#                                          list (#2067: one list, not two kept
+#                                          in sync); a change touching any
 #                                          matching path is a shared-surface hit
 #     churn_threshold: int              — total changed-lines strictly above
 #                                          this value trips class 2
@@ -41,9 +45,7 @@
 schema_version: "v2"
 
 class_2:
-  shared_surface_globs:
-    - "supabase/**"
-    - "config/repos.conf"
+  shared_surface_repo: "Osasuwu/jarvis"
   churn_threshold: 400
   min_prod_areas: 2
 

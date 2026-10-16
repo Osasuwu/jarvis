@@ -14,8 +14,15 @@ Columns, per path:
                                  computes for a one-path diff
   gate                         — `code_gate_verdict.is_gate_machinery`
 
-Case variants and backslash paths are left out: `fnmatch.fnmatch` folds case on Windows only,
-so their answer on main depends on the OS.
+Case variants and backslash paths are left out here: on main `fnmatch.fnmatch` folded case on
+Windows only, so their recorded answer depended on the OS. `agents/path_policy.py` now pins
+both (case-insensitive, backslashes normalised); its own tests cover them.
+
+Rows that changed with the move, each a drift fix #2067 names: `supabase` (bare) classifier
+1 -> 2; `config/repos.conf` to_tickets none -> guarded and path_tier LOW -> HIGH;
+`agents/plan_lock.py` and `agents/path_policy.py` path_tier LOW -> HIGH; gate machinery for
+`.github/actions` (bare), `agents/path_policy.py` and `config/protected-paths.json`
+False -> True.
 """
 
 from __future__ import annotations
@@ -57,10 +64,10 @@ EXPECTED = {
     ".gitleaks.toml": (HITL, NONE, "HIGH", "LOW", 1, False),
     ".pre-commit-config.yaml": (HITL, NONE, "HIGH", "LOW", 1, False),
     ".claude/settings.json": (HITL, NONE, "HIGH", "LOW", 1, False),
-    # jarvis guarded, and plan_review.yaml's shared_surface_globs
+    # jarvis guarded, which is also the plan classifier's shared-surface list
     "supabase/sub/f.py": (GUARDED, NONE, "HIGH", "LOW", 2, False),
-    "supabase": (GUARDED, NONE, "HIGH", "LOW", 1, False),
-    "config/repos.conf": (NONE, NONE, "LOW", "LOW", 2, False),
+    "supabase": (GUARDED, NONE, "HIGH", "LOW", 2, False),
+    "config/repos.conf": (GUARDED, NONE, "HIGH", "LOW", 2, False),
     # jarvis machinery
     ".github/sub/f.py": (NONE, NONE, "HIGH", "LOW", 1, False),
     ".github": (NONE, NONE, "HIGH", "LOW", 1, False),
@@ -69,7 +76,7 @@ EXPECTED = {
     "agents/plan_classifier.py": (NONE, NONE, "HIGH", "LOW", 1, False),
     "agents/plan_review_config.py": (NONE, NONE, "HIGH", "LOW", 1, False),
     "config/plan_review.yaml": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "config/protected-paths.json": (NONE, NONE, "HIGH", "LOW", 1, False),
+    "config/protected-paths.json": (NONE, NONE, "HIGH", "LOW", 1, True),
     "scripts/to_tickets_afk_fit.py": (NONE, NONE, "HIGH", "LOW", 1, False),
     "pyproject.toml": (NONE, NONE, "HIGH", "LOW", 1, False),
     "uv.lock": (NONE, NONE, "HIGH", "LOW", 1, False),
@@ -95,10 +102,10 @@ EXPECTED = {
     ".github/workflows/code-gate-verdict.yml": (NONE, NONE, "HIGH", "LOW", 1, True),
     ".github/scripts/code_gate_verdict.py": (NONE, NONE, "HIGH", "LOW", 1, True),
     ".github/actions/sub/f.py": (NONE, NONE, "HIGH", "LOW", 1, True),
-    ".github/actions": (NONE, NONE, "HIGH", "LOW", 1, False),
+    ".github/actions": (NONE, NONE, "HIGH", "LOW", 1, True),
     # outside every list today
-    "agents/plan_lock.py": (NONE, NONE, "LOW", "LOW", 1, False),
-    "agents/path_policy.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    "agents/plan_lock.py": (NONE, NONE, "HIGH", "LOW", 1, False),
+    "agents/path_policy.py": (NONE, NONE, "HIGH", "LOW", 1, True),
     "agents/__init__.py": (NONE, NONE, "LOW", "LOW", 1, False),
     "README.md": (NONE, NONE, "LOW", "LOW", 1, False),
     "docs/guide.md": (NONE, NONE, "LOW", "LOW", 1, False),
@@ -117,7 +124,7 @@ def _row(path, protected, plan_config):
         risk_tier.path_tier([path], JARVIS, ROOT)[0],
         risk_tier.path_tier([path], REDROBOT, ROOT)[0],
         classify(plan_config, ChangeSet((path,), 0, prod_areas_from_paths((path,)))),
-        gate.is_gate_machinery([path]),
+        gate.is_gate_machinery([path], JARVIS),
     )
 
 

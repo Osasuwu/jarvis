@@ -30,14 +30,18 @@ artifact's own `sha` and `base_ref` must equal the evaluated SHA and the PR's
 base: a mismatch is red.
 
 Gate machinery. A PR touching the review workflow, the verdict workflow, this
-script or a local action is always red: its own review cannot be trusted, since
-it is the thing under change. The sanctioned unblock is a human review-blind
+script, a local action, the protected-path list or its reader is always red: its
+own review cannot be trusted, since it is the thing under change. The set is the
+`gate` bucket of the base repo's entry in `config/protected-paths.json`, matched by
+`agents/path_policy.py` (#2067); both are read from this script's own checkout. The sanctioned unblock is a human review-blind
 admin-merge (`~/.claude/reference/merge-gates.md`) backed by a fresh-session
 `/code-review` posted with the final SHA.
 
 Every decision below is a pure function over plain dicts and lists; the API
 access (`Api`, `gather_entries`, `post_check`) is a thin wrapper around them.
-Stdlib only: the jobs need no dependency install.
+Stdlib only: the jobs need no dependency install. `verdict` alone loads
+`agents/path_policy.py` (stdlib too) by file path; every other subcommand runs from
+the script alone.
 """
 
 import argparse
@@ -46,6 +50,7 @@ import http.client
 import io
 import json
 import os
+import importlib.util
 import re
 import subprocess
 import sys
@@ -55,6 +60,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 import zlib
+from pathlib import Path
 from typing import NamedTuple
 
 API_ROOT = "https://api.github.com"
@@ -84,17 +90,6 @@ FINDING_CLASSES = (
 
 # `run-name` of code-review.yml: `Code review PR #<n> @ <40-hex head sha>`.
 RUN_TITLE = re.compile(r"^Code review PR #(\d+) @ ([0-9a-f]{40})$")
-
-# The change set the gate itself is made of. A PR touching any of it is judged
-# by a human, never by its own review.
-GATE_MACHINERY_FILES = frozenset(
-    {
-        REVIEW_WORKFLOW,
-        ".github/workflows/code-gate-verdict.yml",
-        ".github/scripts/code_gate_verdict.py",
-    }
-)
-GATE_MACHINERY_PREFIXES = (".github/actions/",)
 
 _IMAGE_EXT = (".png", ".jpg", ".gif", ".webp")
 _DOC_EXT = (".md",) + _IMAGE_EXT
@@ -162,8 +157,27 @@ def changed_paths(files):
     return paths
 
 
-def is_gate_machinery(paths):
-    return any(p in GATE_MACHINERY_FILES or p.startswith(GATE_MACHINERY_PREFIXES) for p in paths)
+def is_gate_machinery(paths, repo):
+    """Whether ``paths`` touch the change set the gate itself is made of: the
+    ``gate`` bucket of ``repo``'s protected list. A PR touching any of it is judged
+    by a human, never by its own review.
+
+    The list and its reader come from the checkout this script runs from, loaded by
+    file path (no `sys.path` change, no `agents` package import), so `python -I`
+    still holds. A list that cannot name the set raises; `cmd_verdict` posts that as
+    a `verdict-error` red, never as a pass.
+    """
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "_gate_path_policy", root / "agents" / "path_policy.py"
+    )
+    path_policy = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = path_policy  # its dataclasses resolve their module here
+    spec.loader.exec_module(path_policy)
+    buckets = path_policy.load_policy(root / "config" / "protected-paths.json").buckets(repo)
+    if "gate" not in buckets:
+        raise ValueError(f"config/protected-paths.json has no gate bucket for {repo}")
+    return path_policy.classify_buckets(paths, buckets).gate
 
 
 def is_untrusted_author(pr):
@@ -534,7 +548,7 @@ def evaluate_pr(pr, files, entries, default_branch):
     if not files:
         return Verdict(False, "files-empty", "The PR changes no files.")
     paths = changed_paths(files)
-    if is_gate_machinery(paths):
+    if is_gate_machinery(paths, pr["base"]["repo"]["full_name"]):
         return Verdict(
             False,
             "gate-machinery",

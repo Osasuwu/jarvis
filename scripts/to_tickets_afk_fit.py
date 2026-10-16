@@ -2,7 +2,7 @@
 
 Question 1 of the four-question AFK-fit checklist is static: does any
 declared-changed file match a protected-path glob for the target repo?
-config/protected-paths.json holds two buckets per repo:
+config/protected-paths.json holds two AFK buckets per repo:
 
 - ``hitl``    — identity/security config, a categorical security boundary.
                 Any match -> class 3 (afk:3-human), hard refusal.
@@ -11,12 +11,13 @@ config/protected-paths.json holds two buckets per repo:
 
 No match in either bucket falls through to Q2-Q4 LLM judgement (documented
 in each skill's own SKILL.md, not reimplemented here).
+
+Reading the file and matching globs are `agents/path_policy.py`'s (#2067), so
+Q1 answers in the same dialect as every other reader of the list.
 """
 
 from __future__ import annotations
 
-import fnmatch
-import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,23 +26,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from agents import path_policy  # noqa: E402
 from agents.plan_classifier import label_for  # noqa: E402
 
 
 def load_protected_paths(path: str | Path) -> dict[str, dict[str, list[str]]]:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    """Each repo's ``hitl`` and ``guarded`` buckets; ``ValueError`` on a legacy
+    flat-list entry or a bucket that is not a list of globs."""
+    policy = path_policy.load_policy(path)
     config: dict[str, dict[str, list[str]]] = {}
-    for repo, buckets in data.items():
-        if repo.startswith("_"):
-            continue
-        if not isinstance(buckets, dict):
-            raise ValueError(
-                f"config/protected-paths.json: {repo!r} uses the legacy flat-list "
-                "schema (pre-#1708) — expected a {'hitl': [...], 'guarded': [...]} object"
-            )
+    for repo in policy.repos():
+        buckets = policy.buckets(repo)
         config[repo] = {
-            "hitl": list(buckets.get("hitl", [])),
-            "guarded": list(buckets.get("guarded", [])),
+            "hitl": list(buckets.get("hitl", ())),
+            "guarded": list(buckets.get("guarded", ())),
         }
     return config
 
@@ -69,17 +67,15 @@ def classify_static_paths(
             reason="unknown repo, judge manually",
         )
 
-    for bucket, cls in (("hitl", 3), ("guarded", 2)):
-        globs = config.get(repo, {}).get(bucket, [])
-        matched = _matched_files(declared_files, globs)
-        if matched:
-            return ClassVerdict(
-                cls=cls,
-                bucket=bucket,
-                label=label_for(cls),
-                matched_files=matched,
-                reason=f"matched {bucket} path(s): {', '.join(matched)}",
-            )
+    verdict = path_policy.classify_buckets(declared_files, config[repo])
+    if verdict.afk_class is not None:
+        return ClassVerdict(
+            cls=verdict.afk_class,
+            bucket=verdict.afk_bucket,
+            label=label_for(verdict.afk_class),
+            matched_files=verdict.afk_matched,
+            reason=f"matched {verdict.afk_bucket} path(s): {', '.join(verdict.afk_matched)}",
+        )
 
     return ClassVerdict(
         cls=None,
@@ -88,32 +84,3 @@ def classify_static_paths(
         matched_files=(),
         reason="no protected-path match; fall through to Q2-Q4",
     )
-
-
-def _matched_files(declared_files: list[str], globs: list[str]) -> tuple[str, ...]:
-    if not globs:
-        return ()
-    matched: list[str] = []
-    for declared in declared_files:
-        norm = declared.replace("\\", "/")
-        if norm.startswith("./"):
-            norm = norm[2:]
-        for glob in globs:
-            if _matches(norm, glob):
-                matched.append(declared)
-                break
-    return tuple(matched)
-
-
-def _matches(path: str, glob: str) -> bool:
-    if glob.endswith("/**"):
-        prefix = glob[:-3].rstrip("/")
-        return path == prefix or path.startswith(prefix + "/")
-    if "/**/" in glob:
-        head, tail = glob.split("/**/", 1)
-        if not path.startswith(head + "/"):
-            return False
-        return fnmatch.fnmatchcase(path[len(head) + 1 :], "*/" + tail) or fnmatch.fnmatchcase(
-            path[len(head) + 1 :], tail
-        )
-    return fnmatch.fnmatchcase(path, glob)

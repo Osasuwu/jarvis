@@ -21,8 +21,9 @@ Verdict, in order:
 4. HIGH and CRITICAL pass only with an APPROVED review on the current head SHA from an
    admin human who is not the lane's bot.
 
-Stdlib plus `agents.plan_classifier` / `agents.plan_review_config` (PyYAML) and the glob
-matcher of `scripts/to_tickets_afk_fit.py`, all read from the pinned code root.
+Stdlib plus `agents.plan_classifier` / `agents.plan_review_config` (PyYAML) and
+`agents.path_policy` (the protected-list reader and its glob dialect, #2067), all read from
+the pinned code root.
 """
 
 import collections
@@ -40,7 +41,7 @@ sys.path.insert(0, str(CODE_ROOT))
 
 from agents.plan_classifier import ChangeSet, classify, prod_areas_from_paths  # noqa: E402
 from agents.plan_review_config import load_plan_review_config  # noqa: E402
-from scripts.to_tickets_afk_fit import _matched_files  # noqa: E402
+from agents import path_policy  # noqa: E402
 
 SEVERITY = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 HOLD_TIERS = ("HIGH", "CRITICAL")
@@ -146,32 +147,27 @@ def path_tier(paths, repo, host_root):
         ]
     adopt = f"every diff is HIGH until the host adds it (D2, {HOST_SETUP_DOC})"
     try:
-        data = json.loads((Path(host_root) / "config" / "protected-paths.json").read_text("utf-8"))
-        if repo not in data:
-            return "HIGH", [
-                f"config/protected-paths.json has no entry for {repo} at the base commit: {adopt}"
-            ]
-        entry = data[repo]
-        buckets = [value for key, value in entry.items() if not key.startswith("_")]
-        if not all(isinstance(b, list) and all(isinstance(g, str) for g in b) for b in buckets):
-            return "HIGH", [
-                f"protected-path list for {repo} has a bucket that is not a list of globs: "
-                "fail closed"
-            ]
-        globs = [g for bucket in buckets for g in bucket]
-        if not globs:
-            return "HIGH", [
-                f"protected-path list for {repo} has no globs at the base commit: {adopt}"
-            ]
+        policy = path_policy.load_policy(Path(host_root) / "config" / "protected-paths.json")
+        buckets = policy.buckets(repo)
+    except path_policy.UnknownRepoError:
+        return "HIGH", [
+            f"config/protected-paths.json has no entry for {repo} at the base commit: {adopt}"
+        ]
+    except path_policy.MalformedBucketError:
+        return "HIGH", [
+            f"protected-path list for {repo} has a bucket that is not a list of globs: fail closed"
+        ]
     except FileNotFoundError:
         return "HIGH", [f"config/protected-paths.json not found at the base commit: {adopt}"]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         return "HIGH", [
             f"protected-path list unreadable at base ({type(exc).__name__}): fail closed"
         ]
-    hits = _matched_files(list(paths), globs)
-    if hits:
-        return "HIGH", [f"protected path(s): {', '.join(hits)}"]
+    if not any(buckets.values()):
+        return "HIGH", [f"protected-path list for {repo} has no globs at the base commit: {adopt}"]
+    verdict = path_policy.classify_buckets(paths, buckets)
+    if verdict.risk_floor == "HIGH":
+        return "HIGH", [f"protected path(s): {', '.join(verdict.risk_matched)}"]
     return "LOW", []
 
 

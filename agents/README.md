@@ -10,7 +10,8 @@ demolished in #1802 — see `git log -- agents/` for the retired modules.
 
 | Module | Role |
 |--------|------|
-| `plan_review_config.py` | Loader for `config/plan_review.yaml` — `exempt`/class-2/class-3 thresholds & criteria (#1685, #1707) |
+| `path_policy.py` | The one reader of `config/protected-paths.json` and its glob dialect: per-repo buckets → AFK class, risk floor, gate-machinery flag. Read by `risk_tier.py`, `to_tickets_afk_fit.py`, the plan classifier, and `code_gate_verdict.py` (by file path, stdlib only) (#2067) |
+| `plan_review_config.py` | Loader for `config/plan_review.yaml` — `exempt`/class-2/class-3 thresholds & criteria; shared-surface globs are the `guarded` bucket of `config/protected-paths.json` (#1685, #1707, #2067) |
 | `plan_classifier.py` | `classify()`/`classify_task_row()` — change-set → ordinal `1`/`2`/`3`; `label_for()` maps to `afk:2-plan`/`afk:3-human` (#1685, #1707) |
 | `plan_lock.py` | `## Plan` section strict parser (a plan section holds only steps and one `lock:` line), `verify_lock`, and `python -m agents.plan_lock publish <issue> --plan-file <path>` — the single path that writes a locked plan into an issue body (#1685, #2008) |
 | `implement_plan_gate.py` | `evaluate_trigger()` — `/implement`'s ex-ante plan-gate trigger, `priority:critical` carve-out (#1688) |

@@ -4,15 +4,39 @@ loader for issue #1685 (class-2 thresholds + class-3 criteria, one config).
 
 from __future__ import annotations
 
-import fnmatch
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
+from agents import path_policy
 from agents.plan_review_config import load_plan_review_config
 
 _REPO_CONFIG = Path(__file__).resolve().parents[2] / "config" / "plan_review.yaml"
+_SURFACE_REPO = "owner/repo"
+
+
+def _sibling_policy(tmp_path: Path, policy: object | None = None) -> None:
+    """The protected-paths.json beside a tmp plan_review.yaml, read for its guarded bucket."""
+    if policy is None:
+        policy = {_SURFACE_REPO: {"guarded": ["only/this/**"]}}
+    (tmp_path / "protected-paths.json").write_text(json.dumps(policy), encoding="utf-8")
+
+
+def _v2(**class_2: object) -> dict:
+    return {
+        "schema_version": "v2",
+        "class_2": {
+            "shared_surface_repo": _SURFACE_REPO,
+            "churn_threshold": 1,
+            "min_prod_areas": 1,
+            **class_2,
+        },
+        "exempt": {"mechanical_criteria": ["x"]},
+        "class_3": {"mechanical_criteria": ["y"]},
+        "models": {"planner": "p", "critic": "c"},
+    }
 
 
 def test_loads_repo_config() -> None:
@@ -65,7 +89,56 @@ def test_repo_config_covers_supabase_as_a_shared_surface() -> None:
     through class-2 classification unnoticed)."""
     cfg = load_plan_review_config(_REPO_CONFIG)
     sample_path = "supabase/migrations/20260415082814_create_credential_registry.sql"
-    assert any(fnmatch.fnmatch(sample_path, glob) for glob in cfg.class_2.shared_surface_globs)
+    assert path_policy.matched_paths([sample_path], cfg.class_2.shared_surface_globs) == (
+        sample_path,
+    )
+
+
+def test_repo_config_reads_its_shared_surface_from_the_guarded_bucket() -> None:
+    """#2067: the shared-surface globs are jarvis's `guarded` bucket in
+    config/protected-paths.json, not a second list kept in sync by hand."""
+    cfg = load_plan_review_config(_REPO_CONFIG)
+    assert cfg.class_2.shared_surface_globs == ("supabase/**", "config/repos.conf")
+
+
+def test_a_config_still_listing_shared_surface_globs_is_rejected(tmp_path: Path) -> None:
+    _sibling_policy(tmp_path)
+    doc = _v2(shared_surface_globs=["x/**"])
+    del doc["class_2"]["shared_surface_repo"]
+    stale = tmp_path / "plan_review.yaml"
+    stale.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ValueError, match="#2067"):
+        load_plan_review_config(stale)
+
+
+def test_a_config_without_a_shared_surface_repo_raises(tmp_path: Path) -> None:
+    _sibling_policy(tmp_path)
+    doc = _v2()
+    del doc["class_2"]["shared_surface_repo"]
+    bad = tmp_path / "plan_review.yaml"
+    bad.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ValueError, match="shared_surface_repo"):
+        load_plan_review_config(bad)
+
+
+def test_a_config_without_a_sibling_protected_paths_file_raises(tmp_path: Path) -> None:
+    cfg = tmp_path / "plan_review.yaml"
+    cfg.write_text(yaml.safe_dump(_v2()), encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        load_plan_review_config(cfg)
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [{"other/repo": {"guarded": ["x/**"]}}, {_SURFACE_REPO: {"hitl": ["x"]}}],
+    ids=["unknown-repo", "no-guarded-bucket"],
+)
+def test_a_shared_surface_repo_without_a_guarded_bucket_raises(tmp_path: Path, policy) -> None:
+    _sibling_policy(tmp_path, policy)
+    cfg = tmp_path / "plan_review.yaml"
+    cfg.write_text(yaml.safe_dump(_v2()), encoding="utf-8")
+    with pytest.raises(ValueError, match=_SURFACE_REPO):
+        load_plan_review_config(cfg)
 
 
 def test_thresholds_are_read_from_config_not_hardcoded(tmp_path: Path) -> None:
@@ -74,13 +147,14 @@ def test_thresholds_are_read_from_config_not_hardcoded(tmp_path: Path) -> None:
     This is AC2's assertion: the loader must reflect whatever value is on
     disk, proving thresholds are not hardcoded on the loading path.
     """
+    _sibling_policy(tmp_path)
     custom = tmp_path / "plan_review.yaml"
     custom.write_text(
         yaml.safe_dump(
             {
                 "schema_version": "v2",
                 "class_2": {
-                    "shared_surface_globs": ["only/this/**"],
+                    "shared_surface_repo": _SURFACE_REPO,
                     "churn_threshold": 12345,
                     "min_prod_areas": 7,
                 },
@@ -106,13 +180,14 @@ def test_thresholds_are_read_from_config_not_hardcoded(tmp_path: Path) -> None:
 def test_str_path_loads_same_config_as_path(tmp_path: Path) -> None:
     """Issue #1983: the /implement plan step passes the config path as a plain
     string; the loader must accept it and return what the Path form returns."""
+    _sibling_policy(tmp_path)
     custom = tmp_path / "plan_review.yaml"
     custom.write_text(
         yaml.safe_dump(
             {
                 "schema_version": "v2",
                 "class_2": {
-                    "shared_surface_globs": ["only/this/**"],
+                    "shared_surface_repo": _SURFACE_REPO,
                     "churn_threshold": 12345,
                     "min_prod_areas": 7,
                 },
@@ -134,23 +209,12 @@ def test_str_path_loads_same_config_as_path(tmp_path: Path) -> None:
 def test_missing_models_key_raises(tmp_path: Path) -> None:
     """Issue #1686 AC9: planner/critic model floors must come from config —
     a config file without them is invalid, not silently defaulted."""
+    _sibling_policy(tmp_path)
+    doc = _v2()
+    del doc["models"]
     bad = tmp_path / "plan_review.yaml"
-    bad.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": "v2",
-                "class_2": {
-                    "shared_surface_globs": ["x/**"],
-                    "churn_threshold": 1,
-                    "min_prod_areas": 1,
-                },
-                "exempt": {"mechanical_criteria": ["x"]},
-                "class_3": {"mechanical_criteria": ["y"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError):
+    bad.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ValueError, match="models"):
         load_plan_review_config(bad)
 
 
@@ -216,21 +280,10 @@ def test_missing_schema_version_raises_with_rename_guidance(tmp_path: Path) -> N
 def test_missing_exempt_key_raises(tmp_path: Path) -> None:
     """v2 requires the renamed exempt: section explicitly — a v2-labelled
     doc missing it is still invalid, not defaulted to empty."""
+    _sibling_policy(tmp_path)
+    doc = _v2()
+    del doc["exempt"]
     bad = tmp_path / "plan_review.yaml"
-    bad.write_text(
-        yaml.safe_dump(
-            {
-                "schema_version": "v2",
-                "class_2": {
-                    "shared_surface_globs": ["x/**"],
-                    "churn_threshold": 1,
-                    "min_prod_areas": 1,
-                },
-                "class_3": {"mechanical_criteria": ["admin-rights-required"]},
-                "models": {"planner": "p", "critic": "c"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError):
+    bad.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ValueError, match="exempt"):
         load_plan_review_config(bad)

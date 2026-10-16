@@ -10,6 +10,7 @@ here is the plan-lock grammar and classification logic consumed by
 __all__ = [
     "critic_verdict",
     "implement_plan_gate",
+    "path_policy",
     "plan_assumptions",
     "plan_classifier",
     "plan_lock",
