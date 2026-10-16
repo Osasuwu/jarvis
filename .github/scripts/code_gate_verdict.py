@@ -888,12 +888,9 @@ def shared_head_verdict(pr, open_prs):
     )
 
 
-def post_check(api, repo, head_sha, verdict, app_id, observation=None):
-    """PATCH this App's `code-gate` check runs for the SHA; create one only if
-    none exists. The ledger they carry is merged, updated with `observation` and
-    written back, and a sticky red it holds is what gets posted.
-
-    Returns (how, the verdict posted)."""
+def _read_own_checks(api, repo, head_sha, app_id):
+    """(this App's `code-gate` check runs for the SHA, their merged ledger, the
+    `ListingTruncated` that cut the listing short or None)."""
     listing_truncated = _github_client().ListingTruncated  # bound before `try`: see cmd_verdict
     truncated = None
     try:
@@ -905,14 +902,71 @@ def post_check(api, repo, head_sha, verdict, app_id, observation=None):
         )
     except listing_truncated as exc:
         # A check of ours (and its sticky red) could sit past the cap: what was
-        # read goes red, and a new red check is posted below.
+        # read goes red, and a new red check is posted by the caller.
         existing, truncated = exc.items, exc
     # Only this App's check runs: another app's same-named check can neither lift
     # nor plant a sticky red.
     mine = [c for c in existing if str((c.get("app") or {}).get("id")) == str(app_id)]
+    return mine, merge_ledgers(parse_ledger(c) for c in mine), truncated
+
+
+def _post_unreadable_listing(api, repo, head_sha, verdict, observation, exc):
+    """POST a new red `verdict-error` check when this App's own check runs could
+    not be read (#2081): unread, an earlier green one cannot be patched and would
+    stay the latest. The ledger keeps only what this run saw: an attempt unseen
+    now may be observed in a ledger that could not be read, and the next run that
+    reads them works `evidence-unobserved` out. A failing POST is reported, not
+    raised, so the listing's error stays the one the job fails with."""
+    obs = observation or Observation(frozenset(), frozenset(), False)
+    _, ledger = apply_ledger(
+        verdict, empty_ledger(), Observation(obs.seen, frozenset(), obs.blocking)
+    )
+    output = {
+        "title": f"{CHECK_NAME}: verdict-error",
+        "summary": (
+            f"The verdict could not read this SHA's `{CHECK_NAME}` check runs "
+            f"({type(exc).__name__}: {str(exc)[:200]}), so it posted this new red check "
+            f"instead of updating them; the verdict it had computed was `{verdict.code}`. "
+            "Re-run the verdict job."
+        ),
+        "text": ledger_text(ledger),
+    }
+    try:
+        api(
+            "POST",
+            f"repos/{repo}/check-runs",
+            {
+                "name": CHECK_NAME,
+                "head_sha": head_sha,
+                "status": "completed",
+                "conclusion": "failure",
+                "output": output,
+            },
+        )
+    except Exception as post_exc:
+        print(
+            f"::error::the red {CHECK_NAME} check could not be posted "
+            f"({type(post_exc).__name__}: {str(post_exc)[:200]}); an earlier "
+            f"{CHECK_NAME} check may still stand for {head_sha}",
+            file=sys.stderr,
+        )
+
+
+def post_check(api, repo, head_sha, verdict, app_id, observation=None):
+    """PATCH this App's `code-gate` check runs for the SHA; create one only if
+    none exists. The ledger they carry is merged, updated with `observation` and
+    written back, and a sticky red it holds is what gets posted. A listing that
+    cannot be read posts a new red check, then raises its error.
+
+    Returns (how, the verdict posted)."""
+    try:
+        mine, merged, truncated = _read_own_checks(api, repo, head_sha, app_id)
+    except Exception as exc:
+        _post_unreadable_listing(api, repo, head_sha, verdict, observation, exc)
+        raise
     verdict, ledger = apply_ledger(
         verdict,
-        merge_ledgers(parse_ledger(c) for c in mine),
+        merged,
         observation or Observation(frozenset(), frozenset(), False),
     )
     if truncated is not None:

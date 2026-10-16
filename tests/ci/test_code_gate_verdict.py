@@ -2158,6 +2158,92 @@ def test_post_check_waits_out_a_rate_limited_check_runs_page(failing_page, statu
     assert sleeps == [2]
 
 
+# --- post_check cannot read its own check-run listing (#2081) ---------------
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        {},
+        {"check_runs": None},
+        {"check_runs": ["x"]},
+        http_error(500, "server error"),
+        json.JSONDecodeError("Expecting value", "", 0),
+    ],
+    ids=["no-check_runs-key", "check_runs-null", "check_run-not-an-object", "http-500", "bad-json"],
+)
+def test_post_check_that_cannot_read_its_listing_posts_a_new_red_check_then_raises(listing):
+    """An earlier green check of ours cannot be patched unread, so it would stay
+    the latest: a new red check is posted without the listing, and the error
+    still leaves post_check so the job fails."""
+    api = FakeApi({CHECKS_PATH: listing})
+    expected = type(listing) if isinstance(listing, BaseException) else (ValueError, AttributeError)
+    with pytest.raises(expected) as raised:
+        gate.post_check(api, "o/r", SHA, GREEN, 123)
+    if isinstance(listing, BaseException):
+        assert raised.value is listing
+    writes = [(m, p, b) for m, p, b in api.calls if m != "GET"]
+    ((method, path, body),) = writes
+    assert (method, path) == ("POST", "repos/o/r/check-runs")
+    assert (body["name"], body["head_sha"], body["status"]) == ("code-gate", SHA, "completed")
+    assert body["conclusion"] == "failure"
+    assert body["output"]["title"] == "code-gate: verdict-error"
+    assert type(raised.value).__name__ in body["output"]["summary"]
+    assert "`cosmetic`" in body["output"]["summary"]
+    assert _ledger_of(body) == {"v": 1, "sticky": None, "observed": []}
+
+
+def test_post_check_unreadable_listing_keeps_a_blocking_seen_this_run_sticky():
+    api = FakeApi({CHECKS_PATH: {}})
+    seen_blocking = gate.Observation(frozenset({"1001:1"}), frozenset(), True)
+    with pytest.raises(ValueError):
+        gate.post_check(api, "o/r", SHA, GREEN, 123, seen_blocking)
+    (body,) = [b for m, _, b in api.calls if m == "POST"]
+    assert _ledger_of(body) == {"v": 1, "sticky": "evidence-blocking", "observed": ["1001:1"]}
+
+
+def test_post_check_unreadable_listing_plants_no_unobserved_sticky_it_cannot_check():
+    """Attempt 1001:1 is gone now, but a ledger that could not be read may record it
+    as observed: an `evidence-unobserved` planted here would hold until a new commit."""
+    api = FakeApi({CHECKS_PATH: {}})
+    observation = gate.Observation(frozenset({"1001:2"}), frozenset({"1001:1"}), False)
+    with pytest.raises(ValueError):
+        gate.post_check(api, "o/r", SHA, GREEN, 123, observation)
+    (body,) = [b for m, _, b in api.calls if m == "POST"]
+    assert _ledger_of(body) == {"v": 1, "sticky": None, "observed": ["1001:2"]}
+
+
+def test_post_check_unreadable_listing_whose_red_post_fails_raises_the_listing_error(capsys):
+    api = FakeApi({CHECKS_PATH: {}}, writes={"repos/o/r/check-runs": http_error(502)})
+    with pytest.raises(ValueError, match="check_runs"):
+        gate.post_check(api, "o/r", SHA, GREEN, 123)
+    assert [m for m, _, _ in api.calls] == ["GET", "POST"]
+    assert "::error::" in capsys.readouterr().err
+
+
+def test_verdict_whose_check_listing_is_malformed_posts_red_and_fails_the_job(monkeypatch):
+    """AC: the clean verdict is computed, but check 9 (green) cannot be read to be
+    patched, so a new red check is posted and cmd_verdict still raises."""
+    write = _run_verdict(
+        monkeypatch,
+        _snapshot_responses(
+            **{
+                RUNS_PATH: {"workflow_runs": [_pr_run(run_attempt=1)]},
+                ARTIFACTS_PATH: {"artifacts": [_art(1, "review-evidence-1")]},
+            }
+        ),
+        blobs={1: _evidence_zip()},
+    )
+    write.responses[CHECKS_PATH] = {}
+    with pytest.raises(ValueError, match="check_runs"):
+        gate.cmd_verdict(write.args)
+    assert _patched(write) == []
+    ((method, path, body),) = [c for c in write.calls if c[0] != "GET"]
+    assert (method, path, body["conclusion"]) == ("POST", "repos/o/r/check-runs", "failure")
+    assert body["output"]["title"] == "code-gate: verdict-error"
+    assert "`evidence-clean`" in body["output"]["summary"]
+
+
 # --- cmd_verdict end to end: stickiness past the artifact (#2062) ------------
 
 
