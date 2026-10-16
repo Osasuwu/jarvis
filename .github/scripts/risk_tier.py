@@ -11,7 +11,9 @@ without that file gets HIGH on every diff. The PR is read through the API as dat
 
 Verdict, in order:
 
-1. the body must carry exactly one well-formed `Risk:` line (grammar: risk_tier.md);
+1. the body must carry exactly one well-formed `Risk:` line (grammar: risk_tier.md), except a
+   Dependabot PR (author `dependabot[bot]`, type `Bot`), whose body is not read and whose
+   declared tier is fixed at HIGH (#2059);
 2. the computed tier is the highest of: a changed path in any bucket of the host base's
    `config/protected-paths.json` entry (HIGH), test weakening (HIGH), and the plan
    classifier's ordinal (3 -> HIGH, 2 -> MEDIUM, 1 -> LOW). Anything unreadable is HIGH;
@@ -45,6 +47,10 @@ HOLD_TIERS = ("HIGH", "CRITICAL")
 GRAMMAR = "Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>"
 DOC = ".github/scripts/risk_tier.md"
 HOST_SETUP_DOC = "docs/reference/lane-host-setup.md"
+# A Dependabot PR carries upstream release notes, not a Risk line, so its body is not read and
+# its declared tier is fixed (#2059). HIGH: only an admin's head-SHA approval releases it.
+DEPENDABOT = "dependabot[bot]"
+DEPENDABOT_TIER = "HIGH"
 
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
@@ -105,6 +111,16 @@ def parse_declared(body):
     if not match:
         return None, "malformed"
     return (match.group("b") or match.group("p")).upper(), None
+
+
+def is_dependabot(pr):
+    """The live PR's author is the Dependabot app (#2059): the login and the `Bot` type.
+
+    Read from the API's PR object, never from PR text. The `[bot]` suffix is reserved for
+    GitHub Apps, so no human account carries this login.
+    """
+    user = pr.get("user") or {}
+    return user.get("login") == DEPENDABOT and user.get("type") == "Bot"
 
 
 def _clean(text):
@@ -269,7 +285,12 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
         return False, [
             f"head moved to {head[:7]} (event was {event_head_sha[:7]}): superseded by a newer push"
         ]
-    declared, problem = parse_declared(pr.get("body"))
+    note = ""
+    if is_dependabot(pr):
+        declared, problem = DEPENDABOT_TIER, None
+        note = f" (fixed: {DEPENDABOT} PR, body not read)"
+    else:
+        declared, problem = parse_declared(pr.get("body"))
     if problem:
         return False, [
             f"The PR body has a {problem} Risk line. Expected exactly one line `{GRAMMAR}` "
@@ -280,7 +301,7 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
         files, pr.get("changed_files", len(files)), repo, host_root, code_root
     )
     final = max(declared, computed, key=SEVERITY.index)
-    summary = f"declared {declared}, computed {computed}, final {final}" + "".join(
+    summary = f"declared {declared}{note}, computed {computed}, final {final}" + "".join(
         f"\n  - {r}" for r in reasons
     )
     if final not in HOLD_TIERS:
