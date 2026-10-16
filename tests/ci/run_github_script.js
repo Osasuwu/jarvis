@@ -2,8 +2,12 @@
 // exercises the workflow's own JS instead of a Python re-creation of it (#1967, #1944).
 //
 // stdin:  {"script": str, "repo": {"owner", "repo"}, "payload": {...},
-//          "issues": ["owner/repo#N", ...]}   — issues.get succeeds only for these
+//          "issues": ["owner/repo#N", ...],   — issues.get succeeds only for these
+//          "closed": [...], "pulls": [...],  — optional: of those, closed ones / pull requests
+//          "commits": [str, ...]}             — optional: the PR's commit messages
 // stdout: {"failed": [str], "notices": [str], "lookups": ["owner/repo#N"]}
+//         plus "warnings": [str] when the script warned (absent otherwise, so callers that
+//         never warn keep comparing the three-key shape)
 "use strict";
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -14,12 +18,16 @@ async function main() {
   const input = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 
   const result = { failed: [], notices: [], lookups: [] };
-  const existing = new Set(input.issues.map((s) => s.toLowerCase()));
+  const lower = (xs) => new Set((xs || []).map((s) => s.toLowerCase()));
+  const existing = lower(input.issues);
+  const closed = lower(input.closed);
+  const pulls = lower(input.pulls);
+  const warnings = [];
   const core = {
     setFailed: (m) => result.failed.push(String(m)),
     notice: (m) => result.notices.push(String(m)),
     info: () => {},
-    warning: () => {},
+    warning: (m) => warnings.push(String(m)),
   };
   const github = {
     rest: {
@@ -30,16 +38,26 @@ async function main() {
           if (!existing.has(key.toLowerCase())) {
             throw Object.assign(new Error("Not Found"), { status: 404 });
           }
-          return { data: { number: issue_number } };
+          const k = key.toLowerCase();
+          const data = { number: issue_number, state: closed.has(k) ? "closed" : "open" };
+          if (pulls.has(k)) data.pull_request = { url: "stub" };
+          return { data };
         },
       },
+      pulls: {
+        listCommits: async () => ({
+          data: (input.commits || []).map((message) => ({ commit: { message } })),
+        }),
+      },
     },
+    paginate: async (method, params) => (await method(params)).data,
   };
   const context = { repo: input.repo, payload: input.payload };
 
   // The script's own console.log must not corrupt the JSON on stdout.
   console.log = () => {};
   await new AsyncFunction("github", "context", "core", input.script)(github, context, core);
+  if (warnings.length) result.warnings = warnings;
   process.stdout.write(JSON.stringify(result));
 }
 

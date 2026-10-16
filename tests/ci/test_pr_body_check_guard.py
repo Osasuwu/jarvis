@@ -60,6 +60,9 @@ def run(
     author: str = "Osasuwu",
     issues: tuple[str, ...] = ("Osasuwu/jarvis#42",),
     step_env: dict | None = None,
+    commits: tuple[str, ...] = (),
+    closed: tuple[str, ...] = (),
+    pulls: tuple[str, ...] = (),
 ) -> dict:
     """`step_env` replaces the step's own `env:` (read from the workflow by default)."""
     node = shutil.which("node")
@@ -70,12 +73,21 @@ def run(
             "title": title,
             "labels": [{"name": n} for n in labels],
             "user": {"login": author},
+            "number": 7000,
         }
     }
     proc = subprocess.run(
         [node, str(HARNESS)],
         input=json.dumps(
-            {"script": _script(), "repo": REPO, "payload": payload, "issues": list(issues)}
+            {
+                "script": _script(),
+                "repo": REPO,
+                "payload": payload,
+                "issues": list(issues),
+                "commits": list(commits),
+                "closed": list(closed),
+                "pulls": list(pulls),
+            }
         ),
         capture_output=True,
         text=True,
@@ -254,3 +266,87 @@ def test_missing_lane_bot_login_fails_closed():
         "lookups": [],
     }
     assert run("Drive-by.\n\n[no-issue]\n", step_env={}) == expected
+
+
+# --- absorbed slices (#1178): a `(#N)` commit headline the body does not link ----------------
+
+INCIDENT_1173 = (
+    "feat(agents): executor lane (#1169)",
+    "feat(deslop): diff_gate (#1159)",
+    "feat(skills): Fowler-12 self-review (#1155)",
+)
+INCIDENT_ISSUES = ("Osasuwu/jarvis#1169", "Osasuwu/jarvis#1159", "Osasuwu/jarvis#1155")
+
+
+def _orphaned(*keys: str) -> str:
+    return (
+        "require-linked-issue: commit headlines reference open issue(s) the PR body does not "
+        f"link: {', '.join(keys)}. If the PR ships an issue's whole scope, add a closing line "
+        '("Closes #N") for it; if the reference is not an absorbed slice, link it with '
+        '"Refs #N" (docs/reference/pr-issue-linkage.md, #1178).'
+    )
+
+
+def test_incident_1173_three_slices_one_closes_line_flags_the_other_two():
+    """AC1/AC2/AC6: the #1173 shape — 3 slice commits, body closes 1 → 2 named as orphaned."""
+    result = run("Closes #1169", commits=INCIDENT_1173, issues=INCIDENT_ISSUES)
+    assert result == {
+        "failed": [_orphaned("#1159", "#1155")],
+        "notices": [],
+        "lookups": ["Osasuwu/jarvis#1169", "Osasuwu/jarvis#1159", "Osasuwu/jarvis#1155"],
+    }
+
+
+def test_every_closing_keyword_in_the_body_covers_a_headline_ref():
+    """AC1: each keyword variant counts as listing the slice."""
+    for kw in ("close", "closed", "fix", "fixed", "resolve", "resolved", "Resolves:"):
+        body = f"Closes #1169\n{kw} #1159\n{kw} #1155"
+        result = run(body, commits=INCIDENT_1173, issues=INCIDENT_ISSUES)
+        assert result["failed"] == [], kw
+
+
+def test_refs_line_is_the_escape_hatch_for_a_non_absorbed_ref():
+    """AC3: `Refs #N` states the ref is not an absorbed slice, and the check accepts it."""
+    body = "Closes #1169\nRefs #1159\nRefs #1155"
+    result = run(body, commits=INCIDENT_1173, issues=INCIDENT_ISSUES)
+    assert result["failed"] == []
+
+
+def test_headline_ref_to_a_closed_issue_or_a_pull_request_passes():
+    """AC4: back-references (closed issues, and PR numbers from squash titles) are not slices."""
+    result = run(
+        "Closes #1169",
+        commits=INCIDENT_1173,
+        issues=INCIDENT_ISSUES,
+        closed=("Osasuwu/jarvis#1159",),
+        pulls=("Osasuwu/jarvis#1155",),
+    )
+    assert result == {
+        "failed": [],
+        "notices": [],
+        "lookups": ["Osasuwu/jarvis#1169", "Osasuwu/jarvis#1159", "Osasuwu/jarvis#1155"],
+    }
+
+
+def test_cross_repo_headline_ref_warns_and_does_not_fail():
+    """AC5: `owner/other#N` in a headline is warned about, never failed on."""
+    result = run("Closes #42", commits=("feat: port helper (Other/proj#9)",))
+    assert result == {
+        "failed": [],
+        "notices": [],
+        "lookups": ["Osasuwu/jarvis#42"],
+        "warnings": [
+            "require-linked-issue: commit headlines reference issue(s) in another repo: "
+            "Other/proj#9. A closing keyword does not reliably close a foreign issue; close "
+            "it by hand if this PR ships it (docs/reference/pr-issue-linkage.md)."
+        ],
+    }
+
+
+def test_ref_only_in_a_commit_body_is_not_a_headline_ref():
+    """AC1: only the headline (first line) is read — a body mention is not an absorbed slice."""
+    commit = "feat: x (#42)\n\nfollow-up to (#1159)"
+    result = run(
+        "Closes #42", commits=(commit,), issues=("Osasuwu/jarvis#42", "Osasuwu/jarvis#1159")
+    )
+    assert result == {"failed": [], "notices": [], "lookups": ["Osasuwu/jarvis#42"]}

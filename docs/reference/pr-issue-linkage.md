@@ -88,6 +88,15 @@ Consequences, each of which has bitten at least once:
   invoking it — needs the same scrutiny, checked against the full composed message a squash-merge
   will produce, not just the PR body or the newest commit in isolation.
 
+## The enforcement
+
+`require-linked-issue` (`.github/workflows/pr-body-check.yml`) reads every commit headline on
+the PR for `(#N)` refs (#1178). An open same-repo issue named there that the body does not link
+fails the check, naming the issue: add its closing line if the PR ships it, or `Refs #N` if the
+ref is not an absorbed slice. Closed issues and pull-request numbers pass; a foreign
+`owner/repo#N` only warns. It catches a superseded sibling's slices only while their commits
+keep their `(#N)` headlines — carrying the sibling's lines over (below) is still on you.
+
 ## Superseded siblings
 
 When you close a sibling PR as "superseded by #X", carry over **that sibling's own**
