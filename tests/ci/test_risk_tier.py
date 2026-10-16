@@ -14,6 +14,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ._github_fake import FakeApi, http_error, load_client
+
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 
 
@@ -52,8 +54,10 @@ def base(tmp_path):
     return tmp_path
 
 
-class FakeGitHub:
-    """GET-only GitHub API; unknown routes fail the test instead of answering."""
+class FakeGitHub(FakeApi):
+    """The shared fake, routed as PR #7 of REPO: the PR, its files and reviews paged by
+    `per_page`/`page`, and the collaborators' permissions (an unknown login is a 404).
+    Any other GET fails the test instead of answering."""
 
     def __init__(
         self,
@@ -74,23 +78,37 @@ class FakeGitHub:
         self.files = list(files)
         self.reviews = list(reviews)
         self.permissions = permissions or {}
-
-    def __call__(self, path):
-        route, _, query = path.partition("?")
         prefix = f"repos/{REPO}/pulls/7"
-        if route == prefix:
-            return self.pr
-        if route in (f"{prefix}/files", f"{prefix}/reviews"):
-            params = dict(q.split("=") for q in query.split("&"))
+        super().__init__(
+            {
+                prefix: self._pr,
+                f"{prefix}/files?": self._page(self.files),
+                f"{prefix}/reviews?": self._page(self.reviews),
+                f"repos/{REPO}/collaborators/": self._permission,
+            }
+        )
+
+    def _pr(self, method, path, body):
+        if path != f"repos/{REPO}/pulls/7":
+            return AssertionError(f"unexpected API call: {path}")
+        return self.pr
+
+    @staticmethod
+    def _page(items):
+        def answer(method, path, body):
+            params = dict(q.split("=") for q in path.partition("?")[2].split("&"))
             per_page, page = int(params["per_page"]), int(params["page"])
-            items = self.files if route.endswith("/files") else self.reviews
             return items[(page - 1) * per_page : page * per_page]
-        m = re.fullmatch(rf"repos/{REPO}/collaborators/([^/]+)/permission", route)
-        if m:
-            if m.group(1) not in self.permissions:
-                raise RuntimeError("HTTP 404")
-            return {"permission": self.permissions[m.group(1)]}
-        raise AssertionError(f"unexpected API call: {path}")
+
+        return answer
+
+    def _permission(self, method, path, body):
+        m = re.fullmatch(rf"repos/{REPO}/collaborators/([^/]+)/permission", path)
+        if not m:
+            return AssertionError(f"unexpected API call: {path}")
+        if m.group(1) not in self.permissions:
+            return http_error(404, url=f"https://api.github.com/{path}")
+        return {"permission": self.permissions[m.group(1)]}
 
 
 def _file(name, patch="@@ -0,0 +1 @@\n+x", status="modified", additions=1, deletions=0, **extra):
@@ -336,11 +354,21 @@ def test_a_files_listing_shorter_than_changed_files_reads_high(base):
 
 def test_a_files_listing_is_read_past_the_first_page(base):
     files = [_file(f"scripts/f{i}.py") for i in range(150)]
-    assert _computed(
-        base,
-        risk_tier._paged(FakeGitHub(files=files), f"repos/{REPO}/pulls/7/files"),
-        changed_files=150,
-    ) == ("LOW", [])
+    listed = load_client().paged(
+        FakeGitHub(files=files), f"repos/{REPO}/pulls/7/files", max_pages=risk_tier.MAX_FILE_PAGES
+    )
+    assert _computed(base, listed, changed_files=150) == ("LOW", [])
+
+
+def test_a_files_listing_past_its_page_cap_holds_at_high_naming_the_cut(base):
+    """#2068: 30 full pages (GitHub's 3000-file cap) may go on unread. The listed files are
+    all LOW, churn-free and match changed_files, so only the cap can raise the tier."""
+    files = [_file(f"scripts/f{i}.py", additions=0) for i in range(3000)]  # no churn
+    ok, messages = _run(base, FakeGitHub(body="Risk: LOW — x", files=files))
+    assert ok is False
+    assert messages[0] == (
+        "declared LOW, computed HIGH, final HIGH\n  - files listing truncated at 30 pages"
+    )
 
 
 def test_two_production_areas_read_medium_through_the_classifier(base):
@@ -527,6 +555,21 @@ def test_nothing_but_an_admin_humans_approval_at_head_releases_a_high_pr(
     )
 
 
+def test_a_reviews_listing_past_its_page_cap_does_not_release(high):
+    """#2068: an admin's head approval on the first page does not release a listing that
+    may go on unread past its 10th full page; the hold names the cut."""
+    reviews = [_review("alice", "APPROVED")]
+    reviews += [_review(f"user{i}", "COMMENTED") for i in range(999)]
+    ok, messages = high(reviews, {"alice": "admin"})
+    assert ok is False
+    assert messages[1:] == [
+        "reviews listing truncated at 10 pages",
+        "HIGH holds until an admin human (not osasuwu-bot) leaves an APPROVED review on the "
+        "current head aaaaaaa; a new push needs a new approval. See "
+        ".github/scripts/risk_tier.md (residual risks).",
+    ]
+
+
 def test_a_later_approval_and_an_unrelated_comment_still_release(high):
     reviews = [
         _review("alice", "CHANGES_REQUESTED", commit=OLD),
@@ -562,6 +605,7 @@ def _main_env(monkeypatch, host):
         "HEAD_SHA": HEAD,
         "LANE_BOT_LOGIN": "osasuwu-bot",
         "RISK_TIER_HOST_ROOT": str(host),
+        "GITHUB_TOKEN": "t0ken",
     }
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -571,10 +615,11 @@ def _main_env(monkeypatch, host):
 def test_main_exits_with_the_verdict_and_annotates_a_failure(monkeypatch, capsys, base, body, code):
     api = FakeGitHub(body=body, files=[_file("scripts/x.py")])
     _main_env(monkeypatch, base)
-    monkeypatch.setattr(risk_tier, "_github_get", api)
+    tokens = []
     with pytest.raises(SystemExit) as exit_info:
-        risk_tier.main()
+        risk_tier.main(make_client=lambda token: tokens.append(token) or api)
     assert exit_info.value.code == code
+    assert tokens == ["t0ken"]
     out = capsys.readouterr().out
     assert ("::error::The PR body has a missing Risk line." in out) == (code == 1)
 
@@ -586,21 +631,21 @@ def test_main_reads_the_protected_list_from_the_host_root(monkeypatch, capsys, t
         json.dumps({REPO: {"guarded": ["scripts/**"]}}), "utf-8"
     )
     _main_env(monkeypatch, host)
-    monkeypatch.setattr(
-        risk_tier, "_github_get", FakeGitHub(body="Risk: LOW — x", files=[_file("scripts/x.py")])
-    )
+    api = FakeGitHub(body="Risk: LOW — x", files=[_file("scripts/x.py")])
+    tokens = []
     with pytest.raises(SystemExit) as exit_info:
-        risk_tier.main()
+        risk_tier.main(make_client=lambda token: tokens.append(token) or api)
     assert exit_info.value.code == 1
+    assert tokens == ["t0ken"]
     assert "computed HIGH" in capsys.readouterr().out
 
 
 def test_main_without_a_bot_login_fails_naming_the_variable(monkeypatch, capsys, base):
     _main_env(monkeypatch, base)
     monkeypatch.setenv("LANE_BOT_LOGIN", "")
-    monkeypatch.setattr(risk_tier, "_github_get", FakeGitHub(files=[_file("scripts/x.py")]))
+    api = FakeGitHub(files=[_file("scripts/x.py")])
     with pytest.raises(SystemExit) as exit_info:
-        risk_tier.main()
+        risk_tier.main(make_client=lambda token: api)
     assert exit_info.value.code == 1
     assert capsys.readouterr().out.strip() == (
         "::error::risk-tier: LANE_BOT_LOGIN is empty; the calling workflow must pass the lane's "
@@ -694,37 +739,6 @@ def test_no_context_value_is_interpolated_into_an_action_shell_step():
     runs = [s["run"] for s in ACTION["runs"]["steps"] if "run" in s]
     assert len(runs) == 2
     assert [r for r in runs if "${{" in r] == []
-
-
-def test_the_github_call_is_authenticated_and_bounded_by_a_timeout(monkeypatch):
-    seen = {}
-
-    class Resp:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *exc):
-            return False
-
-        def read(self):
-            return b'{"ok": true}'
-
-    def fake_urlopen(req, timeout=None):
-        seen["url"], seen["auth"], seen["timeout"] = (
-            req.full_url,
-            req.get_header("Authorization"),
-            timeout,
-        )
-        return Resp()
-
-    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
-    monkeypatch.setattr(risk_tier.urllib.request, "urlopen", fake_urlopen)
-    assert risk_tier._github_get("repos/Osasuwu/jarvis/pulls/1") == {"ok": True}
-    assert seen == {
-        "url": "https://api.github.com/repos/Osasuwu/jarvis/pulls/1",
-        "auth": "Bearer t0ken",
-        "timeout": 30,
-    }
 
 
 def test_a_review_event_does_not_skip_the_linked_issue_job():

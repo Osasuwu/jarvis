@@ -10,18 +10,41 @@ the script puts the label back and stays red. Only a later release by a human cl
 "Not a human" is the bot login, any `*[bot]` login, and a login the event did not name.
 
 Stdlib only; the workflow runs this file from the base ref so a PR cannot rewrite its own gate.
+API calls go through the shared client `github_client.py` beside this script (#2068), loaded
+by file path at import from the same base-ref checkout.
 """
 
+import importlib.util
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
+from pathlib import Path
+
+
+def _load_client():
+    """`github_client.py` beside this script, shared through `sys.modules` so that
+    `ListingTruncated` is one class within the process."""
+    name = "_jarvis_github_client"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().with_name("github_client.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)  # a half-built module must not be handed out next time
+        raise
+    return module
+
+
+github_client = _load_client()
 
 LABEL = "waiting-human-review"
 DEFAULT_BOT_LOGIN = "osasuwu-bot"
 EVENT_PAGES = 10
-TIMEOUT = 30
 
 
 def is_non_human(login, bot):
@@ -55,51 +78,35 @@ def decide(pr, issue_events, event, bot=DEFAULT_BOT_LOGIN):
     return False, "clear", False
 
 
-def _request(method, path, body=None):
-    req = urllib.request.Request(
-        f"https://api.github.com/{path}",
-        method=method,
-        data=None if body is None else json.dumps(body).encode(),
-        headers={
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-        raw = resp.read()
-    return json.loads(raw) if raw else None
+def _issue_events(api, repo, number):
+    """Every issue event of the PR, oldest first. A history past the page cap is
+    unreadable: `ListingTruncated`, a RuntimeError."""
+    return github_client.paged(api, f"repos/{repo}/issues/{number}/events", max_pages=EVENT_PAGES)
 
 
-def _issue_events(repo, number):
-    """Every issue event of the PR, oldest first; a history past the page cap is unreadable."""
-    events = []
-    for page in range(1, EVENT_PAGES + 1):
-        batch = _request("GET", f"repos/{repo}/issues/{number}/events?per_page=100&page={page}")
-        events.extend(batch)
-        if len(batch) < 100:
-            return events
-    raise RuntimeError(f"more than {EVENT_PAGES * 100} events; the release history is unreadable")
+def _make_client(token):
+    return github_client.Client(token, user_agent="waiting-human-review")
 
 
-def main():
+def main(make_client=None):
     repo = os.environ["GITHUB_REPOSITORY"]
     number = os.environ["PR_NUMBER"]
     bot = os.environ.get("LANE_BOT_LOGIN") or DEFAULT_BOT_LOGIN
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
         event = json.load(fh)
+    api = (make_client or _make_client)(os.environ["GITHUB_TOKEN"])
     # Re-fetch rather than trust the payload: a review_submitted payload's
     # pull_request is a snapshot that may predate GitHub clearing the reviewer.
     try:
-        pr = _request("GET", f"repos/{repo}/pulls/{number}")
-        events = _issue_events(repo, number)
+        pr = api("GET", f"repos/{repo}/pulls/{number}")
+        events = _issue_events(api, repo, number)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"::error::cannot read the hold state of #{number}: {exc}")
         return 1
     red, reason, reapply = decide(pr, events, event, bot)
     if reapply:
         try:
-            _request("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [LABEL]})
+            api("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [LABEL]})
         except (OSError, ValueError) as exc:
             print(f"::error::could not re-apply `{LABEL}` after a non-human release: {exc}")
     messages = {

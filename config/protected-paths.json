@@ -37,6 +37,7 @@
       ".github/workflows/code-review.yml",
       ".github/workflows/code-gate-verdict.yml",
       ".github/scripts/code_gate_verdict.py",
+      ".github/scripts/github_client.py",
       ".github/actions/**",
       "agents/path_policy.py",
       "config/protected-paths.json"

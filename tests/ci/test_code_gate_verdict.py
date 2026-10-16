@@ -19,6 +19,15 @@ from pathlib import Path
 
 import pytest
 
+from ._github_fake import (
+    FakeApi,
+    FakeResponse,
+    FakeTransport,
+    SequencedApi,
+    http_error,
+    load_client,
+)
+
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 _spec = importlib.util.spec_from_file_location(
     "code_gate_verdict", _root / ".github" / "scripts" / "code_gate_verdict.py"
@@ -118,6 +127,7 @@ REPO = "Osasuwu/jarvis"
         ".github/workflows/code-review.yml",
         ".github/workflows/code-gate-verdict.yml",
         ".github/scripts/code_gate_verdict.py",
+        ".github/scripts/github_client.py",  # the verdict job executes it (#2068)
         ".github/actions/anything/action.yml",
         "agents/path_policy.py",  # the list moved out of this script (#2067): its reader
         "config/protected-paths.json",  # and the list itself are gate machinery now
@@ -188,9 +198,11 @@ def test_a_list_that_cannot_name_the_gate_set_raises(tmp_path, policy):
 
 
 def test_the_review_side_subcommands_run_from_the_script_alone(tmp_path):
-    """code-review.yml runs `prepare`/`validate`/`check-tree`/`stamp`/`skip` under
-    `python -I` in a workspace the reviewer can write to (#2024): they must not import
-    path_policy, so a copy of the script alone still validates."""
+    """code-review.yml runs `validate`, `check-tree` and `stamp` after the reviewer,
+    under `python -I` in a workspace the reviewer can write to (#2024): they must load
+    nothing beside the script, neither path_policy nor github_client, so a copy of the
+    script alone still validates. (`prepare` runs before the reviewer and loads
+    github_client.py; `skip` loads nothing either.)"""
     script = tmp_path / "code_gate_verdict.py"
     shutil.copy(_root / ".github" / "scripts" / "code_gate_verdict.py", script)
     findings = tmp_path / "findings.json"
@@ -997,36 +1009,6 @@ def test_zip_with_invalid_json_is_malformed():
 # --- load_entries (fake API) ----------------------------------------------
 
 
-class FakeApi:
-    """GETs answered by the longest matching path prefix; downloads by artifact id
-    from `blobs`. An exception instance is raised instead of returned."""
-
-    def __init__(self, responses=None, blobs=None):
-        self.responses = responses or {}
-        self.blobs = blobs or {}
-        self.calls = []
-
-    def __call__(self, method, path, body=None):
-        self.calls.append((method, path, body))
-        if method != "GET":
-            return {}
-        # longest matching prefix wins, so 'pulls/7/files' is never answered as 'pulls/7'
-        for prefix in sorted(self.responses, key=len, reverse=True):
-            if path.startswith(prefix):
-                value = self.responses[prefix]
-                if isinstance(value, BaseException):
-                    raise value
-                return value
-        raise AssertionError(f"unexpected API call {method} {path}")
-
-    def download(self, path):
-        self.calls.append(("DOWNLOAD", path, None))
-        blob = self.blobs[int(path.split("/")[-2])]
-        if isinstance(blob, BaseException):
-            raise blob
-        return blob
-
-
 ARTIFACTS_PATH = "repos/o/r/actions/runs/1001/artifacts"
 
 
@@ -1210,38 +1192,37 @@ class _Resp:
         return False
 
 
-class _Opener:
-    def __init__(self, outcome):
-        self._outcome = outcome
-
-    def open(self, req, timeout=None):
-        if isinstance(self._outcome, Exception):
-            raise self._outcome
-        return self._outcome
+ZIP = "repos/o/r/actions/artifacts/1/zip"
+ZIP_URL = f"https://api.github.com/{ZIP}"
+BLOB_URL = "https://blob.example/z"
 
 
-def test_download_rejects_a_cut_off_body_served_directly(monkeypatch):
-    monkeypatch.setattr(gate.urllib.request, "build_opener", lambda *h: _Opener(_Resp(b"PK-z", 6)))
-    with pytest.raises(gate.UnreadableArtifact):
-        gate.Api("tok").download("repos/o/r/actions/artifacts/1/zip")
-
-
-def test_download_rejects_a_cut_off_body_behind_the_redirect(monkeypatch):
-    redirect = urllib.error.HTTPError(
-        "https://api.github.com/x", 302, "Found", {"Location": "https://blob.example/z"}, None
+def _download(script):
+    """`download(ZIP, read_capped)` of a real client over `script`."""
+    transport = FakeTransport(script)
+    client = load_client().Client(
+        "tok", user_agent="code-gate-verdict", sleep=lambda s: None, transport=transport
     )
-    seen = []
+    return lambda: client.download(ZIP, gate.read_capped), transport
 
-    def urlopen(req, timeout=None):
-        seen.append(req)
-        return _Resp(b"PK-z", 6)
 
-    monkeypatch.setattr(gate.urllib.request, "build_opener", lambda *h: _Opener(redirect))
-    monkeypatch.setattr(gate.urllib.request, "urlopen", urlopen)
+def test_download_rejects_a_cut_off_body_served_directly():
+    cut_off = FakeResponse(b"PK-z", headers={"Content-Length": "6"})
+    download, transport = _download({ZIP_URL: [cut_off]})
     with pytest.raises(gate.UnreadableArtifact):
-        gate.Api("tok").download("repos/o/r/actions/artifacts/1/zip")
-    assert [r.full_url for r in seen] == ["https://blob.example/z"]
-    assert seen[0].get_header("Authorization") is None
+        download()
+    assert [r.url for r in transport.requests] == [ZIP_URL]
+
+
+def test_download_rejects_a_cut_off_body_behind_the_redirect():
+    redirect = http_error(302, headers={"Location": BLOB_URL}, url=ZIP_URL)
+    cut_off = FakeResponse(b"PK-z", headers={"Content-Length": "6"})
+    download, transport = _download({ZIP_URL: [redirect], BLOB_URL: [cut_off]})
+    with pytest.raises(gate.UnreadableArtifact):
+        download()
+    _, follow = transport.requests
+    assert follow.url == BLOB_URL
+    assert "authorization" not in follow.headers
 
 
 def test_read_capped_returns_a_whole_body():
@@ -1407,20 +1388,6 @@ def test_snapshot_returns_pr_and_files():
     got_pr, got_files = gate.fetch_pr_snapshot(api, "o/r", 7)
     assert got_pr["head"]["sha"] == SHA
     assert got_files == [{"filename": "a.py"}]
-
-
-class SequencedApi(FakeApi):
-    """Answers each read of PR #7 with the next of `prs`; the file list is empty."""
-
-    def __init__(self, *prs):
-        super().__init__()
-        self.prs = iter(prs)
-
-    def __call__(self, method, path, body=None):
-        self.calls.append((method, path, body))
-        if method != "GET":
-            return {}
-        return next(self.prs) if path == "repos/o/r/pulls/7" else []
 
 
 def _open_pr(head_sha=SHA, **over):
@@ -1891,8 +1858,8 @@ def test_prepare_fails_the_step_with_an_annotation_and_a_summary(
 ):
     summary = _prepare_env(monkeypatch, tmp_path, EXPECTED_HEAD_SHA=expected_head)
     api = make_api()
-    monkeypatch.setattr(gate, "Api", lambda token: api)
-    code = gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
+    args = argparse.Namespace(head_dir=str(tmp_path / "head"), make_client={"t": api}.__getitem__)
+    code = gate.cmd_prepare(args)
     assert code == 1
     assert f"::error::{message}" in capsys.readouterr().err
     assert summary.read_text("utf-8") == f"**Review not run:** {message}\n"
@@ -1901,24 +1868,24 @@ def test_prepare_fails_the_step_with_an_annotation_and_a_summary(
 def test_prepare_lets_an_unrelated_api_failure_propagate(monkeypatch, tmp_path):
     _prepare_env(monkeypatch, tmp_path)
     api = FakeApi({"repos/o/r/pulls/7": _http_error(500)})
-    monkeypatch.setattr(gate, "Api", lambda token: api)
+    args = argparse.Namespace(head_dir=str(tmp_path / "head"), make_client={"t": api}.__getitem__)
     with pytest.raises(urllib.error.HTTPError):
-        gate.cmd_prepare(argparse.Namespace(head_dir=str(tmp_path / "head")))
+        gate.cmd_prepare(args)
 
 
 def test_verdict_on_a_head_moving_mid_read_posts_nothing_and_exits_clean(monkeypatch, capsys):
     for key, value in {
         "GITHUB_REPOSITORY": "o/r",
-        "GH_TOKEN": "t",
-        "GATE_TOKEN": "t",
+        "GH_TOKEN": "read-t",
+        "GATE_TOKEN": "gate-t",
         "GATE_APP_ID": "123",
         "PR_NUMBER": "7",
         "HEAD_SHA": SHA,
     }.items():
         monkeypatch.setenv(key, value)
     api = _moving_api()
-    monkeypatch.setattr(gate, "Api", lambda token: api)
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    clients = {"read-t": api, "gate-t": FakeApi()}
+    assert gate.cmd_verdict(argparse.Namespace(make_client=clients.__getitem__)) == 0
     assert [m for m, _, _ in api.calls] == ["GET", "GET", "GET"]
     assert capsys.readouterr().out == (
         "PR head moved while its files were being read; the newer SHA has its own evaluation\n"
@@ -1936,7 +1903,9 @@ def _run_verdict(monkeypatch, read_responses, blobs=None, checks=None):
         checks = [{"id": 9, "app": {"id": 123}}]
     write = FakeApi({CHECKS_PATH: {"check_runs": checks}})
     apis = {"read-token": read, "gate-token": write}
-    monkeypatch.setattr(gate, "Api", lambda token: apis[token])
+    # A token reaching the wrong client is a KeyError: reads use GH_TOKEN, the
+    # check write GATE_TOKEN.
+    write.args = argparse.Namespace(make_client=apis.__getitem__)
     env = {
         "GITHUB_REPOSITORY": "o/r",
         "HEAD_SHA": SHA,
@@ -1951,6 +1920,45 @@ def _run_verdict(monkeypatch, read_responses, blobs=None, checks=None):
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     write.read = read
     return write
+
+
+def test_main_reads_with_gh_token_and_writes_the_check_with_gate_token(monkeypatch):
+    """Every other verdict test injects `make_client`. This one runs `main(["verdict"])`
+    on the parser's default factory and the real client, at the transport seam: reads
+    carry GH_TOKEN and the check write GATE_TOKEN, both as `code-gate-verdict`
+    (#2068 review). Swapped, the job's token posts the check or the App's reads."""
+    api = "https://api.github.com/"
+    pr = _pr(changed_files=1)
+    checks = f"{CHECKS_PATH}?check_name=code-gate&filter=all&per_page=100&page=1"
+    transport = FakeTransport(
+        {
+            f"{api}repos/o/r/pulls/{PR}": [pr, pr],
+            f"{api}repos/o/r/pulls/{PR}/files?per_page=100&page=1": [
+                [{"filename": "a.py", "status": "modified"}]
+            ],
+            f"{api}repos/o/r": [{"default_branch": "main"}],
+            f"{api}{OPEN_PULLS}&per_page=100&page=1": [[pr, _pr(number=8)]],
+            f"{api}{checks}": [{"check_runs": []}],
+            f"{api}repos/o/r/check-runs": [{"id": 1}],
+        }
+    )
+    monkeypatch.setattr(load_client(), "urllib_transport", transport)
+    _run_verdict(monkeypatch, {})
+    assert gate.main(["verdict"]) == 0
+    reader, writer = "Bearer read-" + "token", "Bearer gate-" + "token"
+    assert [
+        (r.method, r.url.removeprefix(api), r.headers["authorization"], r.headers["user-agent"])
+        for r in transport.requests
+    ] == [
+        ("GET", f"repos/o/r/pulls/{PR}", reader, "code-gate-verdict"),
+        ("GET", f"repos/o/r/pulls/{PR}/files?per_page=100&page=1", reader, "code-gate-verdict"),
+        ("GET", f"repos/o/r/pulls/{PR}", reader, "code-gate-verdict"),
+        ("GET", "repos/o/r", reader, "code-gate-verdict"),
+        ("GET", f"{OPEN_PULLS}&per_page=100&page=1", reader, "code-gate-verdict"),
+        ("GET", checks, writer, "code-gate-verdict"),
+        ("POST", "repos/o/r/check-runs", writer, "code-gate-verdict"),
+    ]
+    assert transport.requests[-1].body["conclusion"] == "failure"
 
 
 def _patched(write):
@@ -1991,7 +1999,7 @@ def test_a_crashing_verdict_replaces_a_green_check_with_a_red_one(monkeypatch, r
     """A crash must not leave the SHA's earlier green standing: it posts red, then fails the job."""
     write = _run_verdict(monkeypatch, responses)
     with pytest.raises(OSError):
-        gate.cmd_verdict(argparse.Namespace())
+        gate.cmd_verdict(write.args)
     ((path, body),) = _patched(write)
     assert path == "repos/o/r/check-runs/9"
     assert body["conclusion"] == "failure"
@@ -2003,7 +2011,7 @@ def test_a_pr_into_another_base_posts_no_verdict(monkeypatch):
     would land on a PR into the default branch that shares the head."""
     pr = _pr(changed_files=1, base={"ref": "release", "repo": {"full_name": "o/r"}})
     write = _run_verdict(monkeypatch, _snapshot_responses(pr=pr))
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(write.args) == 0
     assert write.calls == []
 
 
@@ -2012,7 +2020,7 @@ def test_two_open_prs_on_one_head_post_shared_head(monkeypatch):
         **{OPEN_PULLS: [_pr(changed_files=1), _pr(number=8, changed_files=1)]}
     )
     write = _run_verdict(monkeypatch, responses)
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(write.args) == 0
     ((_, body),) = _patched(write)
     assert (body["conclusion"], body["output"]["title"]) == ("failure", "code-gate: shared-head")
 
@@ -2021,7 +2029,7 @@ def test_an_open_pr_listing_too_long_to_read_whole_fails_closed(monkeypatch):
     page = [_pr(number=100 + i, head={"sha": OTHER_SHA}) for i in range(100)]
     write = _run_verdict(monkeypatch, _snapshot_responses(**{OPEN_PULLS: page}))
     with pytest.raises(RuntimeError, match="truncated"):
-        gate.cmd_verdict(argparse.Namespace())
+        gate.cmd_verdict(write.args)
     ((_, body),) = _patched(write)
     assert body["conclusion"] == "failure"
     assert body["output"]["title"] == "code-gate: listing-truncated"
@@ -2029,35 +2037,6 @@ def test_an_open_pr_listing_too_long_to_read_whole_fails_closed(monkeypatch):
 
 
 # --- page caps fail closed (#2076) -------------------------------------------
-
-
-def _pages(sizes):
-    """A list endpoint whose page N holds sizes[N-1] items (then nothing)."""
-    calls = []
-
-    def api(method, path, body=None):
-        calls.append(path)
-        page = int(re.search(r"[?&]page=(\d+)", path).group(1))
-        size = sizes[page - 1] if page <= len(sizes) else 0
-        return [{"n": (page, i)} for i in range(size)]
-
-    return api, calls
-
-
-def test_paged_raises_naming_the_listing_when_its_last_allowed_page_is_full():
-    """A full last page may go on: handing it on as the whole list is fail-open."""
-    api, calls = _pages([100, 100, 100, 7])
-    with pytest.raises(RuntimeError, match=r"repos/o/r/things.*truncated") as info:
-        gate.paged(api, "repos/o/r/things", max_pages=3)
-    assert isinstance(info.value, gate.ListingTruncated)
-    assert len(info.value.items) == 300
-    assert len(calls) == 3
-
-
-def test_paged_returns_a_listing_that_ends_inside_its_cap():
-    api, calls = _pages([100, 100, 40])
-    assert len(gate.paged(api, "repos/o/r/things", max_pages=3)) == 240
-    assert len(calls) == 3
 
 
 def _other_dispatches(n):
@@ -2085,7 +2064,7 @@ def test_a_dispatch_listing_past_its_cap_is_red_naming_the_truncation_not_green(
         blobs={1: _evidence_zip()},
     )
     with pytest.raises(RuntimeError, match="truncated"):
-        gate.cmd_verdict(argparse.Namespace())
+        gate.cmd_verdict(write.args)
     ((_, body),) = _patched(write)
     assert body["conclusion"] == "failure"
     assert body["output"]["title"] == "code-gate: listing-truncated"
@@ -2109,7 +2088,7 @@ def test_dispatch_listing_reads_only_runs_created_since_the_pr_could_be_dispatch
         ),
         blobs={1: _evidence_zip()},
     )
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(write.args) == 0
     assert _title(write) == "code-gate: evidence-clean"
     (listed,) = [p for _, p, _ in write.read.calls if p.startswith(DISPATCH_LISTING)]
     # PR created 2026-10-01T12:00:00Z, minus 35 days; `>=` and `:` percent-encoded.
@@ -2145,6 +2124,38 @@ def test_post_check_past_its_cap_reddens_the_read_check_of_ours_and_posts_a_new_
         ("PATCH", "repos/o/r/check-runs/77", "failure"),
         ("POST", "repos/o/r/check-runs", "failure"),
     ]
+
+
+@pytest.mark.parametrize("failing_page", [1, 2, 10])
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(403, "You have exceeded a secondary rate limit"), (429, "")],
+    ids=["403-secondary", "429"],
+)
+def test_post_check_waits_out_a_rate_limited_check_runs_page(failing_page, status, body):
+    """#2068: a 403/429 on any check-runs page used to raise out of post_check
+    before the check was written. Under the client's policy it is waited out
+    (2 s on the first retry) and this App's check is patched."""
+    listing = (
+        f"https://api.github.com/{CHECKS_PATH}?check_name=code-gate&filter=all&per_page=100&page="
+    )
+    foreign = {"check_runs": [{"id": 5000 + i, "app": {"id": 15368}} for i in range(100)]}
+    script = {f"{listing}{n}": [foreign] for n in range(1, failing_page)}
+    script[f"{listing}{failing_page}"] = [
+        http_error(status, body),
+        {"check_runs": [{"id": 9, "app": {"id": 123}}]},
+    ]
+    script["https://api.github.com/repos/o/r/check-runs/9"] = [b""]
+    sleeps = []
+    transport = FakeTransport(script)
+    client = load_client().Client(
+        "tok", user_agent="code-gate-verdict", sleep=sleeps.append, transport=transport
+    )
+    how, posted = gate.post_check(client, "o/r", SHA, GREEN, 123)
+    assert (how, posted.code) == ("patched", "cosmetic")
+    writes = [(r.method, r.url, r.body["conclusion"]) for r in transport.requests if r.body]
+    assert writes == [("PATCH", "https://api.github.com/repos/o/r/check-runs/9", "success")]
+    assert sleeps == [2]
 
 
 # --- cmd_verdict end to end: stickiness past the artifact (#2062) ------------
@@ -2184,7 +2195,7 @@ def test_verdict_reads_blocking_then_the_rerun_deletes_it_stays_blocking(monkeyp
         ),
         blobs={1: _evidence_zip(blocking=True)},
     )
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(first.args) == 0
     ((_, body),) = _patched(first)
     assert body["output"]["title"] == "code-gate: evidence-blocking"
     after = [_check(text=body["output"]["text"])]
@@ -2194,7 +2205,7 @@ def test_verdict_reads_blocking_then_the_rerun_deletes_it_stays_blocking(monkeyp
         blobs={2: _evidence_zip()},
         checks=after,
     )
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(second.args) == 0
     assert _title(second) == "code-gate: evidence-blocking"
 
 
@@ -2214,7 +2225,7 @@ def test_ledgered_blocking_stays_after_expiry_and_a_clean_redispatch(monkeypatch
         blobs={5: _evidence_zip()},
         checks=[_check(text=_ledger_text("evidence-blocking", ["1001:1"]))],
     )
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(write.args) == 0
     assert _title(write) == "code-gate: evidence-blocking"
 
 
@@ -2227,7 +2238,7 @@ def test_rerun_before_the_verdict_read_attempt_1_is_red_unobserved(monkeypatch):
         blobs={2: _evidence_zip()},
         checks=[_check()],
     )
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(write.args) == 0
     assert _title(write) == "code-gate: evidence-unobserved"
 
 
@@ -2239,7 +2250,7 @@ def test_rerun_after_a_failed_attempt_1_can_go_green(monkeypatch):
         blobs={2: _evidence_zip()},
         checks=[_check()],
     )
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(write.args) == 0
     assert _title(write) == "code-gate: evidence-clean"
 
 
@@ -2260,7 +2271,7 @@ def test_clean_read_then_expired_is_lifted_by_a_clean_redispatch(monkeypatch):
         blobs={5: _evidence_zip()},
         checks=[_check(text=_ledger_text(None, ["1001:1"]))],
     )
-    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert gate.cmd_verdict(write.args) == 0
     assert _title(write) == "code-gate: evidence-clean"
 
 
@@ -2272,7 +2283,7 @@ def test_a_crashing_verdict_keeps_the_ledger(monkeypatch):
         checks=[_check(text=_ledger_text("evidence-blocking", ["1001:1"]))],
     )
     with pytest.raises(OSError):
-        gate.cmd_verdict(argparse.Namespace())
+        gate.cmd_verdict(write.args)
     ((_, body),) = _patched(write)
     assert body["conclusion"] == "failure"
     assert _ledger_of(body) == {"v": 1, "sticky": "evidence-blocking", "observed": ["1001:1"]}
