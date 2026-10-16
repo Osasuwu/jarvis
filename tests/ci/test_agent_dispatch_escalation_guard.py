@@ -173,9 +173,8 @@ class TestRedCheckWatcher:
 
     def test_caller_calls_the_shared_watch_workflow_and_passes_the_pat_by_name(self, caller):
         job = caller["jobs"]["watch"]
-        # A same-commit local ref, or `owner/repo/...@<40-hex sha>` once pinned.
         assert re.fullmatch(
-            r"(\./|[\w.-]+/[\w.-]+/)\.github/workflows/lane-watch\.yml(@[0-9a-f]{40})?", job["uses"]
+            r"Osasuwu/jarvis/\.github/workflows/lane-watch\.yml@[0-9a-f]{40}", job["uses"]
         )
         assert job["secrets"] == {"AGENT_DISPATCH_PAT": "${{ secrets.AGENT_DISPATCH_PAT }}"}
         assert job["permissions"] == {"contents": "read"}

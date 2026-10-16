@@ -9,10 +9,10 @@ name: Agent Dispatch
 # Declare no `concurrency` here, at workflow or job level: the group is
 # lane.yml's, and a caller group equal to the callee's deadlocks the run.
 #
-# `uses:` is a same-commit local ref while lane.yml is being introduced; the
-# next change pins it, here and in the other lane callers, to
-# `Osasuwu/jarvis/.github/workflows/lane.yml@<sha>` (a commit already on the
-# default branch). Host setup and the pin procedure: docs/reference/lane-host-setup.md.
+# `uses:` is pinned to a jarvis commit already on the default branch, the same
+# SHA in every lane caller and the `risk-tier` job of pr-body-check.yml (a
+# guard test holds them equal). Host setup and the pin-bump procedure:
+# docs/reference/lane-host-setup.md.
 on:
   issues:
     types: [labeled]
@@ -23,7 +23,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: ./.github/workflows/lane.yml
+    uses: Osasuwu/jarvis/.github/workflows/lane.yml@ffbe6c53dfef6b683612c57e23dbf6be38d0026a
     with:
       bot-login: osasuwu-bot
       bot-email: 339131200+osasuwu-bot@users.noreply.github.com
