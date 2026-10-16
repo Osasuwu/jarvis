@@ -41,9 +41,10 @@ admin-merge (`~/.claude/reference/merge-gates.md`) backed by a fresh-session
 Every decision below is a pure function over plain dicts and lists; the API
 access (`gather_entries`, `post_check`) is a thin wrapper around them, over the
 shared client `github_client.py` beside this script (#2068).
-Stdlib only: the jobs need no dependency install. `prepare` and `verdict` load
-`github_client.py`, and `verdict` also `agents/path_policy.py` (stdlib too), by file
-path from this script's checkout; every other subcommand runs from the script alone.
+Stdlib only: the jobs need no dependency install. `prepare`, `verdict` and the
+scheduled `resolve` (#2079) load `github_client.py`, and `verdict` also
+`agents/path_policy.py` (stdlib too), by file path from this script's checkout;
+every other subcommand, and `resolve` on an event, runs from the script alone.
 """
 
 import argparse
@@ -103,6 +104,9 @@ _IGNORED_CONCLUSIONS = frozenset(
 # A listing that reaches its cap is red, never read as whole (`paged`, #2076).
 MAX_RUN_PAGES = 10  # the runs API serves at most 1000 results to a filtered query
 MAX_PR_PAGES = 10
+# The scheduled sweep runs one verdict job per open PR, and a matrix holds at
+# most 256 jobs: past that it fails rather than re-decide only some (#2079).
+MAX_SWEEP_TARGETS = 256
 MAX_CHECK_PAGES = 10
 # A dispatch for a PR can only produce evidence once the PR exists (`prepare`
 # fetches it), and a workflow run lives at most 35 days, approval wait included;
@@ -591,7 +595,8 @@ def _github_client():
 
     Loaded by file path on first use, from the API code paths only, so the
     subcommands that make no API call (`validate`, `check-tree`, `stamp`, `skip`,
-    `resolve`) still run from this script alone under `python -I`."""
+    and `resolve` on an event; the scheduled sweep lists PRs) still run from this
+    script alone under `python -I`."""
     name = "_jarvis_github_client"
     if name in sys.modules:
         return sys.modules[name]
@@ -610,6 +615,30 @@ def _github_client():
 
 def _make_client(token):
     return _github_client().Client(token, user_agent="code-gate-verdict")
+
+
+def sweep_targets(api, repo):
+    """Every open PR into the default branch, at its head: what a schedule re-decides.
+
+    Review evidence expires and its expiry fires no event, so a green resting on it
+    would stand until the next push; the daily sweep re-decides it red (#2079). A
+    listing that hits its page cap raises `ListingTruncated` and more PRs than one
+    matrix holds raise RuntimeError: either way the sweep fails and sweeps none."""
+    default_branch = api("GET", f"repos/{repo}")["default_branch"]
+    open_prs = _github_client().paged(
+        api,
+        f"repos/{repo}/pulls?state=open&base={urllib.parse.quote(default_branch)}",
+        max_pages=MAX_PR_PAGES,
+    )
+    if len(open_prs) > MAX_SWEEP_TARGETS:
+        raise RuntimeError(
+            f"{len(open_prs)} open PRs into {default_branch}: one sweep runs at most "
+            f"{MAX_SWEEP_TARGETS} verdict jobs"
+        )
+    return sorted(
+        ({"pr_number": p["number"], "head_sha": p["head"]["sha"]} for p in open_prs),
+        key=lambda t: t["pr_number"],
+    )
 
 
 class UnreadableArtifact(Exception):
@@ -1113,9 +1142,19 @@ def cmd_skip(args):
     return 0
 
 
-def cmd_resolve(_args):
-    """Verdict workflow: which PR and SHA does this event concern?"""
+def cmd_resolve(args):
+    """Verdict workflow: which PRs and SHAs does this event concern?
+
+    One `targets` output, a JSON list of `{pr_number, head_sha}` the verdict job
+    runs once per entry of."""
     event = os.environ["EVENT_NAME"]
+    if event == "schedule":
+        targets = sweep_targets(
+            args.make_client(os.environ["GH_TOKEN"]), os.environ["GITHUB_REPOSITORY"]
+        )
+        print(f"sweeping {len(targets)} open PR(s)")
+        _output("targets", json.dumps(targets, separators=(",", ":")))
+        return 0
     if event == "pull_request_target":
         target = (int(os.environ["PR_NUMBER"]), os.environ["HEAD_SHA"])
     else:
@@ -1128,11 +1167,10 @@ def cmd_resolve(_args):
         )
     if target is None:
         print("event is not bound to a PR; nothing to evaluate")
-        _output("pr_number", "")
-        _output("head_sha", "")
-        return 0
-    _output("pr_number", target[0])
-    _output("head_sha", target[1])
+        targets = []
+    else:
+        targets = [{"pr_number": target[0], "head_sha": target[1]}]
+    _output("targets", json.dumps(targets, separators=(",", ":")))
     return 0
 
 
