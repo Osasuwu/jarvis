@@ -138,12 +138,106 @@ def test_a_secondary_rate_limit_is_waited_out_and_logged(capsys):
     assert capsys.readouterr().err == "throttled GET repos/o/r/pulls/7 in 2s (HTTP 403)\n"
 
 
-def test_a_404_raises_unchanged():
-    client, transport, sleeps = _client([http_error(404)])
+def test_a_404_raises_unchanged_and_logs_nothing(capsys):
+    """A 404 is an answer some callers expect (a label already gone): no log line."""
+    client, transport, sleeps = _client([http_error(404, "Not Found")])
     with pytest.raises(urllib.error.HTTPError) as info:
         client("GET", "repos/o/r/pulls/7")
     assert info.value.code == 404
     assert (len(transport.requests), sleeps) == (1, [])
+    assert capsys.readouterr().err == ""
+
+
+def test_a_final_error_logs_its_body_so_a_rejected_token_shows_why(capsys):
+    """#2057: a rejected token or missing permission ended as a bare status."""
+    client, _, _ = _client([http_error(401, '{"message":"Bad credentials"}')])
+    with pytest.raises(urllib.error.HTTPError):
+        client("GET", "repos/o/r/pulls/7")
+    assert capsys.readouterr().err == (
+        'GET repos/o/r/pulls/7 -> HTTP 401: {"message":"Bad credentials"}\n'
+    )
+
+
+def test_a_logged_error_body_is_collapsed_to_one_line(capsys):
+    """A body line starting `::` would be read by the runner as a workflow command."""
+    client, _, _ = _client([http_error(422, "x\n::error::y")])
+    with pytest.raises(urllib.error.HTTPError):
+        client("POST", "repos/o/r/issues/7/comments", {"body": "b"})
+    assert capsys.readouterr().err == (
+        "POST repos/o/r/issues/7/comments -> HTTP 422: x ::error::y\n"
+    )
+
+
+def test_a_non_idempotent_request_is_not_retried_on_a_5xx():
+    """A 5xx after a committed write would write it twice (a second ledger row)."""
+    client, transport, sleeps = _client([http_error(502), {"id": 1}])
+    with pytest.raises(urllib.error.HTTPError) as info:
+        client("POST", "repos/o/r/issues/7/comments", {"body": "b"}, idempotent=False)
+    assert info.value.code == 502
+    assert (len(transport.requests), sleeps) == (1, [])
+
+
+def test_a_non_idempotent_request_still_waits_out_a_throttle():
+    """A throttled request was never processed, so retrying it writes once."""
+    client, transport, sleeps = _client([http_error(429), {"id": 1}])
+    assert client("POST", "repos/o/r/issues/7/comments", {"b": 1}, idempotent=False) == {"id": 1}
+    assert (len(transport.requests), sleeps) == (2, [2])
+
+
+# --- remove_label, comments, graphql ---------------------------------------------
+
+
+def test_remove_label_deletes_the_quoted_label_and_answers_true():
+    client, transport, _ = _client([FakeResponse(b"", status=204)])
+    assert gh.remove_label(client, "o/r", 7, "status:review") is True
+    (req,) = transport.requests
+    assert (req.method, req.url) == (
+        "DELETE",
+        "https://api.github.com/repos/o/r/issues/7/labels/status%3Areview",
+    )
+
+
+def test_remove_label_answers_false_when_the_label_is_already_gone():
+    client, _, _ = _client([http_error(404)])
+    assert gh.remove_label(client, "o/r", 7, "status:review") is False
+
+
+def test_remove_label_raises_any_other_failure():
+    client, _, _ = _client([http_error(422)])
+    with pytest.raises(urllib.error.HTTPError) as info:
+        gh.remove_label(client, "o/r", 7, "status:review")
+    assert info.value.code == 422
+
+
+def test_comments_maps_each_comment_to_id_user_and_body():
+    page = [{"id": 1, "user": {"login": "bot"}, "body": "x", "node_id": "N"}]
+    client, transport, _ = _client([page])
+    assert gh.comments(client, "o/r", 7) == [{"id": 1, "user": "bot", "body": "x"}]
+    assert transport.requests[0].url == (
+        "https://api.github.com/repos/o/r/issues/7/comments?per_page=100&page=1"
+    )
+
+
+def test_comments_raises_when_ten_full_pages_may_go_on():
+    full = [{"id": i, "user": {"login": "u"}, "body": ""} for i in range(100)]
+    client, transport, _ = _client([full] * 10)
+    with pytest.raises(gh.ListingTruncated):
+        gh.comments(client, "o/r", 7)
+    assert len(transport.requests) == 10
+
+
+def test_graphql_raises_on_an_errors_answer():
+    client, _, _ = _client([{"errors": [{"message": "bad"}], "data": None}])
+    with pytest.raises(RuntimeError, match=r"^GraphQL lookup failed: \[\{'message': 'bad'\}\]$"):
+        gh.graphql(client, "query { x }", {"n": 1})
+
+
+def test_graphql_posts_the_query_and_returns_its_data():
+    client, transport, _ = _client([{"data": {"repository": {"id": "R"}}}])
+    assert gh.graphql(client, "query { x }", {"n": 1}) == {"repository": {"id": "R"}}
+    (req,) = transport.requests
+    assert (req.method, req.url) == ("POST", "https://api.github.com/graphql")
+    assert req.body == {"query": "query { x }", "variables": {"n": 1}}
 
 
 # --- download ---------------------------------------------------------------

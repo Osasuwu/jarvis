@@ -58,16 +58,20 @@ class FakeApi:
     longest matching path prefix; downloads by artifact id from `blobs`.
 
     An unrouted GET is a test bug and raises AssertionError; an unrouted write
-    answers `{}`. Every call is recorded in `calls` as (method, path, body)."""
+    answers `{}`. Every call is recorded in `calls` as (method, path, body), and
+    each one made with `idempotent=False` also in `once` as (method, path)."""
 
     def __init__(self, responses=None, blobs=None, writes=None):
         self.responses = responses or {}
         self.blobs = blobs or {}
         self.writes = writes or {}
         self.calls = []
+        self.once = []
 
-    def __call__(self, method, path, body=None):
+    def __call__(self, method, path, body=None, *, idempotent=True):
         self.calls.append((method, path, body))
+        if not idempotent:
+            self.once.append((method, path))
         routes = self.responses if method == "GET" else self.writes
         answer = _route(routes, method, path, body)
         if answer is not _UNROUTED:
