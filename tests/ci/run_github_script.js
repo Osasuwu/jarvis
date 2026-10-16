@@ -4,6 +4,7 @@
 // stdin:  {"script": str, "repo": {"owner", "repo"}, "payload": {...},
 //          "issues": ["owner/repo#N", ...],   — issues.get succeeds only for these
 //          "closed": [...], "pulls": [...],  — optional: of those, closed ones / pull requests
+//          "outages": [...],                 — optional: issues.get throws a 502 for these
 //          "commits": [str, ...]}             — optional: the PR's commit messages
 // stdout: {"failed": [str], "notices": [str], "lookups": ["owner/repo#N"]}
 //         plus "warnings": [str] when the script warned (absent otherwise, so callers that
@@ -22,6 +23,7 @@ async function main() {
   const existing = lower(input.issues);
   const closed = lower(input.closed);
   const pulls = lower(input.pulls);
+  const outages = lower(input.outages);
   const warnings = [];
   const core = {
     setFailed: (m) => result.failed.push(String(m)),
@@ -35,6 +37,9 @@ async function main() {
         get: async ({ owner, repo, issue_number }) => {
           const key = `${owner}/${repo}#${issue_number}`;
           result.lookups.push(key);
+          if (outages.has(key.toLowerCase())) {
+            throw Object.assign(new Error("Bad Gateway"), { status: 502 });
+          }
           if (!existing.has(key.toLowerCase())) {
             throw Object.assign(new Error("Not Found"), { status: 404 });
           }

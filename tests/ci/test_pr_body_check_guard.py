@@ -63,6 +63,7 @@ def run(
     commits: tuple[str, ...] = (),
     closed: tuple[str, ...] = (),
     pulls: tuple[str, ...] = (),
+    outages: tuple[str, ...] = (),
 ) -> dict:
     """`step_env` replaces the step's own `env:` (read from the workflow by default)."""
     node = shutil.which("node")
@@ -87,6 +88,7 @@ def run(
                 "commits": list(commits),
                 "closed": list(closed),
                 "pulls": list(pulls),
+                "outages": list(outages),
             }
         ),
         capture_output=True,
@@ -350,3 +352,31 @@ def test_ref_only_in_a_commit_body_is_not_a_headline_ref():
         "Closes #42", commits=(commit,), issues=("Osasuwu/jarvis#42", "Osasuwu/jarvis#1159")
     )
     assert result == {"failed": [], "notices": [], "lookups": ["Osasuwu/jarvis#42"]}
+
+
+def test_headline_ref_to_a_missing_issue_is_skipped():
+    """A `(#N)` that resolves to nothing (404) is not a slice this PR can close."""
+    result = run("Closes #42", commits=("feat: x (#9999)",))
+    assert result == {
+        "failed": [],
+        "notices": [],
+        "lookups": ["Osasuwu/jarvis#42", "Osasuwu/jarvis#9999"],
+    }
+
+
+def test_headline_ref_lookup_outage_fails_closed():
+    """A non-404 lookup error is not evidence the ref is closed: the gate fails, not passes."""
+    result = run(
+        "Closes #42",
+        commits=("feat: x (#1159)",),
+        issues=("Osasuwu/jarvis#42", "Osasuwu/jarvis#1159"),
+        outages=("Osasuwu/jarvis#1159",),
+    )
+    assert result == {
+        "failed": [
+            "require-linked-issue: could not read commit-headline issue #1159 (HTTP 502); "
+            "re-run the check."
+        ],
+        "notices": [],
+        "lookups": ["Osasuwu/jarvis#42", "Osasuwu/jarvis#1159"],
+    }

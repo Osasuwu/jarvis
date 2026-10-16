@@ -139,7 +139,11 @@ jobs:
                 try {
                   ({ data } = await github.rest.issues.get({ ...repo, issue_number: n }));
                 } catch (e) {
-                  continue;  // a dangling (#N) in a headline is not a slice this PR can close
+                  // A dangling (#N) (404) is not a slice this PR can close. Any other error says
+                  // nothing about the ref, so fail closed rather than pass on an outage.
+                  if (e.status === 404) continue;
+                  errors.push(`require-linked-issue: could not read commit-headline issue #${n} (HTTP ${e.status || 'error'}); re-run the check.`);
+                  continue;
                 }
                 if (data.state === 'open' && !data.pull_request) orphaned.push(`#${n}`);
               }
