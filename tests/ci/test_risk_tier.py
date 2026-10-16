@@ -1,8 +1,9 @@
 """The `risk-tier` required check (.github/scripts/risk_tier.py, #2004).
 
 The PR body's `Risk:` line is a merge hold: the check goes red on a bad line, floors the tier by
-the diff, and holds HIGH/CRITICAL until an admin human approves the current head. These tests run
-the real script against a fake GitHub API and the real workflow file; expected values are literals.
+the diff, and holds a non-admin author's HIGH/CRITICAL until an admin human approves the current
+head (#2088). These tests run the real script against a fake GitHub API and the real workflow
+file; expected values are literals.
 """
 
 import importlib.util
@@ -108,7 +109,10 @@ class FakeGitHub(FakeApi):
             return AssertionError(f"unexpected API call: {path}")
         if m.group(1) not in self.permissions:
             return http_error(404, url=f"https://api.github.com/{path}")
-        return {"permission": self.permissions[m.group(1)]}
+        permission = self.permissions[m.group(1)]
+        if isinstance(permission, BaseException):
+            return permission
+        return {"permission": permission}
 
 
 def _file(name, patch="@@ -0,0 +1 @@\n+x", status="modified", additions=1, deletions=0, **extra):
@@ -592,6 +596,101 @@ def test_an_event_for_a_head_that_has_since_moved_is_red_as_superseded(high):
     assert (ok, messages) == (
         False,
         ["head moved to aaaaaaa (event was bbbbbbb): superseded by a newer push"],
+    )
+
+
+# --- #2088: an admin author's own HIGH/CRITICAL PR skips the hold ------------------------
+
+HIGH_SUMMARY = "declared HIGH, computed HIGH, final HIGH\n  - protected path(s): AGENTS.md"
+HIGH_HOLD = (
+    "HIGH holds until an admin human (not osasuwu-bot) leaves an APPROVED review on the "
+    "current head aaaaaaa; a new push needs a new approval. See "
+    ".github/scripts/risk_tier.md (residual risks)."
+)
+
+
+def _authored(base, author, permissions, body="Risk: HIGH — rules file", files=HIGH_FILES, **kw):
+    api = FakeGitHub(body=body, files=files, author=author, permissions=permissions, **kw)
+    return _run(base, api), api
+
+
+def test_an_admin_authors_high_pr_is_green_without_reading_reviews_or_counting_admins(base):
+    verdict, api = _authored(base, ("alice", "User"), {"alice": "admin"})
+    assert verdict == (True, [HIGH_SUMMARY, "HIGH hold skipped: author alice has admin permission"])
+    assert [p for _, p, _ in api.calls if "/reviews" in p] == []
+    assert [p for _, p, _ in api.calls if "/collaborators" in p] == [
+        f"repos/{REPO}/collaborators/alice/permission"
+    ]
+
+
+def test_an_admin_authors_declared_critical_pr_is_green_naming_the_tier(base):
+    verdict, _ = _authored(
+        base,
+        ("alice", "User"),
+        {"alice": "admin"},
+        body="Risk: CRITICAL — data loss",
+        files=[_file("scripts/x.py")],
+    )
+    assert verdict == (
+        True,
+        [
+            "declared CRITICAL, computed LOW, final CRITICAL",
+            "CRITICAL hold skipped: author alice has admin permission",
+        ],
+    )
+
+
+def test_a_write_authors_high_pr_still_holds_until_an_admin_approves_at_head(base):
+    held, _ = _authored(base, ("bob", "User"), {"bob": "write"})
+    assert held == (False, [HIGH_SUMMARY, HIGH_HOLD])
+    released, _ = _authored(
+        base,
+        ("bob", "User"),
+        {"bob": "write", "dave": "admin"},
+        reviews=[_review("dave", "APPROVED")],
+    )
+    assert released == (
+        True,
+        [HIGH_SUMMARY, "released by an APPROVED review from admin dave at aaaaaaa"],
+    )
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    [{}, {"alice": http_error(500, url="https://api.github.com/x")}],
+    ids=["lookup 404", "lookup 500"],
+)
+def test_an_unreadable_author_permission_counts_as_not_admin(base, permissions):
+    verdict, _ = _authored(base, ("alice", "User"), permissions)
+    assert verdict == (False, [HIGH_SUMMARY, HIGH_HOLD])
+
+
+@pytest.mark.parametrize(
+    "author",
+    [("ci-app", "Bot"), ("osasuwu-bot", "User"), ("Osasuwu-Bot", "User")],
+    ids=["a Bot account", "the lane's bot", "the lane's bot, other case"],
+)
+def test_an_admin_bot_author_does_not_skip_the_hold(base, author):
+    verdict, _ = _authored(base, author, {author[0]: "admin"})
+    assert verdict == (False, [HIGH_SUMMARY, HIGH_HOLD])
+
+
+@pytest.mark.parametrize(
+    ("body", "problem"),
+    [
+        ("Refs #1", "missing"),
+        ("Risk: LOW", "malformed"),
+        ("Risk: LOW — a\nRisk: HIGH — b", "duplicate"),
+    ],
+)
+def test_an_admin_authors_bad_risk_line_is_still_red(base, body, problem):
+    verdict, _ = _authored(base, ("alice", "User"), {"alice": "admin"}, body=body)
+    assert verdict == (
+        False,
+        [
+            f"The PR body has a {problem} Risk line. Expected exactly one line "
+            f"`{GRAMMAR_LINE}` (grammar and examples: .github/scripts/risk_tier.md)."
+        ],
     )
 
 

@@ -71,7 +71,7 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
 | `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
-| `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line, and on any HIGH/CRITICAL PR until an admin human's APPROVED review sits on the current head SHA. Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
+| `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line for every author, and on a HIGH/CRITICAL PR by a non-admin author (the lane's bot, Dependabot, a write collaborator) until an admin human's APPROVED review sits on the current head SHA. An admin-authored HIGH/CRITICAL PR is green, with its tier in the summary (#2088). Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
 
 These six required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
 `waiting-human-review`, `risk-tier`) are the target set on jarvis's `main`. The first five have

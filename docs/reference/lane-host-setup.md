@@ -195,8 +195,9 @@ does not.
 the PR's base branch ("the base commit" above and in the check output). The workflow file that defines the check is, however, the one in the PR being
 judged: a PR that rewrites the `risk-tier` job's pin runs the new pin on itself. The defence is
 the host's protected list: keep `.github/**` in the `machinery` bucket (step 3.1) so such a PR
-is HIGH by path, and a HIGH PR stays red until an admin human approves the head SHA. That
-defence is only as strong as the classifier it runs: a PR that repoints the pin to a commit whose
+is HIGH by path, and a non-admin author's HIGH PR stays red until an admin human approves the
+head SHA. It does not hold a pin-rewrite PR whose author is an admin human: that PR is green
+whatever its tier (`.github/scripts/risk_tier.md`, residual risk 2). That defence is only as strong as the classifier it runs: a PR that repoints the pin to a commit whose
 `risk_tier.py` always passes judges itself. The independent control is human review of
 `.github/workflows/**` changes (CODEOWNERS or a ruleset on that path), plus the lane PAT having no
 `workflow` scope, so the lane cannot push such a change itself.

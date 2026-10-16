@@ -18,8 +18,10 @@ Verdict, in order:
    `config/protected-paths.json` entry (HIGH), test weakening (HIGH), and the plan
    classifier's ordinal (3 -> HIGH, 2 -> MEDIUM, 1 -> LOW). Anything unreadable is HIGH;
 3. final tier = max(computed, declared). LOW and MEDIUM pass;
-4. HIGH and CRITICAL pass only with an APPROVED review on the current head SHA from an
-   admin human who is not the lane's bot.
+4. HIGH and CRITICAL pass when the live PR's author is an admin human: `admin` permission,
+   not a `Bot` account, not the lane's bot (#2088). Every other author's HIGH or CRITICAL PR
+   passes only with an APPROVED review on the current head SHA from an admin human who is
+   not the lane's bot.
 
 Stdlib plus `agents.plan_classifier` / `agents.plan_review_config` (PyYAML) and
 `agents.path_policy` (the protected-list reader and its glob dialect, #2067), all read from
@@ -296,6 +298,24 @@ def releasing_reviewer(api, repo, number, head_sha, bot):
     return None
 
 
+def admin_author(api, repo, pr, bot):
+    """The login of the PR's author when it is an admin human who is not `bot`, or None.
+
+    An unreadable permission is not an admin."""
+    user = pr.get("user") or {}
+    login = user.get("login")
+    if not login or user.get("type") == "Bot" or login.lower() == bot.lower():
+        return None
+    try:
+        permission = api(
+            "GET", f"repos/{repo}/collaborators/{urllib.parse.quote(login)}/permission"
+        )
+    except Exception as exc:  # an unreadable permission is not an admin
+        print(f"::warning::author permission lookup for {login} failed: {exc}")
+        return None
+    return login if permission.get("permission") == "admin" else None
+
+
 def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_ROOT):
     """`(ok, messages)` for one PR. `api` is a `github_client.Client`: `api("GET", path)`
     returns a JSON document from the GitHub API."""
@@ -335,6 +355,9 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
     )
     if final not in HOLD_TIERS:
         return True, [summary]
+    author = admin_author(api, repo, pr, bot)
+    if author:
+        return True, [summary, f"{final} hold skipped: author {author} has admin permission"]
     unread = []
     try:
         releaser = releasing_reviewer(api, repo, number, head, bot)
