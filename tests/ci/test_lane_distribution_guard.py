@@ -28,7 +28,7 @@ ACTION = REPO_ROOT / ".github" / "actions" / "risk-tier" / "action.yml"
 # The jarvis callers of the shared lane; adding a lane trigger means adding it here.
 CALLERS = {"agent-dispatch.yml", "lane-red-check-watcher.yml", "lane-ledger-close.yml"}
 
-# A local ref (same commit) or `owner/repo/.github/...@<40-hex sha>` once pinned.
+# A local ref (same commit) or `owner/repo/.github/...@<40-hex sha>`; the pin test rejects the first.
 USES = re.compile(
     r"(?P<local>\./|(?P<repo>[\w.-]+/[\w.-]+)/)"
     r"(?P<path>\.github/(?:workflows|actions)/[\w./-]+?)"
@@ -199,25 +199,32 @@ def test_every_shared_job_that_runs_lane_code_pins_it_before_the_first_use():
     assert checked == 6
 
 
-def test_every_jarvis_reference_is_one_pinned_commit_or_a_local_ref():
-    shas = set()
+def test_every_jarvis_reference_is_pinned_and_all_name_one_commit():
+    # A local ref runs the caller's own tree; a host has no lane there, and `@main` moves under
+    # every caller at once. Each jarvis use of a shared lane file names one 40-hex commit.
+    refs, shas, problems = [], set(), []
     for name, workflow in _all_workflows().items():
         for job_id, job in workflow["jobs"].items():
-            refs = [job["uses"]] if "uses" in job else []
-            refs += [
-                s["uses"]
-                for s in job.get("steps", [])
-                if str(s.get("uses", "")).startswith(("./", "Osasuwu/jarvis/"))
-            ]
-            for ref in refs:
+            found = [job["uses"]] if "uses" in job else []
+            found += [s["uses"] for s in job.get("steps", []) if "uses" in s]
+            for ref in found:
+                if not re.match(r"(\./|Osasuwu/jarvis/)\.github/(workflows|actions)/", ref):
+                    continue
+                refs.append(f"{name}:{job_id}")
                 match = USES.fullmatch(ref)
-                assert match, (
-                    f"{name}:{job_id}: {ref!r} is neither a local ref nor `owner/repo/path@sha`"
-                )
-                if match["repo"]:
-                    assert match["sha"], f"{name}:{job_id}: {ref!r} is not pinned to a commit"
+                if not (match and match["repo"] == "Osasuwu/jarvis" and match["sha"]):
+                    problems.append(f"{name}:{job_id}: {ref!r} is not `Osasuwu/jarvis/...@<sha>`")
+                else:
                     shas.add(match["sha"])
-    assert len(shas) <= 1, f"jarvis references pin different commits: {sorted(shas)}"
+    assert problems == []
+    assert len(shas) == 1, f"jarvis references pin different commits: {sorted(shas)}"
+    # the three lane callers plus the `risk-tier` job of pr-body-check.yml
+    assert sorted(refs) == [
+        "agent-dispatch.yml:lane",
+        "lane-ledger-close.yml:finalise",
+        "lane-red-check-watcher.yml:watch",
+        "pr-body-check.yml:risk-tier",
+    ]
 
 
 def test_callers_hold_no_job_steps():

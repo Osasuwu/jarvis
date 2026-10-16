@@ -60,8 +60,8 @@ read)`. Steps 2–4 run unchanged, so the PR holds until an admin human approves
 Two trees, neither the PR's. The **host's protected list** is read from the PR's base branch
 (`RISK_TIER_HOST_ROOT`): a PR that adds a path to `config/protected-paths.json` gets no benefit
 from it for its own verdict. The **classifier code and `plan_review.yaml`** come from the
-script's own checkout: in jarvis today the base branch too; once the callers are pinned, the
-`.github/actions/risk-tier` composite action's download of jarvis at the pinned SHA, so a host
+script's own checkout: the `.github/actions/risk-tier` composite action's download of jarvis at
+the pinned SHA (jarvis included, since #2013 PR2), so a host
 runs a reviewed classifier rather than whatever its own base holds (D7). The PR itself is read
 through the API as data and is never checked out, imported or executed. It is a `pull_request`
 workflow, not `pull_request_target` (D11/D11b). Host setup: `docs/reference/lane-host-setup.md`.

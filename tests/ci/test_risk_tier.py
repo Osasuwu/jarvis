@@ -672,32 +672,19 @@ def test_the_check_context_is_the_job_id_and_it_re_runs_on_reviews():
     assert "pull_request_target" not in TRIGGERS
 
 
-def test_the_check_only_ever_checks_out_the_base_branch():
-    checkouts = [s for s in _job()["steps"] if s.get("uses", "").startswith("actions/checkout@")]
-    assert len(checkouts) == 1
-    assert checkouts[0]["with"]["ref"] == "${{ github.event.pull_request.base.ref }}"
-    assert checkouts[0]["with"]["persist-credentials"] is False
-
-
-def test_no_pr_text_is_interpolated_into_a_shell_step():
-    runs = [s["run"] for s in _job()["steps"] if "run" in s]
-    assert any(r.rstrip().endswith("python .github/scripts/risk_tier.py") for r in runs)
-    assert [r for r in runs if "${{" in r] == []
-
-
-def test_the_job_is_time_boxed_and_names_a_base_without_the_script():
+def test_the_job_is_one_pinned_action_step_time_boxed_with_unchanged_scope():
+    # #2013 PR2: the classifier comes from jarvis at a pinned commit, not the base checkout, so
+    # the job is the action alone; scope and grouping stay what the required check ran under.
     job = _job()
     assert job["timeout-minutes"] == 10
-    guard = [s["run"] for s in job["steps"] if "risk_tier.py" in s.get("run", "")]
-    assert len(guard) == 1
-    assert "[ ! -f .github/scripts/risk_tier.py ]" in guard[0]
-    assert "::error::risk-tier: the base branch has no .github/scripts/risk_tier.py" in guard[0]
-
-
-def test_the_in_place_job_names_its_host_root_and_the_bot():
-    (step,) = [s for s in _job()["steps"] if "risk_tier.py" in s.get("run", "")]
-    assert step["env"]["RISK_TIER_HOST_ROOT"] == "${{ github.workspace }}"
-    assert step["env"]["LANE_BOT_LOGIN"] == "osasuwu-bot"
+    assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
+    assert job["concurrency"] == {
+        "group": "risk-tier-${{ github.event.pull_request.number }}",
+        "cancel-in-progress": True,
+    }
+    (step,) = job["steps"]
+    assert re.fullmatch(r"Osasuwu/jarvis/\.github/actions/risk-tier@[0-9a-f]{40}", step["uses"])
+    assert step["with"] == {"bot-login": "osasuwu-bot"}
 
 
 # --- the composite action a host repo calls (#2013, D7) ----------------------------------
