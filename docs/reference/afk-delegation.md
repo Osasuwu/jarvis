@@ -31,8 +31,9 @@ naming the cause (`escalate` job, D3). A runner crash that kills that job too sh
 There is no queue table: the issue's labels are the truth, and the lane owns their transitions
 (D14). Intake swaps `agent:dispatch` for `status:in-progress`; escalation sets `needs-human` and
 clears in-progress; the PR moves it to `status:review`. Intake refuses an issue that is closed,
-`status:in-progress`/`review`/`rework-in-progress`, `needs-human`, has an open PR closing it, or an
-open blocker (D8). Re-dispatch = a human clears `needs-human` and re-applies `agent:dispatch`;
+`status:in-progress`/`review`/`rework-in-progress`, carries any `needs-*` label (`needs-human`
+included), has no `## Acceptance criteria` heading, has an open PR closing it, or has an open
+blocker (D8). Re-dispatch = a human clears `needs-human` and re-applies `agent:dispatch`;
 editing the labels by hand mid-run races the lane.
 
 ## The model is pinned; a failure is not a reason to swap it

@@ -33,7 +33,26 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
    `commit_id` is the live head, the reviewer is not a `Bot` account and not `LANE_BOT_LOGIN`
    (the caller's `bot-login`; empty fails the check), and `GET /repos/{repo}/collaborators/{login}/permission` says
    `admin`. A new push moves the head, so it re-reds; a dismissed or superseded review does not
-   count. There is no author-based exemption.
+   count. No author is exempt from this release rule.
+
+## Dependabot PRs
+
+A Dependabot PR body carries upstream release notes, not a `Risk:` line, and Dependabot rewrites
+it on every rebase, so step 1 would hold it red with nothing able to release it (#2059). For a PR
+whose author, read from the live PR object of the API (`GET pulls/{n}`), has login
+`dependabot[bot]` **and** type `Bot`, the check does not read the body at all: the declared tier
+is fixed at **HIGH** and the summary says `declared HIGH (fixed: dependabot[bot] PR, body not
+read)`. Steps 2–4 run unchanged, so the PR holds until an admin human approves its current head.
+
+- The match is on the API's author object, never on PR text. The `[bot]` suffix is reserved for
+  GitHub Apps; a look-alike human login (`dependabot`) or another bot (`renovate[bot]`) gets the
+  ordinary missing-line verdict.
+- A `Risk:` line in the body, of any tier, malformed or duplicated, changes nothing: the body is
+  third-party text.
+- HIGH rather than the computed tier alone: on a host whose protected list omits the dependency
+  manifests, the classifier's dependency-bump exemption reads LOW, and a commit a maintainer pushes
+  onto the Dependabot branch would ride it. In jarvis the `machinery` bucket already floors every
+  Dependabot diff (`pyproject.toml`, `uv.lock`, `.github/**`) at HIGH.
 
 ## Base-commit trust model
 
