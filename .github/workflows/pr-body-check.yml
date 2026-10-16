@@ -109,6 +109,52 @@ jobs:
               }
             }
 
+            // Absorbed slices (#1178, #948 Mode 2): a commit headline's `(#N)` names a slice the
+            // PR ships. An open same-repo issue the body does not link gets no close path, so it
+            // fails; `Refs #N` is the author's statement that the ref is not an absorbed slice.
+            // Closed issues and pull requests (squash titles carry PR numbers) are
+            // back-references. Foreign refs only warn: a closing keyword does not reliably
+            // close them. Headlines only: a commit body mention is prose.
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              ...repo, pull_number: pr.number, per_page: 100,
+            });
+            const headRe = /\((?:([\w.-]+)\/([\w.-]+))?#(\d+)\)/g;
+            const orphaned = [];
+            const foreign = [];
+            const seen = new Set();
+            for (const c of commits) {
+              const headline = ((c.commit && c.commit.message) || '').split('\n')[0];
+              for (const m of headline.matchAll(headRe)) {
+                const owner = m[1] || repo.owner;
+                const name = m[2] || repo.repo;
+                const n = parseInt(m[3], 10);
+                const key = `${owner}/${name}#${n}`.toLowerCase();
+                if (seen.has(key) || links.has(key)) continue;
+                seen.add(key);
+                if (owner.toLowerCase() !== repo.owner.toLowerCase() || name.toLowerCase() !== repo.repo.toLowerCase()) {
+                  foreign.push(`${owner}/${name}#${n}`);
+                  continue;
+                }
+                let data;
+                try {
+                  ({ data } = await github.rest.issues.get({ ...repo, issue_number: n }));
+                } catch (e) {
+                  // A dangling (#N) (404) is not a slice this PR can close. Any other error says
+                  // nothing about the ref, so fail closed rather than pass on an outage.
+                  if (e.status === 404) continue;
+                  errors.push(`require-linked-issue: could not read commit-headline issue #${n} (HTTP ${e.status || 'error'}); re-run the check.`);
+                  continue;
+                }
+                if (data.state === 'open' && !data.pull_request) orphaned.push(`#${n}`);
+              }
+            }
+            if (foreign.length > 0) {
+              core.warning(`require-linked-issue: commit headlines reference issue(s) in another repo: ${foreign.join(', ')}. A closing keyword does not reliably close a foreign issue; close it by hand if this PR ships it (docs/reference/pr-issue-linkage.md).`);
+            }
+            if (orphaned.length > 0) {
+              errors.push(`require-linked-issue: commit headlines reference open issue(s) the PR body does not link: ${orphaned.join(', ')}. If the PR ships an issue's whole scope, add a closing line ("Closes #N") for it; if the reference is not an absorbed slice, link it with "Refs #N" (docs/reference/pr-issue-linkage.md, #1178).`);
+            }
+
             if (errors.length > 0) {
               core.setFailed(errors.join('\n'));
             }
