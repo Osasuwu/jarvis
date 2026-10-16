@@ -29,7 +29,6 @@ def _load(name):
 
 lane_escalation = _load("lane_escalation")
 lane_intake = _load("lane_intake")
-lane_ledger = _load("lane_ledger")
 lane_publish = _load("lane_publish")
 
 REPO = "Osasuwu/jarvis"
@@ -648,7 +647,7 @@ def _run_gh_as(monkeypatch, *, stdout="", stderr="", code=0):
     )
 
 
-GH_HELPERS = [lane_publish, lane_escalation, lane_ledger]
+GH_HELPERS = [lane_publish, lane_escalation]  # lane_ledger moved onto github_client (#2068)
 
 
 @pytest.mark.parametrize("module", GH_HELPERS, ids=lambda m: m.__name__)
