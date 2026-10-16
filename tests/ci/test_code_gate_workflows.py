@@ -243,12 +243,14 @@ def test_resolve_step_gets_the_default_branch():
 
 
 def test_resolve_lists_open_prs_with_the_read_only_token_and_no_other_secret():
-    """The schedule sweep lists open PRs with the workflow's read-only token; the
-    resolve job holds no environment and no other secret, so the App key stays in
-    the verdict job (#2079)."""
+    """The schedule sweep lists open PRs with the workflow's read-only token, which
+    resolve holds on the schedule only; the resolve job holds no environment and no
+    other secret, so the App key stays in the verdict job (#2079)."""
     resolve = VERDICT["jobs"]["resolve"]
     (step,) = [s for s in resolve["steps"] if s.get("id") == "resolve"]
-    assert step["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+    assert step["env"]["GH_TOKEN"] == (
+        "${{ github.event_name == 'schedule' && secrets.GITHUB_TOKEN || '' }}"
+    )
     assert "environment" not in resolve
     assert set(re.findall(r"secrets\.\w+", str(resolve))) == {"secrets.GITHUB_TOKEN"}
 

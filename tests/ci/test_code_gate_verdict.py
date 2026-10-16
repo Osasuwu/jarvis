@@ -2401,7 +2401,7 @@ def test_clean_read_then_expired_is_lifted_by_a_clean_redispatch(monkeypatch):
 def test_a_green_check_whose_only_evidence_expired_goes_red_expired(monkeypatch):
     """#2079 AC2: attempt 1 was read clean, so the check is green; its artifact has
     since expired. Re-deciding the SHA (what the daily sweep does) turns it red, and
-    not sticky: a clean re-dispatch still lifts it."""
+    not sticky: the ledger records no sticky red."""
     responses = _snapshot_responses(
         **{
             RUNS_PATH: {"workflow_runs": [_pr_run(run_attempt=1)]},

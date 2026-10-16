@@ -212,7 +212,9 @@ within a day plus GitHub's schedule delay (a schedule may start late), and a pus
 dispatch clears it. It is not sticky: an attempt already in the ledger is not `unobserved`.
 GitHub disables the schedule in a public repo with no activity for 60 days. More than 256 open
 PRs (one verdict job each, the most one run holds), or an open-PR listing that fills its last
-allowed page, fails the sweep's resolve job and re-decides none of them.
+allowed page, fails the sweep's resolve job and re-decides none of them. In practice the
+workflow token's API budget (1 000 requests an hour; each verdict job re-lists runs and checks)
+runs out well below 256 open PRs; a job that runs out retries, then posts a `verdict-error` red.
 
 **No verdict, or a shared one.** A PR into a base other than the default branch gets no
 `code-gate` verdict at all: the check belongs to the commit, so its verdict would land on any PR
