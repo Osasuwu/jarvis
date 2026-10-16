@@ -3,10 +3,11 @@ name: Code Gate Verdict
 # Decides the `code-gate` check from review EVIDENCE. Rule: "Review evidence" —
 # docs/reference/github-repo-setup.md §3; logic: .github/scripts/code_gate_verdict.py.
 #
-# Runs from the DEFAULT BRANCH (`pull_request_target` / `workflow_run` both
-# resolve the workflow file there) and never checks out PR code: the only thing
-# checked out is `.github/scripts` at the default branch. A PR cannot change the
-# rule that judges it. PR-controlled values reach steps through `env:` only.
+# Runs from the DEFAULT BRANCH (`pull_request_target`, `workflow_run` and
+# `schedule` all resolve the workflow file there) and never checks out PR code:
+# the only thing checked out is `.github/scripts` at the default branch. A PR
+# cannot change the rule that judges it. PR-controlled values reach steps
+# through `env:` only.
 #
 # `code-gate` is posted by the `osasuwu-ci` GitHub App (branch protection binds
 # the check to that app_id), so no other workflow can satisfy the gate by
@@ -20,6 +21,12 @@ on:
   workflow_run:
     workflows: ["Code Review"]
     types: [completed]
+  # Daily sweep: review evidence expires after 90 days and nothing fires on the PR
+  # when it does, so every open PR into the default branch is re-decided once a
+  # day (#2079). GitHub may start a schedule late, and disables it in a public
+  # repo with no activity for 60 days.
+  schedule:
+    - cron: "41 4 * * *"
 
 permissions:
   contents: read
@@ -27,22 +34,25 @@ permissions:
   pull-requests: read
 
 jobs:
-  # No network, no secrets: parses event data into (pr_number, head_sha). An
-  # empty output means the event is not bound to a PR (e.g. a fork's
-  # `pull_request` run, whose `pull_requests[]` is empty) and nothing follows.
+  # Emits `targets`, a JSON list of {pr_number, head_sha}. On an event it parses
+  # event data only, no network; `[]` means the event is not bound to a PR (e.g. a
+  # fork's `pull_request` run, whose `pull_requests[]` is empty) and nothing
+  # follows. On the schedule it lists the open PRs into the default branch with
+  # the read-only GITHUB_TOKEN; too many, or a listing cut at its page cap, fails
+  # this job and sweeps none. No environment, no App key.
   resolve:
     # `edited` fires on every title/body edit; only a base-branch change alters
     # the evaluation.
     if: github.event_name != 'pull_request_target' || github.event.action != 'edited' || github.event.changes.base
     runs-on: ubuntu-latest
     outputs:
-      pr_number: ${{ steps.resolve.outputs.pr_number }}
-      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      targets: ${{ steps.resolve.outputs.targets }}
     steps:
-      # Base-pinned: default branch, scripts only. Never the PR head.
+      # Base-pinned: default branch, scripts only. Never the PR head. A schedule's
+      # own ref is the default branch.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'schedule' && github.ref || github.event.repository.default_branch }}
           sparse-checkout: .github/scripts
           persist-credentials: false
 
@@ -57,16 +67,24 @@ jobs:
           RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_PULL_REQUESTS: ${{ toJSON(github.event.workflow_run.pull_requests) }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Read only, and only on the schedule: its open-PR listing (#2079).
+          GH_TOKEN: ${{ github.event_name == 'schedule' && secrets.GITHUB_TOKEN || '' }}
         run: python -I .github/scripts/code_gate_verdict.py resolve
 
   verdict:
     needs: resolve
-    if: needs.resolve.outputs.pr_number != ''
+    if: needs.resolve.outputs.targets != '[]'
     runs-on: ubuntu-latest
+    # One job per resolved (PR, SHA): an event's one, or every open PR on the
+    # schedule. One PR's failure does not cancel the others' verdicts.
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.resolve.outputs.targets) }}
     # Serialize per (PR, SHA) without cancelling: a verdict that is mid-post must
     # finish, and the next event for the same SHA simply re-decides it.
     concurrency:
-      group: code-gate-${{ needs.resolve.outputs.pr_number }}-${{ needs.resolve.outputs.head_sha }}
+      group: code-gate-${{ matrix.target.pr_number }}-${{ matrix.target.head_sha }}
       cancel-in-progress: false
     environment: code-gate-verdict
     steps:
@@ -74,7 +92,7 @@ jobs:
       # agents/path_policy.py (#2067).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.event_name == 'schedule' && github.ref || github.event.repository.default_branch }}
           sparse-checkout: |
             .github/scripts
             agents
@@ -94,6 +112,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GATE_TOKEN: ${{ steps.app.outputs.token }}
           GATE_APP_ID: ${{ secrets.GATE_APP_ID }}
-          PR_NUMBER: ${{ needs.resolve.outputs.pr_number }}
-          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          PR_NUMBER: ${{ matrix.target.pr_number }}
+          HEAD_SHA: ${{ matrix.target.head_sha }}
         run: python -I .github/scripts/code_gate_verdict.py verdict

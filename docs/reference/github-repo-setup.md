@@ -125,12 +125,13 @@ Two workflows, split so a PR can never change the rule that judges it:
   — it reverses #1850's wholesale `git`/`gh` grants, which admitted `git config`/`-c`/`grep -O`.
   The allow/deny patterns steer; they are not a boundary (the harness matches command text). Every
   `code_gate_verdict.py` call runs as `python -I`, so a module written next to the script is never
-  imported. `prepare` and `verdict` also load `github_client.py` (the shared GitHub client) by
-  file path from the same checkout as the script; `validate`/`check-tree`/`stamp` load nothing
-  beside the script.
-- **`code-gate-verdict.yml` decides.** Triggered by `pull_request_target` and by a `workflow_run`
-  hook on "Code Review", it runs from the default branch, checks out only `.github/scripts`
-  there, and never touches PR code. The `osasuwu-ci` GitHub App (key in the
+  imported. `prepare`, `verdict` and the scheduled `resolve` also load `github_client.py` (the
+  shared GitHub client) by file path from the same checkout as the script;
+  `validate`/`check-tree`/`stamp`, and `resolve` on an event, load nothing beside the script.
+- **`code-gate-verdict.yml` decides.** Triggered by `pull_request_target`, by a `workflow_run`
+  hook on "Code Review", and by a daily `schedule` that re-decides every open PR into the default
+  branch at its head (one matrix job per PR, #2079), it runs from the default branch, checks out
+  only `.github/scripts` there, and never touches PR code. The `osasuwu-ci` GitHub App (key in the
   `code-gate-verdict` environment, restricted to the default branch) posts the `code-gate`
   check run; branch protection binds `code-gate` to that App's `app_id` (and `gitleaks` to
   15368), so no other workflow can satisfy the gate by creating a same-named check.
@@ -203,6 +204,17 @@ exists). It clears when the listing shrinks below its cap, or the cap is raised,
 verdict job is re-run. A truncated check-run listing is the exception: check runs cannot be
 deleted and every truncated verdict posts one more, so a re-run never clears it; only a new
 commit, whose SHA starts with no check runs, does.
+
+**Expiry.** Review evidence is kept 90 days, and nothing fires on the PR when it expires, so a
+green `code-gate` would otherwise outlive it. The daily sweep re-decides every open PR into the
+default branch: a green that rests only on expired evidence goes red as `evidence-expired`
+within a day plus GitHub's schedule delay (a schedule may start late), and a push or a fresh
+dispatch clears it. It is not sticky: an attempt already in the ledger is not `unobserved`.
+GitHub disables the schedule in a public repo with no activity for 60 days. More than 256 open
+PRs (one verdict job each, the most one run holds), or an open-PR listing that fills its last
+allowed page, fails the sweep's resolve job and re-decides none of them. In practice the
+workflow token's API budget (1 000 requests an hour; each verdict job re-lists runs and checks)
+runs out well below 256 open PRs; a job that runs out retries, then posts a `verdict-error` red.
 
 **No verdict, or a shared one.** A PR into a base other than the default branch gets no
 `code-gate` verdict at all: the check belongs to the commit, so its verdict would land on any PR

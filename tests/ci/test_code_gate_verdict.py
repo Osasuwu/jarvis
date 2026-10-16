@@ -946,8 +946,131 @@ def test_resolve_command_binds_the_pr_into_the_repos_default_branch(monkeypatch,
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    assert gate.cmd_resolve(None) == 0
-    assert out.read_text(encoding="utf-8") == f"pr_number=7\nhead_sha={SHA}\n"
+    assert gate.cmd_resolve(_no_client()) == 0
+    assert out.read_text(encoding="utf-8") == f'targets=[{{"pr_number":7,"head_sha":"{SHA}"}}]\n'
+
+
+def _no_client():
+    """An event resolve reads its target from the event: building a client is a bug."""
+
+    def make_client(token):
+        raise AssertionError("an event resolve must make no API call")
+
+    return argparse.Namespace(make_client=make_client)
+
+
+def test_resolve_command_with_nothing_bound_emits_no_targets(monkeypatch, tmp_path):
+    out = tmp_path / "out"
+    env = {
+        "EVENT_NAME": "workflow_run",
+        "RUN_EVENT": "pull_request",
+        "RUN_HEAD_SHA": SHA,
+        "RUN_PULL_REQUESTS": "[]",
+        "DEFAULT_BRANCH": "main",
+        "GITHUB_OUTPUT": str(out),
+    }
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert gate.cmd_resolve(_no_client()) == 0
+    assert out.read_text(encoding="utf-8") == "targets=[]\n"
+
+
+def test_resolve_command_on_pull_request_target_emits_its_one_target(monkeypatch, tmp_path):
+    out = tmp_path / "out"
+    env = {
+        "EVENT_NAME": "pull_request_target",
+        "PR_NUMBER": "7",
+        "HEAD_SHA": SHA,
+        "GITHUB_OUTPUT": str(out),
+    }
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert gate.cmd_resolve(_no_client()) == 0
+    assert out.read_text(encoding="utf-8") == f'targets=[{{"pr_number":7,"head_sha":"{SHA}"}}]\n'
+
+
+# --- the scheduled sweep (#2079) -------------------------------------------
+
+SWEEP_LISTING = "repos/o/r/pulls?state=open&base=trunk&per_page=100&page="
+
+
+def _sha_of(number):
+    return f"{number:040x}"
+
+
+def _sweep(monkeypatch, tmp_path, open_prs=None, page=None):
+    """A `schedule` resolve over a read API whose repo defaults to `trunk` and whose
+    open PRs into it are `open_prs`, 100 to a page (or `page(n)` answers page n).
+
+    The event variables are absent, as on a real schedule: the sweep must take the
+    default branch from the API."""
+    if page is None:
+
+        def page(n):
+            return open_prs[(n - 1) * 100 : n * 100]
+
+    def listing(method, path, body):
+        return page(int(path.removeprefix(SWEEP_LISTING)))
+
+    api = FakeApi({"repos/o/r": {"default_branch": "trunk"}, SWEEP_LISTING: listing})
+    out = tmp_path / "out"
+    for k in ("RUN_EVENT", "RUN_PULL_REQUESTS", "PR_NUMBER", "HEAD_SHA", "DEFAULT_BRANCH"):
+        monkeypatch.delenv(k, raising=False)
+    env = {
+        "EVENT_NAME": "schedule",
+        "GITHUB_REPOSITORY": "o/r",
+        "GH_TOKEN": "read-token",
+        "GITHUB_OUTPUT": str(out),
+    }
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    # Any token but GH_TOKEN is a KeyError.
+    return argparse.Namespace(make_client={"read-token": api}.__getitem__), api, out
+
+
+def test_resolve_on_schedule_targets_every_open_pr_into_the_default_branch(monkeypatch, tmp_path):
+    """Expired evidence fires no event, so only a schedule re-decides its PR (#2079)."""
+    args, _, out = _sweep(
+        monkeypatch, tmp_path, [_open(9, OTHER_SHA, "trunk"), _open(7, SHA, "trunk")]
+    )
+    assert gate.cmd_resolve(args) == 0
+    assert out.read_text(encoding="utf-8") == (
+        f'targets=[{{"pr_number":7,"head_sha":"{SHA}"}},'
+        f'{{"pr_number":9,"head_sha":"{OTHER_SHA}"}}]\n'
+    )
+
+
+def test_schedule_sweep_with_more_prs_than_one_matrix_holds_fails(monkeypatch, tmp_path):
+    """A workflow run holds at most 256 matrix jobs: a sweep that cannot re-decide
+    every PR fails rather than leave some greens standing unseen."""
+    prs = [_open(n, _sha_of(n), "trunk") for n in range(100, 357)]
+    args, _, out = _sweep(monkeypatch, tmp_path, prs)
+    with pytest.raises(RuntimeError, match="257 open PRs"):
+        gate.cmd_resolve(args)
+    assert not out.exists()
+
+
+def test_schedule_sweep_of_256_prs_targets_them_all(monkeypatch, tmp_path):
+    prs = [_open(n, _sha_of(n), "trunk") for n in range(100, 356)]
+    args, _, out = _sweep(monkeypatch, tmp_path, prs)
+    assert gate.cmd_resolve(args) == 0
+    name, _, value = out.read_text(encoding="utf-8").rstrip("\n").partition("=")
+    assert name == "targets"
+    assert json.loads(value) == [{"pr_number": n, "head_sha": _sha_of(n)} for n in range(100, 356)]
+
+
+def test_schedule_sweep_whose_open_pr_listing_hits_its_page_cap_sweeps_none(monkeypatch, tmp_path):
+    """A listing that never ends within its cap is not read as whole (#2076): the
+    PRs it leaves unread would keep a stale green, so the sweep fails and sweeps none."""
+    args, api, out = _sweep(
+        monkeypatch, tmp_path, page=lambda n: [_open(n * 100 + i, SHA, "trunk") for i in range(100)]
+    )
+    with pytest.raises(load_client().ListingTruncated):
+        gate.cmd_resolve(args)
+    assert [p for _, p, _ in api.calls if p.startswith(SWEEP_LISTING)] == [
+        f"{SWEEP_LISTING}{n}" for n in range(1, 11)
+    ]
+    assert not out.exists()
 
 
 def test_resolve_fork_pull_request_run_is_unbound():
@@ -2273,6 +2396,26 @@ def test_clean_read_then_expired_is_lifted_by_a_clean_redispatch(monkeypatch):
     )
     assert gate.cmd_verdict(write.args) == 0
     assert _title(write) == "code-gate: evidence-clean"
+
+
+def test_a_green_check_whose_only_evidence_expired_goes_red_expired(monkeypatch):
+    """#2079 AC2: attempt 1 was read clean, so the check is green; its artifact has
+    since expired. Re-deciding the SHA (what the daily sweep does) turns it red, and
+    not sticky: the ledger records no sticky red."""
+    responses = _snapshot_responses(
+        **{
+            RUNS_PATH: {"workflow_runs": [_pr_run(run_attempt=1)]},
+            ARTIFACTS_PATH: {"artifacts": [_art(1, "review-evidence-1", expired=True)]},
+        }
+    )
+    write = _run_verdict(
+        monkeypatch, responses, checks=[_check(text=_ledger_text(None, ["1001:1"]))]
+    )
+    assert gate.cmd_verdict(write.args) == 0
+    ((_, body),) = _patched(write)
+    assert body["conclusion"] == "failure"
+    assert body["output"]["title"] == "code-gate: evidence-expired"
+    assert _ledger_of(body) == {"v": 1, "sticky": None, "observed": ["1001:1"]}
 
 
 def test_a_crashing_verdict_keeps_the_ledger(monkeypatch):
