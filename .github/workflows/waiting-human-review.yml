@@ -5,6 +5,16 @@ name: Waiting for human review
 # from oneself, so the `waiting-human-review` label carries the same hold
 # instead. Required as of #1893, which also retired the `status:owner-queue`
 # label this check replaced.
+#
+# #1999 AP5: the AFK worker is the machine user `osasuwu-bot` with write access,
+# so it can remove the label or a review request. The decision lives in
+# `.github/scripts/waiting_human_review.py`: a hold released by the bot (or any
+# `*[bot]` actor) is not a release, the label goes back on and the check stays
+# red until a human releases it. The script is checked out from the BASE ref:
+# the bot PAT can push `.github/scripts/**` on its branch but not
+# `.github/workflows/**`, so a PR must not run its own copy of this gate. A
+# label added with the workflow GITHUB_TOKEN starts no workflow, so the
+# re-apply cannot loop.
 
 on:
   pull_request:
@@ -23,34 +33,22 @@ on:
 jobs:
   waiting-human-review:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
-      pull-requests: read
+      contents: read
+      pull-requests: write
     steps:
-      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          script: |
-            const repo = { owner: context.repo.owner, repo: context.repo.repo };
-            const prNumber = context.payload.pull_request.number;
-            const LABEL_NAME = 'waiting-human-review';
-
-            // Re-fetch rather than trust the event payload: a review_submitted
-            // event's payload.pull_request is a snapshot that may not yet
-            // reflect GitHub clearing the submitting reviewer from
-            // requested_reviewers.
-            const { data: pr } = await github.rest.pulls.get({
-              ...repo,
-              pull_number: prNumber,
-            });
-
-            const reviewersPending =
-              (pr.requested_reviewers && pr.requested_reviewers.length > 0) ||
-              (pr.requested_teams && pr.requested_teams.length > 0);
-            const labelPresent = (pr.labels || []).some((l) => l.name === LABEL_NAME);
-
-            if (reviewersPending) {
-              core.setFailed('A review has been requested and is still pending — a human look is owed.');
-            } else if (labelPresent) {
-              core.setFailed(`The \`${LABEL_NAME}\` label is present — a human look is owed.`);
-            } else {
-              console.log('No pending review request and no waiting-human-review label — check passes.');
-            }
+          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ ! -f .github/scripts/waiting_human_review.py ]; then
+            echo "::error::the base ref has no .github/scripts/waiting_human_review.py; merge the PR that adds it, then re-run"
+            exit 1
+          fi
+          python3 .github/scripts/waiting_human_review.py

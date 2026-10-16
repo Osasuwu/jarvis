@@ -1,0 +1,49 @@
+name: Risk tier
+description: >-
+  The `risk-tier` required check (#2004) for a host repo (#2013, D2, D7). The
+  classifier runs from this action's own repository at the commit the caller
+  pinned; protected paths come from the host's `config/protected-paths.json` at
+  the PR's base commit. A host without that file gets HIGH on every diff.
+
+inputs:
+  bot-login:
+    description: Login of the lane bot account (D1); its approval never releases a hold.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # The host's base branch, never the PR head: a PR cannot shorten the
+    # protected-path list it is judged by. Only `config` is needed; the code
+    # that runs is this action's own checkout, not the host's.
+    - name: Check out the host's base-commit config
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        ref: ${{ github.event.pull_request.base.ref }}
+        path: .risk-tier-host
+        sparse-checkout: config
+        persist-credentials: false
+
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      with:
+        python-version: "3.11"
+
+    - name: Install PyYAML
+      shell: bash
+      run: pip install pyyaml==6.0.3
+
+    # `$GITHUB_ACTION_PATH` is the action's directory inside the download of its
+    # repository at the pinned SHA, so `../../scripts` is that commit's
+    # `.github/scripts`. Context values reach the script through `env`, never
+    # through the script text.
+    - name: Evaluate the PR's risk tier
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        LANE_BOT_LOGIN: ${{ inputs.bot-login }}
+        RISK_TIER_HOST_ROOT: ${{ github.workspace }}/.risk-tier-host
+      run: python "$GITHUB_ACTION_PATH/../../scripts/risk_tier.py"

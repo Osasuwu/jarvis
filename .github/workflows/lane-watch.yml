@@ -1,0 +1,85 @@
+name: Lane Watch
+
+# Escalation marker, PR side (#2011), as a reusable workflow (#2013): when a
+# watched check goes red on an open `claude/issue-*` PR, label the PR
+# `needs-human` and comment once with the failed check, its run link and an
+# @-mention of the operator. Green checks, pending checks and non-lane PRs get
+# nothing. Rules and the settledness test for `code-gate`:
+# .github/scripts/lane_escalation.py.
+#
+# The caller owns the trigger: a `workflow_run` listing the host's own workflow
+# names, and the `watched-checks` input listing the check contexts those
+# workflows own. Which checks are required, and which required check is red by
+# design (a human hold), is host knowledge, so the list is a caller input and
+# an empty one fails the run rather than watching nothing.
+#
+# `workflow_run` always runs the default branch's copy of the caller, never the
+# PR's, which is what makes it safe to hold the bot PAT here. The lane code is
+# fetched at the lane's own pinned commit, never from the host checkout.
+on:
+  workflow_call:
+    inputs:
+      bot-login:
+        description: Login of the lane bot account (D1).
+        type: string
+        required: true
+      operator:
+        description: Login @-mentioned when a PR needs a human (D14); empty means no mention.
+        type: string
+        default: ""
+      watched-checks:
+        description: Comma-separated check contexts whose red state escalates a lane PR.
+        type: string
+        required: true
+    secrets:
+      AGENT_DISPATCH_PAT:
+        required: true
+
+# One pass at a time per host repo: a pass reads every open lane PR, so a later
+# one sees what an earlier one wrote. A running pass is never cancelled; a third
+# arrival replaces the pending second, which is safe because one pass covers all.
+concurrency:
+  group: lane-red-check-watcher-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    # Pushes to the default branch have no PR to escalate on.
+    if: github.event.workflow_run.event != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # The lane's own code at the lane's own commit; `job.workflow_*` name this
+      # file's repository and commit, not the caller's. This job holds the PAT
+      # and runs only the script from there.
+      - name: Check out the lane code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .lane-src
+          sparse-checkout: |
+            .github/scripts
+            agents
+          persist-credentials: false
+
+      # An empty `job.workflow_sha` would make the checkout above silently take
+      # the lane repository's default branch, i.e. unpinned code. Fail instead.
+      - name: Verify the lane code is at the pinned commit
+        env:
+          LANE_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$LANE_SHA"
+          test "$(git -C .lane-src rev-parse HEAD)" = "$LANE_SHA"
+
+      - name: Escalate lane PRs with a red watched check
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          LANE_OPERATOR: ${{ inputs.operator }}
+          LANE_BOT_LOGIN: ${{ inputs.bot-login }}
+          LANE_WATCHED_CHECKS: ${{ inputs.watched-checks }}
+        run: python3 .lane-src/.github/scripts/lane_escalation.py watch

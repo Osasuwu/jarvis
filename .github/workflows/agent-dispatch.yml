@@ -1,243 +1,37 @@
 name: Agent Dispatch
 
-# The worker runs once per `agent:dispatch` label-add. The WORKFLOW still
-# starts on every label-add: `issues: labeled` has no label filter, so the
-# job condition below is what narrows it to the one label this workflow
-# reacts to. Other-label churn on the same issue produces a run whose only
-# job is skipped — never a worker run.
+# The thin caller of the AFK lane (#2013, D2). All lane logic (intake, worker,
+# publish, escalation, ledger row), its `agent:dispatch` label filter and its
+# per-host-repo concurrency group (D15, F7) live in lane.yml. This file holds
+# only what is the host's: the trigger, the bot identity, the model, the
+# operator inputs and the two secrets, passed by name.
+#
+# Declare no `concurrency` here, at workflow or job level: the group is
+# lane.yml's, and a caller group equal to the callee's deadlocks the run.
+#
+# `uses:` is a same-commit local ref while lane.yml is being introduced; the
+# next change pins it, here and in the other lane callers, to
+# `Osasuwu/jarvis/.github/workflows/lane.yml@<sha>` (a commit already on the
+# default branch). Host setup and the pin procedure: docs/reference/lane-host-setup.md.
 on:
   issues:
     types: [labeled]
 
-# One worker per issue at a time; a second `agent:dispatch` re-label (e.g.
-# after removing it to retry a failed run, per dispatch/SKILL.md's
-# recovery note) cancels an in-flight run for the same issue rather than
-# racing it.
-#
-# The group key depends on the label, not just the issue (#1936).
-# Workflow-level concurrency is resolved when the run is queued, BEFORE the
-# job `if` below is evaluated, so a group keyed on the issue number alone
-# takes in every label event on that issue: any label added mid-run would
-# cancel the in-flight worker and then skip its own job, and an
-# `agent:dispatch` applied in one call with other labels could itself be
-# cancelled as `pending` by a sibling event. Non-dispatch events therefore
-# get a group unique to their own run (`github.run_id`, the fallback GitHub's
-# concurrency docs use for the same purpose), which nothing else can ever
-# join — they can neither cancel nor be cancelled.
-#
-# Kept at workflow level rather than moved onto the job: whether a job-level
-# `concurrency` is applied before or after that job's `if` is not documented,
-# and this form does not depend on the answer.
-concurrency:
-  group: ${{ github.event.label.name == 'agent:dispatch' && format('agent-dispatch-issue-{0}', github.event.issue.number) || format('agent-dispatch-noop-{0}', github.run_id) }}
-  cancel-in-progress: ${{ github.event.label.name == 'agent:dispatch' }}
-
 jobs:
-  worker:
-    if: github.event.label.name == 'agent:dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+  lane:
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
       issues: write
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-
-      - name: Run unattended worker
-        uses: anthropics/claude-code-action@fd1c128679612beff4ca259c78021c506e8aa7a7 # v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # Fine-grained PAT (contents/issues/pull-requests write, scoped to
-          # this repo, <=1y expiry — rotation tracked in issue #1810), NOT
-          # the default GITHUB_TOKEN: commits/pushes authored with the
-          # default token do not trigger other workflows (GitHub's own
-          # loop-prevention), so `review`/`pytest`/auto-merge would never
-          # fire on the worker's own PR. A PAT-authored push is a normal
-          # external actor as far as Actions is concerned, so downstream CI
-          # runs like it would for a human push (#1805).
-          github_token: ${{ secrets.AGENT_DISPATCH_PAT }}
-          prompt: |
-            Implement GitHub issue #${{ github.event.issue.number }} in
-            ${{ github.repository }}, end to end, unattended. Nobody is
-            watching this run — do not ask questions, make the best call
-            and document it, or stop and escalate per step 5 below.
-
-            This runner has no user-level ~/.claude layer (no SOUL.md,
-            no DOCTRINE.md, no memory tools) — only this repo's own
-            AGENTS.md / .claude/settings.json are in scope
-            (decision a2d10d70-1282-45e1-a8be-b6bdbda92fa4). Read AGENTS.md
-            first and follow its process rules as the sole instruction
-            layer for this run.
-
-            1. `gh issue view ${{ github.event.issue.number }} --json
-               title,body,labels,milestone` — read the full issue body,
-               including any `## Decisions` / `## Plan` section.
-            2. Preflight per AGENTS.md: confirm nobody already claimed this
-               issue (assignee, `status:in-progress`, an open PR, an
-               existing `claude/issue-${{ github.event.issue.number }}-*`
-               branch). If claimed, stop and do nothing.
-            3. Branch from `main`:
-               `claude/issue-${{ github.event.issue.number }}-<slug>`.
-            4. Implement every acceptance-criteria bullet. Run the repo's
-               lint and test commands before committing; fix failures
-               before moving on.
-            5. If genuinely blocked — ambiguous scope, an acceptance
-               criterion contradicts the codebase, or the change needs a
-               human decision — do NOT guess. Comment the specific blocker
-               on the issue, assign it to the repo owner
-               (`gh issue edit ${{ github.event.issue.number }} --add-assignee "${{ github.repository_owner }}"`),
-               and stop without opening a PR.
-            6. Otherwise commit, push the branch, and open a PR whose body
-               has `Closes #${{ github.event.issue.number }}` on its own
-               line and every section of `.github/PULL_REQUEST_TEMPLATE.md`
-               filled in; the Testing section holds what
-               `docs/reference/test-quality.md` asks for.
-
-            Never edit this workflow file, any other file under
-            `.github/workflows/**`, anything under `.claude/hooks/**`, or
-            `.claude/settings.json` — these are YOUR OWN execution
-            environment (this job's permissions, its worker prompt, and the
-            hooks that would otherwise catch a bad edit). The `claude_args`
-            below already denies `Edit`/`Write` on these paths mechanically,
-            so this is belt-and-suspenders, not the only backstop — but
-            don't rely on that denial as an excuse to attempt the edit
-            anyway. If the issue's scope requires touching one of those, or
-            any file in `docs/security/agent-boundaries.md`'s
-            protected-files policy, that is itself a reason to escalate per
-            step 5.
-          claude_args: |
-            # Headless: any tool not listed here is denied outright, same
-            # rationale as code-review.yml's allowlist — no human to approve
-            # a mid-run permission prompt. Covers the full implement loop:
-            # read/search, edit, git, gh issue/PR mechanics, and this repo's
-            # lint/test commands. CI/hook/secret config paths stay a step-5
-            # escalation, never an unattended edit (mechanically Edit/Write-
-            # denied below).
-            #
-            # --max-turns 100 (#1846): the trial run (#1806, issue #1844 →
-            # PR #1845) did correct, right-scoped work — 8/8 check-runs
-            # green, auto-merge succeeded — and still burned 51 turns on a
-            # one-line docs fix, tripping the old limit of 40.
-            # `claude-code-action` checks --max-turns *after* a successful
-            # result and fails the step on the overage, so that run's
-            # "Run unattended worker" step read red on work that was
-            # entirely correct: not a timeout (timeout-minutes: 45, actual
-            # runtime ~3 minutes), just a false failure. Raising the limit
-            # (rather than treating "successful result after N turns" as
-            # non-fatal) is the fix: if a *trivial* task already needs 51
-            # turns, 40 was never going to hold for anything harder, and the
-            # next overage would be a real one — this worker's every turn is
-            # a fresh `gh`/lint/test round-trip, not a single completion
-            # call. Non-fatal-overage handling (catching "successful result
-            # after N turns" and not failing the step) is the fallback if a
-            # false red still reproduces above this ceiling. Live
-            # verification that 100 actually clears the false red on a real
-            # run is tracked separately in #1848 — it can't be checked from
-            # this PR, since this workflow file only takes effect for future
-            # `issues: labeled` runs once it's on `main`.
-            --max-turns 100
-            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
-            # Mechanical backstop for the prompt's "never edit" ask above —
-            # this job's own workflow/hooks/settings, plus the real T2 set
-            # from `.claude/hooks/protected-files.py`, are Edit-denied here
-            # so the worker can't self-modify or blind its own guard even on
-            # a bad turn. Path-scoped, not a whole-tool deny, so normal
-            # implementation edits elsewhere stay unaffected.
-            #
-            # `Edit(path)` is the only path rule Claude Code checks for
-            # writes, and it covers every built-in file-editing tool (Write
-            # and NotebookEdit included). A `Write(path)` rule is accepted
-            # but never consulted, and only prints a startup warning, so
-            # there are none here (#1976). What these rules do NOT reach is
-            # a subprocess that opens files itself — a Python script under
-            # `pytest`, say — so they bind the agent's own tool calls, not
-            # everything that runs in its shell.
-            #
-            # The Bash entries below catch the common spellings of a
-            # force-push/history-rewrite (`git push --force`/`-f`/
-            # `--force-with-lease`, `git commit --amend`, `git reset
-            # --hard`) that a worker turning genuinely wrong is likely to
-            # type. They are NOT a hard security boundary: `Bash(...:*)`
-            # is a literal prefix match, so a differently-ordered or
-            # differently-spelled command (a refspec force-push like `git
-            # push origin +HEAD:main`, or a flag placed after a positional
-            # arg like `git commit -am "wip" --amend`) is not caught by
-            # any finite list of prefixes, and no such list ever will be.
-            # This is deliberately defense-in-depth, not the backstop:
-            # the actual hard boundary is that `main` has branch
-            # protection with `allow_force_pushes: false` server-side, so
-            # nothing this worker's shell does can force-push or rewrite
-            # history on the branch that matters. This worker only ever
-            # pushes to its own fresh `claude/issue-N-*` branch, so even a
-            # successful force-push/amend here is blast-radius-limited to
-            # a branch nobody else has based work on.
-            --disallowed-tools "Edit(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git push --force-with-lease:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
-
-      # #1806 AC2: the trial run's PR must land via auto-merge, not a human
-      # click. Nothing in this repo enabled auto-merge after #1796 culled the
-      # 14 workflows (the old #891 enable-job went with them), so the worker
-      # ran to `gh pr create` and its PR then parked forever — the third
-      # clause of AC2 was unreachable by construction.
-      #
-      # A deterministic post-step rather than another line in the worker
-      # prompt: queueing auto-merge is a fixed mechanical consequence of "a
-      # PR now exists", and an LLM that drops that instruction on a bad turn
-      # leaves the PR parked with no signal that anything is wrong. The
-      # allowlist above also stays as tight as it is — no `gh pr merge` is
-      # handed to the agent's shell.
-      #
-      # `--auto` QUEUES the merge; it does not bypass anything. GitHub holds
-      # the PR until every required check on `main` (code-gate,
-      # require-linked-issue, pytest, gitleaks) reports green, and a blocking
-      # code-review verdict keeps it queued indefinitely. What this removes is
-      # the human click *after* the gates pass, which is the entire point of
-      # the unattended lane.
-      #
-      # `if: always()` so a worker that opened its PR and then hit the 45-min
-      # timeout still gets its PR queued.
-      #
-      # No PR (the worker escalated per step 5, or stopped at the step-2
-      # preflight) fails the step on purpose (#1927). The worker's comment and
-      # assignee change go out under AGENT_DISPATCH_PAT, which is the owner's
-      # own account, and GitHub never notifies a user about their own
-      # activity. A green run here would leave the escalation with no signal
-      # at all. A red run triggers GitHub's native failed-workflow
-      # notification to the triggering actor, i.e. whoever applied
-      # `agent:dispatch`.
-      #
-      # PAT, not GITHUB_TOKEN, for the same reason as the worker step: the
-      # eventual merge commit lands on `main` as a normal external actor, so
-      # push-triggered workflows fire on it.
-      - name: Queue auto-merge on the worker's PR
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
-          GH_REPO: ${{ github.repository }}
-          PR_BRANCH_PREFIX: claude/issue-${{ github.event.issue.number }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          set -euo pipefail
-          # Match the worker's branch exactly, or with a `-<slug>` suffix. The
-          # trailing `-` matters: a bare prefix test on "claude/issue-180"
-          # would also match issue 1806's branch and silently queue the wrong
-          # PR.
-          #
-          # `gh` output is collected into a variable before awk sees it:
-          # piping gh straight into an awk that `exit`s on the first match
-          # SIGPIPEs gh, and `pipefail` would turn that into a spurious step
-          # failure on a busy PR list.
-          raw=$(gh pr list --state open --limit 100 \
-                  --json number,headRefName \
-                  --jq '.[] | "\(.headRefName)\t\(.number)"')
-          pr=$(awk -F'\t' -v p="$PR_BRANCH_PREFIX" \
-                 '$1 == p || index($1, p "-") == 1 { print $2; exit }' <<< "$raw")
-          if [ -z "$pr" ]; then
-            echo "::error::No PR from the worker for issue #${ISSUE_NUMBER}: it escalated or stopped at preflight. Read the issue comments."
-            exit 1
-          fi
-          gh pr merge "$pr" --squash --auto
-          echo "::notice::Auto-merge queued on PR #${pr} (squash); merges when all required checks pass."
+      pull-requests: read
+    uses: ./.github/workflows/lane.yml
+    with:
+      bot-login: osasuwu-bot
+      bot-email: 339131200+osasuwu-bot@users.noreply.github.com
+      model: claude-sonnet-5-5
+      class2-afk: true
+      operator: ${{ vars.LANE_OPERATOR }}
+      ledger-issue: ${{ vars.LANE_LEDGER_ISSUE }}
+      ledger-smoke-issue: ${{ vars.LANE_LEDGER_SMOKE_ISSUE }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      AGENT_DISPATCH_PAT: ${{ secrets.AGENT_DISPATCH_PAT }}

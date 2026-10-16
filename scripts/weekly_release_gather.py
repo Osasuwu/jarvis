@@ -146,6 +146,10 @@ _CLOSES_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\
 # marker a revert PR/commit uses to name the PR/issue whose shipped behavior
 # it undoes, so /weekly-release can build the "Отозвано" section by construction.
 _REVERTS_RE = re.compile(r"\breverts?\s*:?\s*#(\d+)", re.IGNORECASE)
+# #2036: only vX.Y.Z tags are weekly releases. A repo may publish other
+# releases (e.g. redrobot's `film-*` video assets); letting those through
+# anchored the window on them and skewed trust_ramp_state()/latest-tag math.
+_SEMVER_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 
 
 def _closed_issue_number(pr_body: str) -> str | None:
@@ -159,8 +163,9 @@ def _reverted_pr_number(pr_body: str) -> str | None:
 
 
 def _gather_prior_releases(repo: str, run_gh: RunGhFn, now: float) -> tuple[list[dict], Provenance]:
-    """Release history, most-recent-first — the shape trust_ramp_state()
-    expects, and the source of compute_window()'s last_release_at anchor."""
+    """Semver (vX.Y.Z) release history, most-recent-first — the shape
+    trust_ramp_state() expects, and the source of compute_window()'s
+    last_release_at anchor. Non-semver releases are dropped (#2036)."""
     start = time.time()
     result = run_gh(
         repo,
@@ -186,6 +191,8 @@ def _gather_prior_releases(repo: str, run_gh: RunGhFn, now: float) -> tuple[list
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not _SEMVER_TAG_RE.match(row.get("tag_name") or ""):
             continue
         releases.append(
             {

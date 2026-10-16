@@ -72,7 +72,7 @@ manually (MCP registration, plugin list, skills).
 | **Core skills** | `/implement`, `/dispatch`, `/research`, `/end` (`--quick` for fast exit). |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
-| **Dispatch pipeline** | Issue -> `agent:dispatch` label -> `agent-dispatch.yml` workflow -> `claude-code-action` -> PR queued for auto-merge |
+| **Dispatch pipeline** | Issue -> `agent:dispatch` label -> `agent-dispatch.yml` caller -> `lane.yml` workflow -> `claude-code-action` -> PR queued for auto-merge |
 | **Setup guide** | [`docs/setup.md`](docs/setup.md) -- manual walkthrough, validates prerequisites |
 
 ## Skills
@@ -80,7 +80,7 @@ manually (MCP registration, plugin list, skills).
 | Skill | Trigger | What it does |
 |-------|---------|-------------|
 | `/implement` | "реализуй #42", "implement #X" | Issue → branch → inline implementation → PR (main session does the work) |
-| `/dispatch` | "раскидай #X #Y на агентов" | Issue → readiness gate → `agent:dispatch` label → `agent-dispatch.yml` runs `claude-code-action` headless → PR queued for auto-merge |
+| `/dispatch` | "раскидай #X #Y на агентов" | Issue → readiness gate → `agent:dispatch` label → `lane.yml` (via `agent-dispatch.yml`) runs `claude-code-action` headless → PR queued for auto-merge |
 | `/research` | "research X", "compare A vs B" | Web research with source validation |
 | `/end` | End of session | Behavioral reflection, decision log, memory save, commit. With `--quick`: checkpoint + commit only (~30 sec). |
 

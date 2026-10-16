@@ -9,13 +9,18 @@ Consensus requires zero unresolved objections after at most one revision
 cycle (AC8).
 
 An objection that cites a locked or rejected decision carries ``source_path``
-and a verbatim ``source_quote`` (#1984); the objection is rejected when the
-quote is not a substring of that file, so a critic cannot invent a
-constraint and attribute it to a record.
+and a verbatim ``source_quote`` (#1984); while unresolved, the objection is
+rejected when the quote is not a substring of that file, so a critic cannot
+invent a constraint and attribute it to a record.
+
+CLI: ``python -m agents.critic_verdict check <verdict.json> [...]`` (#2018).
 """
 
 from __future__ import annotations
 
+import argparse
+import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -64,7 +69,10 @@ def validate_objection(raw: dict) -> Objection:
 
     source_path = raw.get("source_path")
     source_quote = raw.get("source_quote")
-    if source_path is not None or source_quote is not None:
+    # The quote check guards only an objection that can still block. A resolved one has
+    # been answered, often precisely because its quote did not hold up (planner.md), and
+    # failing it here would turn that answer into a fail-closed block (#2018).
+    if resolution is None and (source_path is not None or source_quote is not None):
         _check_source_quote(source_path, source_quote)
 
     return Objection(
@@ -149,3 +157,56 @@ def consensus_reached(verdicts: list[Verdict], *, revisions: int) -> bool:
 def planner_actor(run_id: str) -> str:
     """Actor stamp for planner-role recorded decisions (AC3)."""
     return f"planner:{run_id}"
+
+
+def check_file(path: str) -> list[str]:
+    """Every reason the verdict file at ``path`` blocks, or ``[]`` when it does not.
+
+    Fail-closed like ``resolve_verdict(..., retried=True)``: a missing, unparseable or
+    schema-invalid file blocks. The file is read as UTF-8 whatever the locale (#2018).
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ["missing verdict file"]
+    except (OSError, UnicodeDecodeError) as exc:
+        return [f"unreadable verdict file: {exc}"]
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return [f"not valid JSON: {exc}"]
+    if not isinstance(raw, dict):
+        return ["verdict is not a JSON object"]
+    try:
+        verdict = validate_verdict(raw)
+    except InvalidVerdictError as exc:
+        return [f"schema-invalid verdict: {exc}"]
+    return [
+        f"unresolved blocking objection ({verdict.critic}): {o.description}: {o.rationale}"
+        for o in verdict.objections
+        if o.is_unresolved()
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``python -m agents.critic_verdict check <verdict.json> [...]``.
+
+    Exits 0 when no file blocks; otherwise prints ``<file>: <reason>`` per finding on
+    stderr and exits 1.
+    """
+    parser = argparse.ArgumentParser(prog="python -m agents.critic_verdict")
+    sub = parser.add_subparsers(dest="command", required=True)
+    check_cmd = sub.add_parser("check", help="fail when any critic verdict file blocks")
+    check_cmd.add_argument("files", nargs="+", help="verdict JSON files")
+    args = parser.parse_args(argv)
+
+    blocked = False
+    for path in args.files:
+        for reason in check_file(path):
+            print(f"{path}: {reason}", file=sys.stderr)
+            blocked = True
+    return 1 if blocked else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
