@@ -53,6 +53,7 @@ def _client(script):
         (302, {"Location": BLOB}, "", 1, None),
         (503, {}, "", 2, 4),
         (503, {"Retry-After": "9"}, "", 1, 9),
+        (403, {"x-ratelimit-remaining": "0", "x-ratelimit-reset": str(NOW - 10)}, "", 1, 1),
     ],
     ids=[
         "retry-after-capped",
@@ -65,6 +66,7 @@ def _client(script):
         "redirect-raises",
         "503-backs-off",
         "503-honours-retry-after",
+        "exhausted-reset-in-the-past-floors-at-1s",
     ],
 )
 def test_retry_delay(status, headers, body, attempt, expected):
@@ -91,9 +93,15 @@ def test_a_request_is_authenticated_versioned_and_bounded_by_a_timeout():
     assert post.headers["content-type"] == "application/json"
 
 
-def test_an_empty_body_reads_as_an_empty_object():
-    client, _, _ = _client([b""])
-    assert client("PATCH", "repos/o/r/check-runs/9", {"status": "completed"}) == {}
+def test_an_empty_body_is_an_empty_object_only_for_a_write_or_a_204():
+    """An empty 2xx body on a GET is no document: read as `{}` it is a PR with no
+    reviewer and no label, and waiting-human-review went green (#2068 review). A
+    write's empty answer, and a 204, are `{}`."""
+    client, _, _ = _client([b"", b"", FakeResponse(b"", status=204)])
+    assert client("POST", "repos/o/r/issues/7/labels", {"labels": ["x"]}) == {}
+    with pytest.raises(ValueError, match=r"^empty response body for GET repos/o/r/pulls/7$"):
+        client("GET", "repos/o/r/pulls/7")
+    assert client("GET", "repos/o/r/pulls/7/merge") == {}
 
 
 def test_a_5xx_is_retried_with_doubling_backoff_until_it_succeeds():
@@ -162,6 +170,14 @@ def test_download_follows_one_https_redirect_without_credentials():
     assert (follow.url, follow.timeout, follow.redirects) == (BLOB, 60, True)
     assert follow.headers == {"user-agent": "test-agent"}
     assert sleeps == []
+
+
+def test_download_closes_the_redirect_response():
+    """The redirect's HTTPError holds the socket of the authenticated leg."""
+    redirect = _redirect()
+    client, _, _ = _client({ZIP_URL: [redirect], BLOB: [FakeResponse(b"PK")]})
+    client.download(ZIP, lambda resp: resp.read())
+    assert redirect.fp.closed is True
 
 
 def test_download_retries_the_authenticated_leg_on_a_5xx():
@@ -245,6 +261,36 @@ def test_paged_returns_a_listing_that_ends_inside_its_cap():
         "repos/o/r/things?per_page=100&page=2",
         "repos/o/r/things?per_page=100&page=3",
     ]
+
+
+def test_paged_ends_at_an_empty_page():
+    api, calls = _pages([100, 0])
+    assert len(gh.paged(api, "repos/o/r/things", max_pages=3)) == 100
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("page", "key", "got"),
+    [
+        ({}, None, "dict"),
+        ({"artifacts": {}}, "artifacts", "dict"),
+        ({"total_count": 0}, "artifacts", "NoneType"),
+        ([], "artifacts", "NoneType"),
+    ],
+    ids=["object-for-a-list", "object-under-the-key", "key-missing", "list-for-an-object"],
+)
+def test_paged_refuses_a_page_that_is_not_a_list(page, key, got):
+    """A page that is not a list, read as an empty one, ends the listing as if it
+    were whole: a bot release or a dismissal past it goes unseen (#2068 review)."""
+    calls = []
+
+    def api(method, path, body=None):
+        calls.append(path)
+        return page
+
+    with pytest.raises(ValueError, match=rf"^listing repos/o/r/things page 1: .* got {got}$"):
+        gh.paged(api, "repos/o/r/things", key=key)
+    assert calls == ["repos/o/r/things?per_page=100&page=1"]
 
 
 def test_the_client_takes_its_token_as_an_argument_and_reads_no_environment():

@@ -198,9 +198,11 @@ def test_a_list_that_cannot_name_the_gate_set_raises(tmp_path, policy):
 
 
 def test_the_review_side_subcommands_run_from_the_script_alone(tmp_path):
-    """code-review.yml runs `prepare`/`validate`/`check-tree`/`stamp`/`skip` under
-    `python -I` in a workspace the reviewer can write to (#2024): they must not import
-    path_policy, so a copy of the script alone still validates."""
+    """code-review.yml runs `validate`, `check-tree` and `stamp` after the reviewer,
+    under `python -I` in a workspace the reviewer can write to (#2024): they must load
+    nothing beside the script, neither path_policy nor github_client, so a copy of the
+    script alone still validates. (`prepare` runs before the reviewer and loads
+    github_client.py; `skip` loads nothing either.)"""
     script = tmp_path / "code_gate_verdict.py"
     shutil.copy(_root / ".github" / "scripts" / "code_gate_verdict.py", script)
     findings = tmp_path / "findings.json"
@@ -1918,6 +1920,45 @@ def _run_verdict(monkeypatch, read_responses, blobs=None, checks=None):
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     write.read = read
     return write
+
+
+def test_main_reads_with_gh_token_and_writes_the_check_with_gate_token(monkeypatch):
+    """Every other verdict test injects `make_client`. This one runs `main(["verdict"])`
+    on the parser's default factory and the real client, at the transport seam: reads
+    carry GH_TOKEN and the check write GATE_TOKEN, both as `code-gate-verdict`
+    (#2068 review). Swapped, the job's token posts the check or the App's reads."""
+    api = "https://api.github.com/"
+    pr = _pr(changed_files=1)
+    checks = f"{CHECKS_PATH}?check_name=code-gate&filter=all&per_page=100&page=1"
+    transport = FakeTransport(
+        {
+            f"{api}repos/o/r/pulls/{PR}": [pr, pr],
+            f"{api}repos/o/r/pulls/{PR}/files?per_page=100&page=1": [
+                [{"filename": "a.py", "status": "modified"}]
+            ],
+            f"{api}repos/o/r": [{"default_branch": "main"}],
+            f"{api}{OPEN_PULLS}&per_page=100&page=1": [[pr, _pr(number=8)]],
+            f"{api}{checks}": [{"check_runs": []}],
+            f"{api}repos/o/r/check-runs": [{"id": 1}],
+        }
+    )
+    monkeypatch.setattr(load_client(), "urllib_transport", transport)
+    _run_verdict(monkeypatch, {})
+    assert gate.main(["verdict"]) == 0
+    reader, writer = "Bearer read-" + "token", "Bearer gate-" + "token"
+    assert [
+        (r.method, r.url.removeprefix(api), r.headers["authorization"], r.headers["user-agent"])
+        for r in transport.requests
+    ] == [
+        ("GET", f"repos/o/r/pulls/{PR}", reader, "code-gate-verdict"),
+        ("GET", f"repos/o/r/pulls/{PR}/files?per_page=100&page=1", reader, "code-gate-verdict"),
+        ("GET", f"repos/o/r/pulls/{PR}", reader, "code-gate-verdict"),
+        ("GET", "repos/o/r", reader, "code-gate-verdict"),
+        ("GET", f"{OPEN_PULLS}&per_page=100&page=1", reader, "code-gate-verdict"),
+        ("GET", checks, writer, "code-gate-verdict"),
+        ("POST", "repos/o/r/check-runs", writer, "code-gate-verdict"),
+    ]
+    assert transport.requests[-1].body["conclusion"] == "failure"
 
 
 def _patched(write):

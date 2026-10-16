@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ._github_fake import FakeApi
+from ._github_fake import FakeApi, FakeTransport
 
 _ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATH = _ROOT / ".github" / "workflows" / "waiting-human-review.yml"
@@ -154,6 +154,18 @@ def test_is_non_human_names_the_bot_apps_and_the_unknown():
 # --- main(): the API calls around decide.
 
 
+def _main_env(monkeypatch, tmp_path, event, bot_login=None):
+    path = tmp_path / "event.json"
+    path.write_text(json.dumps(event), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setenv("PR_NUMBER", "7")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(path))
+    monkeypatch.delenv("LANE_BOT_LOGIN", raising=False)
+    if bot_login:
+        monkeypatch.setenv("LANE_BOT_LOGIN", bot_login)
+
+
 def _run_main(monkeypatch, tmp_path, pr, events, event, post_error=None, bot_login=None):
     """Drive `main()` with the shared fake API; return (exit code, recorded POSTs)."""
 
@@ -176,15 +188,7 @@ def _run_main(monkeypatch, tmp_path, pr, events, event, post_error=None, bot_log
         writes={"repos/owner/repo/issues/7/labels": post_error or {}},
     )
     tokens = []
-    path = tmp_path / "event.json"
-    path.write_text(json.dumps(event), encoding="utf-8")
-    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    monkeypatch.setenv("PR_NUMBER", "7")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(path))
-    monkeypatch.delenv("LANE_BOT_LOGIN", raising=False)
-    if bot_login:
-        monkeypatch.setenv("LANE_BOT_LOGIN", bot_login)
+    _main_env(monkeypatch, tmp_path, event, bot_login)
     code = whr.main(make_client=lambda token: tokens.append(token) or api)
     assert tokens == ["t0ken"]
     posts = [(p, b) for m, p, b in api.calls if m == "POST"]
@@ -242,6 +246,30 @@ def test_main_is_red_when_the_api_times_out(monkeypatch, tmp_path):
     )
     assert code == 1
     assert posts == []
+
+
+def test_main_is_red_when_the_pr_reads_back_empty(monkeypatch, tmp_path, capsys):
+    """An empty 2xx body for the PR, through the real client, is an unreadable hold.
+    Read as `{}` it had no reviewer and no label, and the check went green (#2068 review)."""
+    api_root = "https://api.github.com/repos/owner/repo"
+    transport = FakeTransport(
+        {
+            f"{api_root}/pulls/7": [b""],
+            f"{api_root}/issues/7/events?per_page=100&page=1": [[]],
+        }
+    )
+    _main_env(monkeypatch, tmp_path, _event("synchronize"))
+    code = whr.main(
+        make_client=lambda tok: whr.github_client.Client(
+            tok, user_agent="waiting-human-review", transport=transport
+        )
+    )
+    assert code == 1
+    assert [(r.method, r.url) for r in transport.requests] == [("GET", f"{api_root}/pulls/7")]
+    assert capsys.readouterr().out == (
+        "::error::cannot read the hold state of #7: "
+        "empty response body for GET repos/owner/repo/pulls/7\n"
+    )
 
 
 def test_the_bot_login_matches_regardless_of_case():

@@ -58,12 +58,23 @@ def paged(api, path, key=None, per_page=100, max_pages=10):
     rather than be handed on as whole: what it leaves unread could be the one
     item that decides the verdict. A page past the cap is not probed, since an
     endpoint that stops serving at a result limit (the runs API, 1000) would read
-    empty there and look complete."""
+    empty there and look complete.
+
+    A page that is not a list (or holds none under `key`) raises ValueError: read
+    as an empty page it would end the listing early and pass for the whole list."""
     joiner = "&" if "?" in path else "?"
     items = []
     for page in range(1, max_pages + 1):
         data = api("GET", f"{path}{joiner}per_page={per_page}&page={page}")
-        batch = data[key] if key else data
+        if key:
+            batch = data.get(key) if isinstance(data, dict) else None
+        else:
+            batch = data
+        if not isinstance(batch, list):
+            where = f" under {key!r}" if key else ""
+            raise ValueError(
+                f"listing {path} page {page}: expected a list{where}, got {type(batch).__name__}"
+            )
         items.extend(batch)
         if len(batch) < per_page:
             return items
@@ -133,7 +144,10 @@ def _error_body(exc):
 
 
 class Client:
-    """`client(method, path, body=None)` -> the decoded JSON answer (`{}` when empty).
+    """`client(method, path, body=None)` -> the decoded JSON answer.
+
+    An empty body is `{}` for a write or a 204, and a ValueError for any other GET:
+    an empty document read as `{}` would pass for a PR with no hold on it.
 
     `transport(request, timeout, redirects)` is injectable for tests; `sleep` and
     `now` are injectable so the retry policy can be asserted without waiting."""
@@ -184,7 +198,12 @@ class Client:
         def once():
             with self._transport(request, TIMEOUT, True) as resp:
                 raw = resp.read()
-            return json.loads(raw) if raw else {}
+                status = getattr(resp, "status", None)
+            if raw:
+                return json.loads(raw)
+            if method != "GET" or status == 204:
+                return {}
+            raise ValueError(f"empty response body for GET {path}")
 
         return self._attempts(method, path, once)
 
@@ -205,6 +224,7 @@ class Client:
             except urllib.error.HTTPError as exc:
                 location = _lowered(exc.headers).get("location") or ""
                 if exc.code in REDIRECTS and location.startswith("https://"):
+                    exc.close()  # it holds the authenticated leg's connection
                     return True, location
                 raise
 

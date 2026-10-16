@@ -32,7 +32,11 @@ def _load_client():
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)  # a half-built module must not be handed out next time
+        raise
     return module
 
 

@@ -600,7 +600,11 @@ def _github_client():
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)  # a half-built module must not be handed out next time
+        raise
     return module
 
 
@@ -890,6 +894,7 @@ def post_check(api, repo, head_sha, verdict, app_id, observation=None):
     written back, and a sticky red it holds is what gets posted.
 
     Returns (how, the verdict posted)."""
+    listing_truncated = _github_client().ListingTruncated  # bound before `try`: see cmd_verdict
     truncated = None
     try:
         existing = _github_client().paged(
@@ -898,7 +903,7 @@ def post_check(api, repo, head_sha, verdict, app_id, observation=None):
             key="check_runs",
             max_pages=MAX_CHECK_PAGES,
         )
-    except _github_client().ListingTruncated as exc:
+    except listing_truncated as exc:
         # A check of ours (and its sticky red) could sit past the cap: what was
         # read goes red, and a new red check is posted below.
         existing, truncated = exc.items, exc
@@ -1138,6 +1143,9 @@ def cmd_verdict(args):
     number = int(os.environ["PR_NUMBER"])
     failure = None
     observation = None
+    # Bound before `try`: a loader evaluated inside an `except` expression would,
+    # on failing, replace the exception being matched and skip `except Exception`.
+    listing_truncated = _github_client().ListingTruncated
     try:
         pr, files = fetch_pr_snapshot(read, repo, number)
         if pr["head"]["sha"] != head_sha:
@@ -1162,7 +1170,7 @@ def cmd_verdict(args):
     except HeadMovedError:
         print("PR head moved while its files were being read; the newer SHA has its own evaluation")
         return 0
-    except _github_client().ListingTruncated as exc:
+    except listing_truncated as exc:
         failure = exc
         verdict = truncated_verdict(exc)
     except Exception as exc:
