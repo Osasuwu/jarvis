@@ -193,8 +193,11 @@ cannot parse reads as `evidence-unobserved`. Both are sticky over every other ve
 with an empty ledger, clears either. `evidence-unreadable` (an artifact download failed or was cut off, so it may
 hide a blocking verdict) is not lifted by a clean run either; it clears when a re-run of the
 verdict job downloads the artifact. `verdict-error` (the verdict job crashed; it posts red, then
-fails) clears by re-running the verdict job. `shared-head` clears by closing the other PR or
-pushing a distinct commit. `listing-truncated` means a listing the verdict reads (open PRs, the
+fails) clears by re-running the verdict job. When the crash is in reading the SHA's own
+`code-gate` check runs, the verdict cannot patch them, so it posts a new red `verdict-error`
+check (keeping as sticky only a blocking verdict it read in this run) rather than leave an
+earlier green one standing; the re-run patches every check of the App, that one included.
+`shared-head` clears by closing the other PR or pushing a distinct commit. `listing-truncated` means a listing the verdict reads (open PRs, the
 review workflow's runs, a run's artifacts, the PR's files, or the SHA's `code-gate` check runs)
 filled its last allowed page, so it may go on unread; the verdict is red rather than decided on
 part of the list, and when the check-run listing is the one truncated, the checks of this App
