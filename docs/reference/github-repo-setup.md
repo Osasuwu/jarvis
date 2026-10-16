@@ -198,7 +198,9 @@ part of the list, and when the check-run listing is the one truncated, the check
 it did read go red and a new red one is posted. Dispatch runs are read only from 35 days before
 the PR was created (a run lives at most 35 days and cannot carry the PR's evidence before it
 exists). It clears when the listing shrinks below its cap, or the cap is raised, and the
-verdict job is re-run.
+verdict job is re-run. A truncated check-run listing is the exception: check runs cannot be
+deleted and every truncated verdict posts one more, so a re-run never clears it; only a new
+commit, whose SHA starts with no check runs, does.
 
 **No verdict, or a shared one.** A PR into a base other than the default branch gets no
 `code-gate` verdict at all: the check belongs to the commit, so its verdict would land on any PR

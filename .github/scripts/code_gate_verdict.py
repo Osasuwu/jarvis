@@ -871,6 +871,8 @@ def load_entries(api, repo, run):
 def gather_entries(api, repo, pr_number, head_sha, default_branch, pr_created_at):
     """Candidate runs for this PR/SHA, loaded only when they pass provenance."""
     base = f"repos/{repo}/actions/workflows/{REVIEW_WORKFLOW.rsplit('/', 1)[1]}/runs"
+    # A malformed `created` filter returns 0 runs rather than a 422, so a format bug here
+    # fails open silently; only the exact-string test pins it.
     since = urllib.parse.quote(">=" + dispatch_window_start(pr_created_at), safe="")
     queries = (
         f"head_sha={head_sha}",
