@@ -1,4 +1,4 @@
-"""Meta-test for the auto-merge post-step in .github/workflows/agent-dispatch.yml.
+"""Meta-test for the auto-merge post-step in .github/workflows/lane.yml.
 
 After #1796 culled the 14 legacy workflows, nothing in this repo enabled
 auto-merge any more: the unattended worker ran to ``gh pr create`` and stopped,
@@ -47,7 +47,7 @@ import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "agent-dispatch.yml"
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "lane.yml"
 
 STEP_NAME = "Queue auto-merge on the worker's PR"
 
@@ -70,11 +70,13 @@ def workflow() -> dict:
 
 @pytest.fixture(scope="module")
 def automerge_step(workflow: dict) -> dict:
-    steps = workflow["jobs"]["worker"]["steps"]
+    # The step lives in the `publish` job (#2007): the worker holds no write token,
+    # so arming auto-merge is the bot's post-step, not the worker job's.
+    steps = workflow["jobs"]["publish"]["steps"]
     for step in steps:
         if step.get("name") == STEP_NAME:
             return step
-    pytest.fail(f"agent-dispatch.yml has no {STEP_NAME!r} step; #1806 AC2 regressed")
+    pytest.fail(f"lane.yml has no {STEP_NAME!r} step; #1806 AC2 regressed")
 
 
 class TestBranchSelection:
@@ -131,14 +133,19 @@ class TestStepShape:
         )
         assert "github.event.issue.number" in prefix
 
+    def test_branch_prefix_is_scoped_to_this_run(self, automerge_step):
+        # `lane_publish.py` pushes `claude/issue-<N>-<run_id>`; a re-dispatch of the
+        # same issue must not arm the earlier run's still-open PR instead.
+        assert automerge_step["env"]["PR_BRANCH_PREFIX"].endswith("-${{ github.run_id }}")
+
 
 class TestNoPrFailsLoud:
     """#1927: a run that produced no PR must end red, not green.
 
-    The worker's escalation comment and assignee change are authored by
-    AGENT_DISPATCH_PAT, i.e. the owner's own account, and GitHub never
-    notifies a user about their own activity. A red run is the only signal
-    that reaches the owner: GitHub's native failed-workflow notification.
+    The step stays red so the run itself signals the failure through GitHub's
+    native failed-workflow notification; the cause and the worker's note are
+    posted on the issue, with the operator @-mention, by the separate
+    `escalate` job (#2011, tests/ci/test_agent_dispatch_escalation_guard.py).
     """
 
     @staticmethod

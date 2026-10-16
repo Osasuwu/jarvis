@@ -1,233 +1,256 @@
-"""Meta-test for .github/workflows/pr-body-check.yml.
+"""Behaviour of `require-linked-issue` in .github/workflows/pr-body-check.yml.
 
-Reimplements the workflow's decision rule in Python and asserts the
-escape hatches behave as the workflow promises:
-
-  - Closes #NNN in body                → allowed (linked)
-  - priority:critical label             → allowed (hotfix bypass)
-  - [no-issue] in body or title         → allowed (fix-inline per #428/#459)
-  - refactor:/refactor(scope): title    → allowed (auto-bypass per #428)
-  - none of the above                   → blocked
-
-Convention from docs/reference/ci-guard-meta-tests.md (#326, path-filtered guards need meta-tests).
-PR Body Check isn't path-filtered, but the escape logic is non-trivial
-enough that a sibling test is worth keeping in lockstep with the YAML.
+Each test runs the job's real github-script body under node (tests/ci/run_github_script.js)
+with recording stubs for `core` and `github.rest.issues.get`, then asserts what the run
+reported: the failure messages, the bypass notices and the issues it looked up. Nothing here
+re-implements the rule in Python (#1967; the mirror class is #1944).
 """
 
 from __future__ import annotations
 
-import re
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
-import pytest
+import yaml
+
+_ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW_PATH = _ROOT / ".github" / "workflows" / "pr-body-check.yml"
+HARNESS = Path(__file__).resolve().parent / "run_github_script.js"
+REPO = {"owner": "Osasuwu", "repo": "jarvis"}
+
+NO_LINK = (
+    'PR body must include a linked issue reference (e.g. "Closes #123" to auto-close, or '
+    '"Refs #123" to link a partial-work PR without closing), a [no-issue] line for trivial '
+    "fix-inline drive-bys (#428), or the priority:critical label for hotfixes."
+)
+NOTICE_NO_ISSUE = "require-linked-issue bypassed: [no-issue] — fix-inline drive-by per #428."
+PASSED_NO_LOOKUP = {"failed": [], "notices": [], "lookups": []}
+BLOCKED = {"failed": [NO_LINK], "notices": [], "lookups": []}
+# D14 (#2055): the lane's machine user gets no [no-issue] / refactor: bypass.
+BOT_BLOCKED = {
+    "failed": [
+        "require-linked-issue: osasuwu-bot PRs get no [no-issue] or refactor: bypass "
+        '(D14, #2055); link an issue with "Closes #N" or "Refs #N".'
+    ],
+    "notices": [],
+    "lookups": [],
+}
 
 
-WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "pr-body-check.yml"
-
-
-def evaluate(body: str, labels: list[str], title: str = "") -> tuple[bool, str]:
-    """Mirror the workflow's decision rule. Returns (allowed, reason)."""
-    if "priority:critical" in labels:
-        return True, "hotfix"
-
-    if re.search(r"\[no-issue\]", body, re.IGNORECASE) or re.search(
-        r"\[no-issue\]", title, re.IGNORECASE
-    ):
-        return True, "no-issue"
-
-    if re.match(r"^refactor(\([^)]*\))?:", title, re.IGNORECASE):
-        return True, "refactor"
-
-    # Mirror of the YAML alternation (#1136 AC-GATE): closing keywords
-    # (closes/fixes/resolves) auto-close on merge; refs/references link WITHOUT
-    # closing (the partial-work escape). `refs?|references?` deliberately does
-    # not swallow the verb "refers" — `refers to #N` carries no `\s+#` right
-    # after "ref"/"refs", so it stays blocked.
-    matches = re.findall(
-        r"(?:closes|fixes|resolves|refs?|references?)\s+#(\d+)", body, re.IGNORECASE
+def _step() -> dict:
+    doc = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    return next(
+        step
+        for step in doc["jobs"]["require-linked-issue"]["steps"]
+        if "script" in (step.get("with") or {})
     )
-    if matches:
-        return True, "linked"
-
-    return False, "no-link"
 
 
-def test_closes_marker_allows():
-    allowed, reason = evaluate("Closes #123\n\nSome body", [])
-    assert allowed
-    assert reason == "linked"
+def _script() -> str:
+    return _step()["with"]["script"]
 
 
-def test_alt_markers_allow():
-    for marker in ("Closes", "Fixes", "Resolves", "closes", "FIXES"):
-        body = f"{marker} #42"
-        allowed, _ = evaluate(body, [])
-        assert allowed, f"{marker} should be accepted"
+def run(
+    body: str = "",
+    title: str = "feat: x",
+    labels: tuple[str, ...] = (),
+    author: str = "Osasuwu",
+    issues: tuple[str, ...] = ("Osasuwu/jarvis#42",),
+    step_env: dict | None = None,
+) -> dict:
+    """`step_env` replaces the step's own `env:` (read from the workflow by default)."""
+    node = shutil.which("node")
+    assert node, "node is not on PATH; the pytest job runs on ubuntu-latest, which ships it"
+    payload = {
+        "pull_request": {
+            "body": body,
+            "title": title,
+            "labels": [{"name": n} for n in labels],
+            "user": {"login": author},
+        }
+    }
+    proc = subprocess.run(
+        [node, str(HARNESS)],
+        input=json.dumps(
+            {"script": _script(), "repo": REPO, "payload": payload, "issues": list(issues)}
+        ),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+        env={
+            **{k: v for k, v in os.environ.items() if k != "LANE_BOT_LOGIN"},
+            **(_step().get("env") or {} if step_env is None else step_env),
+        },
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)
 
 
-def test_refs_marker_allows():
-    """#1136 AC-GATE: `Refs #N` links a partial-work PR without closing it."""
-    for marker in ("Ref", "Refs", "ref", "REFS"):
-        body = f"{marker} #42"
-        allowed, reason = evaluate(body, [])
-        assert allowed, f"{marker} should be accepted as a linkage keyword"
-        assert reason == "linked"
+# --- linkage -------------------------------------------------------------------------------
 
 
-def test_references_marker_allows():
-    """#1136 AC-GATE: `References #N` / `Reference #N` are linkage keywords."""
-    for marker in ("Reference", "References", "references", "REFERENCE"):
-        body = f"{marker} #42"
-        allowed, reason = evaluate(body, [])
-        assert allowed, f"{marker} should be accepted as a linkage keyword"
-        assert reason == "linked"
+def test_every_github_closing_keyword_and_refs_links_the_issue():
+    """AC3: GitHub's nine closing keywords, in any case and with `:`, plus refs/references."""
+    keywords = [
+        "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved",
+        "ref", "refs", "reference", "references",
+    ]  # fmt: skip
+    bodies = [f"{k} #42" for k in keywords]
+    bodies += ["CLOSES #42", "Fixed: #42", "Resolves:#42", "Some prose.\n\nRefs #42\n"]
+    expected = {"failed": [], "notices": [], "lookups": ["Osasuwu/jarvis#42"]}
+    wrong = {b: r for b in bodies if (r := run(b)) != expected}
+    assert wrong == {}
 
 
-def test_refers_to_still_blocked():
-    """#1136 AC-GATE: prose `refers to #N` is NOT a linkage keyword — must block.
-
-    Guards the alternation boundary: `refs?`/`references?` must not swallow the
-    English verb `refers`, which carries no linkage semantics.
-    """
-    allowed, _ = evaluate("This PR refers to #42 for background.", [])
-    assert not allowed
+def test_cross_repo_and_url_references_look_up_the_named_repo():
+    """AC3: `owner/repo#N` and the issue URL link, and the existence check asks that repo."""
+    for body in ("Closes Other/proj#7", "Fixes https://github.com/Other/proj/issues/7"):
+        result = run(body, issues=("Other/proj#7",))
+        assert result == {"failed": [], "notices": [], "lookups": ["Other/proj#7"]}, body
 
 
-def test_hotfix_label_bypasses():
-    allowed, reason = evaluate("urgent prod fix, no time to file", ["priority:critical"])
-    assert allowed
-    assert reason == "hotfix"
+def test_repeated_reference_is_looked_up_once():
+    result = run("Closes #42\n\nRefs #42, see also fixes Osasuwu/jarvis#42")
+    assert result == {"failed": [], "notices": [], "lookups": ["Osasuwu/jarvis#42"]}
+
+
+def test_linked_issue_that_does_not_exist_fails():
+    assert run("Closes #999") == {
+        "failed": ["Linked issue Osasuwu/jarvis#999 does not exist or is not accessible."],
+        "notices": [],
+        "lookups": ["Osasuwu/jarvis#999"],
+    }
+
+
+def test_keyword_inside_a_longer_word_does_not_link():
+    """AC1: `prefixes #12` / `suffixes #12` are not `fixes #12`; prose verbs are not keywords."""
+    bodies = [
+        "prefixes #12", "suffixes #12", "discloses #12", "unresolved #12",
+        "This PR refers to #42 for background.", "This is close to done.", "",
+    ]  # fmt: skip
+    wrong = {b: r for b in bodies if (r := run(b, issues=("Osasuwu/jarvis#12",))) != BLOCKED}
+    assert wrong == {}
+
+
+# --- bypasses (AC4: each one passes and names itself in a notice) ---------------------------
+
+
+def test_bot_author_bypasses_with_notice():
+    assert run("bump foo", author="dependabot[bot]") == {
+        "failed": [],
+        "notices": [
+            "require-linked-issue bypassed: bot author — dependabot[bot] cannot author linked issues."
+        ],
+        "lookups": [],
+    }
+
+
+def test_priority_critical_label_bypasses_with_notice():
+    assert run("urgent prod fix", labels=("priority:critical",)) == {
+        "failed": [],
+        "notices": ["require-linked-issue bypassed: priority:critical — hotfix label present."],
+        "lookups": [],
+    }
 
 
 def test_other_labels_do_not_bypass():
-    allowed, _ = evaluate("trivial change", ["priority:medium", "documentation"])
-    assert not allowed
+    assert run("trivial change", labels=("priority:medium", "documentation")) == BLOCKED
 
 
-def test_empty_body_no_label_blocked():
-    allowed, _ = evaluate("", [])
-    assert not allowed
+def test_no_issue_on_its_own_body_line_bypasses_with_notice():
+    """AC2 accepting half: the directive on a line of its own, any case, LF or CRLF."""
+    bodies = ["Drive-by docs fix.\n\n[no-issue]\n", "Drive-by.\r\n\r\n  [NO-ISSUE]  \r\n"]
+    expected = {"failed": [], "notices": [NOTICE_NO_ISSUE], "lookups": []}
+    wrong = {b: r for b in bodies if (r := run(b)) != expected}
+    assert wrong == {}
 
 
-def test_partial_keyword_blocked():
-    # "close to" should not match "closes"
-    allowed, _ = evaluate("This is close to done.", [])
-    assert not allowed
+def test_no_issue_as_last_title_token_bypasses_with_notice():
+    """AC2: the squash commit title carries the marker last, as the commit-msg hook expects."""
+    assert run("", title="fix(tests): isolate env [no-issue]") == {
+        "failed": [],
+        "notices": [NOTICE_NO_ISSUE],
+        "lookups": [],
+    }
 
 
-def test_workflow_yaml_references_priority_critical():
-    """Config dimension: workflow file must mention the label name we test against."""
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "priority:critical" in text, (
-        "PR Body Check workflow no longer references the priority:critical "
-        "escape; this test (and CLAUDE.md hotfix rule) is now stale."
-    )
+def test_no_issue_inside_prose_does_not_bypass():
+    """AC2 rejecting half: the marker quoted or explained is not the directive."""
+    cases = [
+        ("This PR explains the [no-issue] marker.", "feat: x"),
+        ("Use `[no-issue]` for drive-bys.", "feat: x"),
+        ("[no-issue] inline doc fix", "feat: x"),
+        ("", "docs: explain the [no-issue] escape"),
+        ("There is no issue with this change.", "feat: x"),
+    ]
+    wrong = {c: r for c in cases if (r := run(c[0], title=c[1])) != BLOCKED}
+    assert wrong == {}
 
 
-def test_workflow_yaml_keeps_closes_regex():
-    """Config dimension: the regex used in the YAML must still recognize Closes/Fixes/Resolves."""
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "closes|fixes|resolves" in text.lower(), (
-        "PR Body Check regex changed shape — update this test to match."
-    )
+def test_refactor_title_prefix_bypasses_with_notice():
+    expected = {
+        "failed": [],
+        "notices": [
+            "require-linked-issue bypassed: refactor: title prefix — "
+            "structural cleanup without a parent issue."
+        ],
+        "lookups": [],
+    }
+    titles = ["refactor: split foo", "Refactor(security): narrow", "REFACTOR(api): x"]
+    wrong = {t: r for t in titles if (r := run("", title=t)) != expected}
+    assert wrong == {}
 
 
-def test_workflow_yaml_carries_refs_alternation():
-    """Config dimension (#1136 AC-GATE): the YAML regex must accept refs/references.
-
-    Locks the executor-lane partial-work escape into the merge gate: a PR that
-    uses `Refs #N` (link-without-close) must pass require-linked-issue. If the
-    alternation drops the `refs?|references?` branch, this test (and the
-    `_augment_closes_mandate` escape it backs) is stale.
-    """
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "refs?|references?" in text.lower(), (
-        "PR Body Check regex no longer carries the refs/references alternation; "
-        "the #1136 partial-work `Refs #N` escape is now unsupported."
-    )
+def test_refactor_outside_the_title_prefix_does_not_bypass():
+    titles = ["Refactoring the auth module", "feat: include refactor: in description"]
+    wrong = {t: r for t in titles if (r := run("body", title=t)) != BLOCKED}
+    assert wrong == {}
 
 
-def test_no_issue_marker_allows():
-    allowed, reason = evaluate("Drive-by docs fix.\n\n[no-issue]", [])
-    assert allowed
-    assert reason == "no-issue"
+# --- D14 (#2055): the lane bot links an issue, always ----------------------------------------
 
 
-def test_no_issue_marker_case_insensitive():
-    for marker in ("[no-issue]", "[NO-ISSUE]", "[No-Issue]"):
-        body = f"trivial fix\n\n{marker}"
-        allowed, reason = evaluate(body, [])
-        assert allowed, f"{marker} should be accepted"
-        assert reason == "no-issue"
+def test_lane_bot_gets_no_no_issue_or_refactor_bypass():
+    """AC1-3: every bypass a human may use is refused to osasuwu-bot, in any login case."""
+    cases = [
+        ("Drive-by.\n\n[no-issue]\n", "fix: x", "osasuwu-bot"),
+        ("", "fix(tests): isolate env [no-issue]", "osasuwu-bot"),
+        ("", "refactor: split foo", "osasuwu-bot"),
+        ("", "refactor(api): narrow", "Osasuwu-Bot"),
+        ("No link at all.", "feat: x", "osasuwu-bot"),
+    ]
+    wrong = {c: r for c in cases if (r := run(c[0], title=c[1], author=c[2])) != BOT_BLOCKED}
+    assert wrong == {}
 
 
-def test_no_issue_marker_with_unrelated_label():
-    allowed, reason = evaluate("[no-issue] inline doc fix", ["documentation"])
-    assert allowed
-    assert reason == "no-issue"
+def test_lane_bot_linking_an_issue_passes_without_a_bypass_notice():
+    """AC4: the link is what passes it — the [no-issue] line and refactor: title are ignored."""
+    result = run("Closes #42\n\n[no-issue]\n", title="refactor: x", author="osasuwu-bot")
+    assert result == {"failed": [], "notices": [], "lookups": ["Osasuwu/jarvis#42"]}
 
 
-def test_no_issue_marker_in_title_allows():
-    """Commit-msg convention places [no-issue] in the title, not the body."""
-    allowed, reason = evaluate("", [], title="fix(tests): isolate env [no-issue]")
-    assert allowed
-    assert reason == "no-issue"
+def test_lane_bot_keeps_the_priority_critical_bypass():
+    """AC6: D14 removes only the two paperwork bypasses; the hotfix label is unchanged."""
+    assert run("urgent", labels=("priority:critical",), author="osasuwu-bot") == {
+        "failed": [],
+        "notices": ["require-linked-issue bypassed: priority:critical — hotfix label present."],
+        "lookups": [],
+    }
 
 
-def test_no_issue_phrase_without_brackets_blocked():
-    # Plain prose "no issue" must not satisfy the escape — only the bracketed token.
-    allowed, _ = evaluate("There is no issue with this change.", [])
-    assert not allowed
-
-
-def test_workflow_yaml_keeps_no_issue_escape():
-    """Config dimension: the workflow must still honor the [no-issue] marker."""
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "[no-issue]" in text, (
-        "PR Body Check workflow no longer references the [no-issue] escape; "
-        "this test (and CLAUDE.md fix>track rule #428) is now stale."
-    )
-
-
-def test_refactor_title_allows():
-    allowed, reason = evaluate("just a refactor", [], title="refactor: split foo into bar")
-    assert allowed
-    assert reason == "refactor"
-
-
-def test_refactor_with_scope_allows():
-    allowed, reason = evaluate("", [], title="refactor(security): narrow protected-files")
-    assert allowed
-    assert reason == "refactor"
-
-
-def test_refactor_case_insensitive():
-    for title in ("refactor: x", "Refactor: x", "REFACTOR(api): x"):
-        allowed, reason = evaluate("", [], title=title)
-        assert allowed, f"{title!r} should bypass"
-        assert reason == "refactor"
-
-
-def test_refactoring_word_in_title_blocked():
-    # Only the conventional-commit prefix qualifies — prose mentions don't.
-    allowed, _ = evaluate("body", [], title="Refactoring the auth module")
-    assert not allowed
-
-
-def test_refactor_substring_blocked():
-    # Mid-title "refactor" must not bypass.
-    allowed, _ = evaluate("body", [], title="feat: include refactor: in description")
-    assert not allowed
-
-
-def test_workflow_yaml_keeps_refactor_escape():
-    """Config dimension: the workflow must still honor the refactor: title prefix."""
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "^refactor" in text, (
-        "PR Body Check workflow no longer references the refactor: title escape; "
-        "this test is now stale."
-    )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+def test_missing_lane_bot_login_fails_closed():
+    """AC7: without the login the deny rule cannot apply, so no bypass is granted to anyone."""
+    expected = {
+        "failed": [
+            "require-linked-issue: LANE_BOT_LOGIN is empty; the step must set it so the "
+            "D14 deny rule (#2055) can apply."
+        ],
+        "notices": [],
+        "lookups": [],
+    }
+    assert run("Drive-by.\n\n[no-issue]\n", step_env={}) == expected

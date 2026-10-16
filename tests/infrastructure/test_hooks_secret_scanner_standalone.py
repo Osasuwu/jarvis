@@ -69,3 +69,34 @@ def test_allows_benign_file_write():
     }
     result = _run_hook(payload)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _bash(command: str) -> subprocess.CompletedProcess:
+    return _run_hook({"tool_name": "Bash", "tool_input": {"command": command}})
+
+
+# #2010: the "Reading .env file" pattern spanned newlines and `&&`, so any
+# `cat` plus a later mention of an env file in the same tool call was blocked.
+ENV_MENTION_NOT_READ = [
+    'cat README.md\ngh issue create --title "no .env reads"',
+    "cat > b.md <<'EOF'\nbody\nEOF\ngh issue create --title \"x: .env* not read\" --body-file b.md",
+    "cat a.txt && echo .env",
+]
+
+ENV_READ = [
+    "cat .env",
+    r"type C:\proj\.env.local",
+    "Get-Content ./.env",
+    "cat foo .env",
+]
+
+
+def test_env_mention_outside_the_read_is_allowed():
+    rejected = {c: r.stdout for c in ENV_MENTION_NOT_READ if (r := _bash(c)).returncode != 0}
+    assert rejected == {}
+
+
+def test_env_read_is_blocked():
+    allowed = [c for c in ENV_READ if _bash(c).returncode != 2]
+    assert allowed == []
+    assert "Reading .env file" in _bash("cat .env").stdout

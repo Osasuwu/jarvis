@@ -24,7 +24,11 @@ See `docs/security/mcp-audit.md` for per-server analysis. Summary:
 | Secret exfiltration via bash | High | PreToolUse bash danger scanner (8 patterns) |
 | Secret exfiltration via memory_store | Medium | **Sprint 2: #159** |
 | Prompt injection via firecrawl/web | Medium | Claude instruction hierarchy |
-| Prompt injection via GitHub issues | Medium | None (trusted input assumed) |
+| Prompt injection via GitHub issues | Medium | AFK lane intake (#2005): worker refused unless the issue body equals the `labeled` payload body and carries no `osasuwu-bot` edit (D9); refused when unclassified, closed, claimed by a PR, in flight or blocked (D8). Worker without a write token (D4) is committed but not yet enforced (#1966) |
+| Bot releases a merge hold (AP5, #1999) | High | The worker is `osasuwu-bot` with write access, so it can remove `waiting-human-review` or a review request. `waiting-human-review` (run from the base ref by `.github/scripts/waiting_human_review.py`) treats a release by the bot or any `*[bot]` actor as no release: it re-applies the label and stays red until a human removes it |
+| Bot dispatches itself (AP6, #1999) | High | Intake refuses `agent:dispatch` applied by the bot, a `*[bot]` login or an unknown labeller (`bot-labelled`, `labeller-unknown`); only a human's label starts a run |
+| Bot added to a trusted/bypass author list (#1999) | High | `tests/ci/test_bot_bypass_list_guard.py` under the required `pytest` check: no `osasuwu-bot` in the code-gate author rule, in any `allowed_bots`, or in the `require-linked-issue` bypass; `allowed_bots: "*"` also fails |
+| N-run gate counts bot-edited-by-human or bot-commented runs as clean (#1999) | Medium | `lane_ledger.py` `merged-unedited` means `human-touched: no`: no non-bot commit, comment or non-approving review; `lane_ledger.py touched <owner/repo#N>` lists the touches |
 | Data corruption via memory writes | Medium | Soft delete with 30-day retention (#160) |
 | Obsidian vault data exposure | Low | Local only, no network |
 
@@ -88,7 +92,7 @@ Key flows to protect:
 | Agent breaks git state | Medium | Low | Medium | Mitigated (rollback #163) |
 | Prompt injection via web scrape | Low | Medium | Low | Accepted (Claude instruction hierarchy) |
 | Supply chain attack via dependency | Low | High | Medium | Partial (Dependabot) |
-| Prompt injection via GitHub issue | Low | Medium | Low | Accepted (trusted repo) |
+| Prompt injection via GitHub issue | Low | Medium | Low | Partial (intake gate #2005; no-token worker D4 pending #1966) |
 | Agent-to-agent poisoning | Low | Medium | Low | Deferred (Federation & Delegation pillar) |
 
 ## Mitigations Summary
@@ -114,6 +118,7 @@ Key flows to protect:
 - [x] Git history (revert commits)
 
 ### Accepted Risks
-- **Prompt injection via web/issues**: Claude's instruction hierarchy (system > user > tool output) is the defense. No additional mitigation planned unless incidents occur.
+- **Prompt injection via web**: Claude's instruction hierarchy (system > user > tool output) is the defense. No additional mitigation planned unless incidents occur.
+- **Prompt injection via GitHub issues**: the AFK lane intake gate narrows it (see Attack Surface); until the no-token worker (D4, #1966) lands, a body the human labelled and approved is still trusted input.
 - **Single-user assumption**: No RLS, no multi-tenant isolation. Acceptable for solo project.
 - **Agent-to-agent poisoning**: Deferred to Federation & Delegation pillar when multi-agent architecture is designed.

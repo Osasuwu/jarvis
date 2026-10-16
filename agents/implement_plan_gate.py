@@ -2,15 +2,12 @@
 
 Ex-ante half of two-point plan-review classification (decision `d34dd65a`):
 runs off whatever files-to-touch and estimated churn are known before any
-code edit exists, per `.github/workflows/plan-review-diff-gate.yml`'s own
-framing — "admission-time classification (#1686) is best-effort ... runs
-off whatever paths/churn were known when the PR/issue was opened." The CI
-diff-gate (#1687) re-classifies from the real diff and is the fail-closed
-backstop, so this evaluation does not need to be exact.
+code edit exists. It is best-effort, so it does not need to be exact; the
+ex-post half is the `risk-tier` check on the real diff.
 
 Reuses `agents.plan_classifier.classify_task_row` — the one named policy
-entry point every consumer (interactive lane, drain, container pick, CI
-diff-gate) calls per its own docstring — and `prod_areas_from_paths` for
+entry point every consumer (interactive lane, drain, container pick) calls
+per its own docstring — and `prod_areas_from_paths` for
 deriving `prod_areas` from an estimated file list. No second
 implementation of thresholds or classification logic here (AC1).
 """

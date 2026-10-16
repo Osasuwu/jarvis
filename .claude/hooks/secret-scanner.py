@@ -61,8 +61,9 @@ _SECRET_VARS = (
 )
 
 BASH_DANGER_PATTERNS = [
-    # Reading .env and piping/redirecting somewhere
-    (r"(?:cat|type|Get-Content|gc)\s+[^\|;]*\.env", "Reading .env file"),
+    # Reading .env: the path must be an argument of the same invocation, so the
+    # match stops at a newline or a command separator (`|`, `;`, `&&`) (#2010).
+    (r"\b(?:cat|type|Get-Content|gc)\s+[^|;&\r\n]*\.env", "Reading .env file"),
     # Expanding secret env vars in curl/wget/http commands
     (
         rf"(?:curl|wget|http|Invoke-WebRequest|iwr)\s.*\$(?:{_SECRET_VARS})",

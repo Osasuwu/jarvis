@@ -1,0 +1,71 @@
+name: Lane Close
+
+# Finalises the N-run gate ledger row of a lane PR when it closes (D13, #2012),
+# as a reusable workflow (#2013): `merged-unedited` (every commit authored by
+# the bot), `merged-edited` or `closed-unmerged`. Rules and row format:
+# .github/scripts/lane_ledger.py.
+#
+# The caller owns the trigger and must use `pull_request_target`, not
+# `pull_request`: this job holds the bot PAT, and a `pull_request` run would
+# execute the PR's own copy of the workflow with it. The lane code is fetched at
+# the lane's own pinned commit and the host is not checked out at all, so the
+# code that runs is never the PR's. The PR's branch name, number and merged flag
+# are read as data through `env`.
+on:
+  workflow_call:
+    inputs:
+      bot-login:
+        description: Login of the lane bot account (D1).
+        type: string
+        required: true
+      ledger-issue:
+        description: "Tracking issue of the N-run gate ledger as `owner/repo#N`; empty means no ledger."
+        type: string
+        default: ""
+    secrets:
+      AGENT_DISPATCH_PAT:
+        required: true
+
+jobs:
+  finalise:
+    # Lane PRs only, and only same-repo ones: a fork cannot name a head branch
+    # `claude/issue-N-...` in the host repository.
+    if: >-
+      startsWith(github.event.pull_request.head.ref, 'claude/issue-') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the lane code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .lane-src
+          sparse-checkout: |
+            .github/scripts
+            agents
+          persist-credentials: false
+
+      # An empty `job.workflow_sha` would make the checkout above silently take
+      # the lane repository's default branch, i.e. unpinned code. Fail instead.
+      - name: Verify the lane code is at the pinned commit
+        env:
+          LANE_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          test -n "$LANE_SHA"
+          test "$(git -C .lane-src rev-parse HEAD)" = "$LANE_SHA"
+
+      - name: Finalise the ledger row
+        env:
+          GH_TOKEN: ${{ secrets.AGENT_DISPATCH_PAT }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          LANE_LEDGER_ISSUE: ${{ inputs.ledger-issue }}
+          LANE_BOT_LOGIN: ${{ inputs.bot-login }}
+        run: python3 .lane-src/.github/scripts/lane_ledger.py close

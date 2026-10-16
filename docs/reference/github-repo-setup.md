@@ -67,14 +67,17 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | Gate (check name) | Workflow | What it blocks |
 |---|---|---|
 | `code-gate` | `code-gate-verdict.yml` (evidence from `code-review.yml`) | "Review evidence" rule, see below — red unless a SHA-bound non-blocking review artifact exists or the diff is all cosmetic |
-| `require-linked-issue` | `pr-body-check.yml` | PR body has no `Closes #N`/`Refs #N`, no `[no-issue]` marker, no `refactor:` prefix, no `priority:critical` hotfix bypass |
+| `require-linked-issue` | `pr-body-check.yml` | PR body has no closing keyword or `Refs` reference to an existing issue (`#N`, `owner/repo#N` or issue URL), no `[no-issue]` line (or title-final marker), no `refactor:` prefix, no `priority:critical` hotfix bypass; each bypass leaves a notice on the run. `osasuwu-bot` PRs get no `[no-issue]` / `refactor:` bypass (D14, #2055) |
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
 | `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
+| `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line, and on any HIGH/CRITICAL PR until an admin human's APPROVED review sits on the current head SHA. Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
 
-These five required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
-`waiting-human-review`) are exactly what's enforced on jarvis's `main` since #1893 (read back
-from the live branch-protection settings, 2026-09-24). Before that, #1796/#1835 had cut it down
+These six required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
+`waiting-human-review`, `risk-tier`) are the target set on jarvis's `main`. The first five have
+been enforced since #1893 (read back from the live branch-protection settings, 2026-09-24);
+`risk-tier` (#2004) is added by the operator once the check is live, which is why the binding
+block below names it before the live setting does. Before that, #1796/#1835 had cut it down
 to the first four, deleting the former `owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the
 review retry wrapper and the advisory `issue-checks.yml`; don't copy any of those from older
 docs. Repo-custom gates layer on top of this floor as needed; they don't need to match another
@@ -103,10 +106,26 @@ Two workflows, split so a PR can never change the rule that judges it:
   SHA only; PR head content is fetched through the API into `.pr-head/`. The reviewer's sole
   write grant is `Edit(./.review/findings.json)`. Deterministic base steps then validate the
   findings, enforce `blocking ⇔ findings non-empty`, check the tree is clean, stamp `sha` /
-  `base_ref`, and upload `review-evidence.json` (90-day retention). Skip paths (draft, fork,
-  Dependabot without dispatch, cosmetic-only) upload `status: skipped`. The reviewer gets one
-  retry; concurrency group `code-review-<pr>` cancels a superseded run. The PR comment is for
-  humans only and is never parsed.
+  `base_ref`, and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
+  (one per attempt, `overwrite: false`, 90-day retention). A re-run still deletes the earlier
+  attempts' artifacts, so the verdict keeps a blocking result in its own ledger, not in the
+  artifact (#2062); the upload is the review job's last step and runs unconditionally, so an
+  attempt that succeeded is one that uploaded evidence. Skip paths (draft, fork, Dependabot without dispatch, cosmetic-only) upload
+  `status: skipped`. The reviewer gets one retry; concurrency group `code-review-<pr>` cancels a
+  superseded run (a push, a dispatch or a base change); a title/body edit gets a per-run group so
+  it never cancels the review in flight (#2044). The PR comment is for humans only and is never
+  parsed.
+- **The reviewer is contained, not trusted** (#2024). The review job's token is `contents: read`
+  + `pull-requests: read` with no `id-token`, and both reviewer steps pass it as `github_token`,
+  so the reviewer's `gh` cannot write and the action cannot mint a write-scoped App token over
+  OIDC. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` scrubs secrets from the reviewer's subprocesses; it
+  needs bubblewrap, which a plain step installs before the first attempt and fails by name if it
+  cannot. `--allowed-tools` is an exact list of read verbs (`git log`/`show`/`diff`/`blame`/…,
+  `gh pr view`/`diff`/`list`/`checks`, …), pinned by `tests/ci/test_code_review_allowed_tools.py`
+  — it reverses #1850's wholesale `git`/`gh` grants, which admitted `git config`/`-c`/`grep -O`.
+  The allow/deny patterns steer; they are not a boundary (the harness matches command text). Every
+  `code_gate_verdict.py` call runs as `python -I`, so a module written next to the script is never
+  imported.
 - **`code-gate-verdict.yml` decides.** Triggered by `pull_request_target` and by a `workflow_run`
   hook on "Code Review", it runs from the default branch, checks out only `.github/scripts`
   there, and never touches PR code. The `osasuwu-ci` GitHub App (key in the
@@ -114,17 +133,70 @@ Two workflows, split so a PR can never change the rule that judges it:
   check run; branch protection binds `code-gate` to that App's `app_id` (and `gitleaks` to
   15368), so no other workflow can satisfy the gate by creating a same-named check.
 
+The binding below is what live protection must carry. `branch-protection-drift.yml` (#1998) reads
+this block daily and goes red on any difference from `GET /branches/<default>` — an `app_id: null`
+there accepts a same-named check run or commit status from any token, so an unapplied binding is a
+fail-open gate. Change the block and the live setting together
+(`gh api -X PATCH repos/<owner>/<repo>/branches/<default>/protection/required_status_checks`).
+
+<!-- required-checks-binding -->
+```json
+{
+  "require-linked-issue": 15368,
+  "pytest": 15368,
+  "code-gate": 3969106,
+  "gitleaks": 15368,
+  "waiting-human-review": 15368,
+  "risk-tier": 15368
+}
+```
+
 `code-gate` is **green iff**:
 
 1. at least one successful `code-review.yml` run bound to the evaluated head SHA carries a valid
-   non-blocking artifact, **and** no bound run is blocking or missing its artifact (`skipped`
-   artifacts are ignored; the worst result sticks); **or**
+   non-blocking artifact, **and** no bound run is unfinished, and none of its attempts left a
+   blocking or unreadable one (`skipped` artifacts are ignored); **or**
 2. every changed file is cosmetic.
 
-Run provenance: a `pull_request` run counts only if its `pull_requests[]` contains this PR with
-the default branch as base; a `workflow_dispatch` run counts only if it ran on the default
-branch and its `run-name` is `Code review PR #<n> @ <40-hex sha>`. The artifact's `sha` and
-`base_ref` must match the evaluated SHA and the current base.
+Every attempt of a bound run is read, not only the latest: its live
+`review-evidence-<attempt>` artifact, or, when that artifact is listed but expired, an
+`evidence-expired` entry, or, when it is not listed at all although the attempt succeeded, an
+`evidence-missing` entry (a re-run deleted it). An attempt that did not succeed and left no
+artifact has no entry. A run whose latest attempt failed or was cancelled contributes only its
+blocking artifacts, such as one an earlier attempt left.
+
+Run provenance: a `pull_request` run counts only if its `pull_requests[]` contains this PR and
+every PR it lists is into the default branch; one that also lists a PR into another base may have
+run that base's copy of the workflow, so it reads as `evidence-foreign-base` (its blocking
+artifact still counts as blocking). A `workflow_dispatch` run counts only if its `run-name` is
+`Code review PR #<n> @ <40-hex sha>` and its head commit is the default branch's tip or one of its
+ancestors (checked through the compare API, never taken from the run payload). The artifact's
+`sha` and `base_ref` must match the evaluated SHA and the current base.
+
+**What clears what.** A clean run for the SHA — a re-dispatch or a re-run — clears
+`evidence-missing`, `-expired`, `-invalid`, `-sha-mismatch`, `-base-mismatch` and
+`-foreign-base`: each is a failure to produce evidence, not a verdict on the code.
+`evidence-blocking` stays in force for the SHA across re-runs and re-dispatches, and after the
+blocking artifact itself is gone (a re-run deletes the earlier attempts' artifacts, and every
+artifact expires): the verdict records what it has read for the SHA in a ledger in the
+`osasuwu-ci` App's own `code-gate` check run, which only that App writes and which never
+expires. Each run is a `<!-- code-gate-ledger {...} -->` comment in the check run's
+`output.text`; the verdict merges the ledgers of all of the App's `code-gate` check runs for
+the SHA, ignores any other app's, and writes the result back to each. A review attempt that
+succeeded but whose artifact was gone before the verdict first read it is red as
+`evidence-unobserved` for the same reason: it may have been blocking. A ledger the verdict
+cannot parse reads as `evidence-unobserved`. Both are sticky over every other verdict,
+`verdict-error`, draft and cosmetic included; only a new commit, which starts a new check run
+with an empty ledger, clears either. `evidence-unreadable` (an artifact download failed or was cut off, so it may
+hide a blocking verdict) is not lifted by a clean run either; it clears when a re-run of the
+verdict job downloads the artifact. `verdict-error` (the verdict job crashed; it posts red, then
+fails) clears by re-running the verdict job. `shared-head` clears by closing the other PR or
+pushing a distinct commit.
+
+**No verdict, or a shared one.** A PR into a base other than the default branch gets no
+`code-gate` verdict at all: the check belongs to the commit, so its verdict would land on any PR
+into the default branch with the same head. When two open PRs into the default branch share a
+head commit, the commit is red (`shared-head`) until one moves or closes.
 
 **Cosmetic allow-list** (read from the default branch): `docs/**` with extension `md`, `png`,
 `jpg`, `gif`, `webp` excluding `docs/reference/**`; root `README.md`, `SECURITY.md`,
@@ -138,6 +210,14 @@ gate machinery (`code-review.yml`, `code-gate-verdict.yml`, `code_gate_verdict.p
 actions), which merge only through the review-blind admin-merge carve-out in
 `~/.claude/reference/merge-gates.md`, backed by a fresh-session `/code-review` posted against
 the final SHA.
+
+A review dispatched at a PR that does not exist, is closed or merged, or whose head has moved fails the
+`prepare` step with a message naming which; dispatch again after the final push, with that push's
+`head_sha`. A push mid-run supersedes the run (its evidence is bound to the old SHA); the red
+`evidence-none` message says so, and for fork/Dependabot PRs `untrusted-needs-dispatch` carries the same
+advice. A `pull_request` run whose head moved is refused without a dispatch hint (the run on the new head
+reviews it), except for a fork/Dependabot PR, which only a dispatch reviews. A dispatch re-checks merged/closed
+on its final PR read, so a merge landing mid-read is refused too.
 
 **Dependabot caveat.** A Dependabot-triggered `pull_request_target` / `workflow_run` run gets
 Dependabot secrets, not Actions or environment secrets, so the verdict job may fail to mint
@@ -159,7 +239,8 @@ repos/<owner>/<repo>/branches/<default>/protection`) as required status checks. 
 ## 4. `config/protected-paths.json` entry
 
 If the repo participates in AFK/agent dispatch classification, add an entry to
-`config/protected-paths.json` (jarvis's copy; adapt path per repo) with two buckets:
+`config/protected-paths.json` (jarvis's copy; adapt path per repo) with two buckets (plus an
+optional third, below):
 
 - **`hitl`** — identity/security config; any changed file matching these globs is a hard
   refusal for autonomous agents (class 3, human-in-the-loop only). Mirrors the sensitive
@@ -168,6 +249,12 @@ If the repo participates in AFK/agent dispatch classification, add an entry to
 - **`guarded`** — shared surfaces with consumers outside this repo (a shared schema, a memory
   server, a config file another repo depends on). Any match is class 2 (plan-review required,
   AFK-eligible once a plan locks) — not a refusal, just a higher bar.
+
+- **`machinery`** (optional) — the CI/process machinery that decides what merges: workflows,
+  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs. Read only
+  by the `risk-tier` check, from the base commit, never by `/to-tickets`; any changed file
+  matching these globs floors the PR at HIGH. A repo without the bucket still gets the `hitl`
+  and `guarded` floors.
 
 A repo with no shared surfaces and no identity-adjacent files can have both arrays empty.
 Adding a new repo to this file should never require touching skill logic — it's pure data.
@@ -279,8 +366,8 @@ in sync with that doc if either changes.
 `.github/ISSUE_TEMPLATE/` — at minimum a `task.yml` and a `bug.yml` form, plus a `config.yml`
 disabling blank issues (`blank_issues_enabled: false`) so every issue goes through a
 structured form. Match the label vocabulary from §1 in the form's default/required fields
-(e.g. an `Area` dropdown that emits `area:<x>` so `issue-checks.yml`-equivalent automation can
-read it back out of the body).
+(e.g. an `Area` dropdown that emits `area:<x>` so automation can read it back out of the
+body).
 
 ## 8. Merge discipline
 
@@ -291,7 +378,7 @@ read it back out of the body).
   GitHub's bot-recursion-prevention silently suppresses **native** linked-issue auto-close for
   *any* automated (bot or App) merge — even a GitHub App token merging doesn't restore it.
   Two ways out. Either queue auto-merge with a **user** PAT, so the merge is attributed to a
-  person and native auto-close fires (jarvis does this: `agent-dispatch.yml` queues
+  person and native auto-close fires (jarvis does this: the lane, `lane.yml`, queues
   `gh pr merge --auto` with `AGENT_DISPATCH_PAT`). Or, if merges must be bot/App-authored, both
   of these are required: (1) mint and use a GitHub App token for the merge step so the PR's
   `pull_request: closed` event itself isn't suppressed, and (2) add a second workflow triggered
