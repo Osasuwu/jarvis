@@ -215,6 +215,7 @@ def _pr(**over):
         "user": {"login": "Osasuwu", "type": "User"},
         "base": {"ref": "main", "repo": {"full_name": "Osasuwu/jarvis"}},
         "head": {"sha": SHA, "repo": {"full_name": "Osasuwu/jarvis"}},
+        "created_at": "2026-10-01T12:00:00Z",
     }
     pr.update(over)
     return pr
@@ -1296,7 +1297,7 @@ def test_gather_then_evaluate_keeps_blocking_from_an_earlier_attempt():
         },
         blobs={1: _evidence_zip(blocking=True), 2: _evidence_zip()},
     )
-    entries = gate.gather_entries(api, "o/r", PR, SHA, "main")
+    entries = gate.gather_entries(api, "o/r", PR, SHA, "main", _pr()["created_at"])
     assert len(entries) == 2
     got = _ev(entries)
     assert (got.green, got.code) == (False, "evidence-blocking")
@@ -1323,7 +1324,7 @@ def _gather(runs, compare):
         },
         blobs={1: _evidence_zip()},
     )
-    return api, gate.gather_entries(api, "o/r", PR, SHA, "main")
+    return api, gate.gather_entries(api, "o/r", PR, SHA, "main", _pr()["created_at"])
 
 
 def _compares(api):
@@ -1366,7 +1367,7 @@ def test_history_is_checked_only_for_dispatch_runs_titled_for_this_pr_and_sha():
         },
         blobs={1: _evidence_zip()},
     )
-    entries = gate.gather_entries(api, "o/r", PR, SHA, "main")
+    entries = gate.gather_entries(api, "o/r", PR, SHA, "main", _pr()["created_at"])
     assert _compares(api) == []
     assert [e["run"]["id"] for e in entries] == [1001]
 
@@ -1380,7 +1381,7 @@ def test_gather_loads_a_foreign_base_run_so_its_blocking_verdict_sticks():
         },
         blobs={1: _evidence_zip(blocking=True)},
     )
-    got = _ev(gate.gather_entries(api, "o/r", PR, SHA, "main"))
+    got = _ev(gate.gather_entries(api, "o/r", PR, SHA, "main", _pr()["created_at"]))
     assert (got.green, got.code) == (False, "evidence-blocking")
 
 
@@ -1948,6 +1949,7 @@ def _run_verdict(monkeypatch, read_responses, blobs=None, checks=None):
         monkeypatch.setenv(k, v)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    write.read = read
     return write
 
 
@@ -2018,10 +2020,131 @@ def test_two_open_prs_on_one_head_post_shared_head(monkeypatch):
 def test_an_open_pr_listing_too_long_to_read_whole_fails_closed(monkeypatch):
     page = [_pr(number=100 + i, head={"sha": OTHER_SHA}) for i in range(100)]
     write = _run_verdict(monkeypatch, _snapshot_responses(**{OPEN_PULLS: page}))
-    with pytest.raises(RuntimeError, match="too many open PRs"):
+    with pytest.raises(RuntimeError, match="truncated"):
         gate.cmd_verdict(argparse.Namespace())
     ((_, body),) = _patched(write)
-    assert body["output"]["title"] == "code-gate: verdict-error"
+    assert body["conclusion"] == "failure"
+    assert body["output"]["title"] == "code-gate: listing-truncated"
+    assert "repos/o/r/pulls" in body["output"]["summary"]
+
+
+# --- page caps fail closed (#2076) -------------------------------------------
+
+
+def _pages(sizes):
+    """A list endpoint whose page N holds sizes[N-1] items (then nothing)."""
+    calls = []
+
+    def api(method, path, body=None):
+        calls.append(path)
+        page = int(re.search(r"[?&]page=(\d+)", path).group(1))
+        size = sizes[page - 1] if page <= len(sizes) else 0
+        return [{"n": (page, i)} for i in range(size)]
+
+    return api, calls
+
+
+def test_paged_raises_naming_the_listing_when_its_last_allowed_page_is_full():
+    """A full last page may go on: handing it on as the whole list is fail-open."""
+    api, calls = _pages([100, 100, 100, 7])
+    with pytest.raises(RuntimeError, match=r"repos/o/r/things.*truncated") as info:
+        gate.paged(api, "repos/o/r/things", max_pages=3)
+    assert isinstance(info.value, gate.ListingTruncated)
+    assert len(info.value.items) == 300
+    assert len(calls) == 3
+
+
+def test_paged_returns_a_listing_that_ends_inside_its_cap():
+    api, calls = _pages([100, 100, 40])
+    assert len(gate.paged(api, "repos/o/r/things", max_pages=3)) == 240
+    assert len(calls) == 3
+
+
+def _other_dispatches(n):
+    return [
+        _payload_dispatch(id=3000 + i, display_title=f"Code review PR #{900 + i} @ {SHA}")
+        for i in range(n)
+    ]
+
+
+DISPATCH_LISTING = f"{RUNS_PATH}?event=workflow_dispatch&branch=main&"
+
+
+def test_a_dispatch_listing_past_its_cap_is_red_naming_the_truncation_not_green(monkeypatch):
+    """The PR's own (blocking) dispatch could sit past the cap: a clean pull_request
+    run must not read green over a listing the verdict did not read whole."""
+    write = _run_verdict(
+        monkeypatch,
+        _snapshot_responses(
+            **{
+                f"{RUNS_PATH}?head_sha={SHA}&": {"workflow_runs": [_pr_run()]},
+                DISPATCH_LISTING: {"workflow_runs": _other_dispatches(100)},
+                ARTIFACTS_PATH: {"artifacts": [_art(1, "review-evidence-1")]},
+            }
+        ),
+        blobs={1: _evidence_zip()},
+    )
+    with pytest.raises(RuntimeError, match="truncated"):
+        gate.cmd_verdict(argparse.Namespace())
+    ((_, body),) = _patched(write)
+    assert body["conclusion"] == "failure"
+    assert body["output"]["title"] == "code-gate: listing-truncated"
+    assert "event=workflow_dispatch" in body["output"]["summary"]
+    # The runs API serves at most 1000 results to a filtered query: 10 pages of 100.
+    listed = [p for _, p, _ in write.read.calls if p.startswith(DISPATCH_LISTING)]
+    assert len(listed) == 10
+
+
+def test_dispatch_listing_reads_only_runs_created_since_the_pr_could_be_dispatched(monkeypatch):
+    """A dispatch for the PR needs the PR to exist (prepare fetches it), and a run
+    lives at most 35 days, so older dispatches of other PRs are never read."""
+    write = _run_verdict(
+        monkeypatch,
+        _snapshot_responses(
+            **{
+                f"{RUNS_PATH}?head_sha={SHA}&": {"workflow_runs": [_pr_run()]},
+                DISPATCH_LISTING: {"workflow_runs": []},
+                ARTIFACTS_PATH: {"artifacts": [_art(1, "review-evidence-1")]},
+            }
+        ),
+        blobs={1: _evidence_zip()},
+    )
+    assert gate.cmd_verdict(argparse.Namespace()) == 0
+    assert _title(write) == "code-gate: evidence-clean"
+    (listed,) = [p for _, p, _ in write.read.calls if p.startswith(DISPATCH_LISTING)]
+    # PR created 2026-10-01T12:00:00Z, minus 35 days; `>=` and `:` percent-encoded.
+    assert "&created=%3E%3D2026-08-27T12%3A00%3A00Z&" in listed
+    (by_sha,) = [p for _, p, _ in write.read.calls if p.startswith(f"{RUNS_PATH}?head_sha=")]
+    assert "created=" not in by_sha
+
+
+def test_post_check_with_a_check_run_listing_past_its_cap_posts_a_new_red_check():
+    """This App's check (and its ledger) could sit past the cap, under other apps'
+    same-named checks: the verdict posted is red, on a check of its own."""
+    foreign = [{"id": 5000 + i, "app": {"id": 15368}} for i in range(100)]
+    api = FakeApi({CHECKS_PATH: {"check_runs": foreign}})
+    how, posted = gate.post_check(api, "o/r", SHA, GREEN, 123)
+    assert (posted.green, posted.code) == (False, "listing-truncated")
+    method, path, body = api.calls[-1]
+    assert (method, path) == ("POST", "repos/o/r/check-runs")
+    assert body["conclusion"] == "failure"
+    assert body["output"]["title"] == "code-gate: listing-truncated"
+
+
+def test_post_check_past_its_cap_reddens_the_read_check_of_ours_and_posts_a_new_one():
+    """The check of ours that was read goes red too, and a new red one is posted:
+    another of ours past the cap could be the one branch protection reads."""
+    foreign = {"check_runs": [{"id": 5000 + i, "app": {"id": 15368}} for i in range(100)]}
+    first = {"check_runs": [*foreign["check_runs"][:99], _check(id=77)]}
+    page = f"{CHECKS_PATH}?check_name=code-gate&filter=all&per_page=100&page="
+    # Longest prefix wins: page 10 is answered by its own key, not page 1's.
+    api = FakeApi({f"{page}10": foreign, f"{page}1": first, CHECKS_PATH: foreign})
+    gate.post_check(api, "o/r", SHA, GREEN, 123)
+    writes = [(m, p, b["conclusion"]) for m, p, b in api.calls if m != "GET"]
+    assert writes == [
+        ("PATCH", "repos/o/r/check-runs/77", "failure"),
+        ("POST", "repos/o/r/check-runs", "failure"),
+    ]
 
 
 # --- cmd_verdict end to end: stickiness past the artifact (#2062) ------------
