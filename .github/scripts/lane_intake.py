@@ -24,17 +24,16 @@ did not name) is refused first (AP6): the lane never dispatches its own output.
 
 Rules run in a fixed order and the first failure is the only one reported.
 
-Stdlib plus `agents/plan_lock.py`, itself stdlib-only: the job needs no
-dependency install, only a sparse checkout of `.github/scripts` and `agents`.
+Stdlib plus `agents/plan_lock.py` and `github_client.py` beside this script, both
+stdlib-only: the job needs no dependency install, only a sparse checkout of
+`.github/scripts` and `agents`. Every API call goes through the shared client
+(#2068); `main(make_client=...)` is the tests' seam.
 """
 
-import json
+import importlib.util
 import os
 import re
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -219,34 +218,37 @@ def check(facts, payload_body, bot, class2_host=False):
     return None
 
 
-def _request(method, path, body=None):
-    req = urllib.request.Request(
-        f"https://api.github.com/{path}",
-        method=method,
-        data=None if body is None else json.dumps(body).encode(),
-        headers={
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
+def _load_client():
+    """`github_client.py` beside this script, under the sys.modules key every
+    caller shares, so `ListingTruncated` is one class across them."""
+    name = "_jarvis_github_client"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().with_name("github_client.py")
     )
-    with urllib.request.urlopen(req) as resp:
-        raw = resp.read()
-    return json.loads(raw) if raw else None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)  # a half-built module must not be handed out next time
+        raise
+    return module
 
 
-def fetch_facts(repo, number):
+def _make_client(token):
+    return _load_client().Client(token, user_agent="lane-intake")
+
+
+def fetch_facts(api, repo, number):
     """Read the issue as it is now, not as the `labeled` event described it."""
-    issue = _request("GET", f"repos/{repo}/issues/{number}")
+    issue = api("GET", f"repos/{repo}/issues/{number}")
     owner, name = repo.split("/", 1)
-    data = _request(
-        "POST",
-        "graphql",
-        {"query": FACTS_QUERY, "variables": {"owner": owner, "name": name, "number": int(number)}},
+    data = _load_client().graphql(
+        api, FACTS_QUERY, {"owner": owner, "name": name, "number": int(number)}
     )
-    if data.get("errors"):
-        raise RuntimeError(f"GraphQL lookup failed: {data['errors']}")
-    node = data["data"]["repository"]["issue"]
+    node = data["repository"]["issue"]
     summary = issue.get("issue_dependencies_summary") or {}
     facts = {
         "body": issue.get("body"),
@@ -262,15 +264,7 @@ def fetch_facts(repo, number):
     return facts
 
 
-def _remove_label(repo, number, name):
-    try:
-        _request("DELETE", f"repos/{repo}/issues/{number}/labels/{urllib.parse.quote(name)}")
-    except urllib.error.HTTPError as exc:
-        if exc.code != 404:
-            raise
-
-
-def main():
+def main(make_client=None):
     repo = os.environ["GITHUB_REPOSITORY"]
     number = os.environ["ISSUE_NUMBER"]
     bot = os.environ.get("LANE_BOT_LOGIN", "").strip()
@@ -281,20 +275,23 @@ def main():
         )
         sys.exit(1)
     class2_host = os.environ.get("LANE_CLASS2_AFK") == "true"
-    facts = fetch_facts(repo, number)
+    api = (make_client or _make_client)(os.environ["GITHUB_TOKEN"])
+    facts = fetch_facts(api, repo, number)
     # Who applied the label comes from the event, not from the issue's current state.
     facts["label_sender"] = os.environ.get("LABEL_SENDER", "")
     refusal = check(facts, os.environ.get("PAYLOAD_BODY"), bot, class2_host=class2_host)
     if refusal:
         rule, message = refusal
-        _request(
+        # Not retried on a 5xx: one that follows the committed write would post it twice.
+        api(
             "POST",
             f"repos/{repo}/issues/{number}/comments",
             {"body": f"Lane intake refused dispatch: `{rule}`. {message}."},
+            idempotent=False,
         )
     else:
-        _request("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [IN_PROGRESS]})
-        _remove_label(repo, number, DISPATCH)
+        api("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [IN_PROGRESS]})
+        _load_client().remove_label(api, repo, number, DISPATCH)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
         out.write(f"pass={'false' if refusal else 'true'}\n")
     print(f"#{number}: {'refused ' + refusal[0] if refusal else 'dispatched'}")

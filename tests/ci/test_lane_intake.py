@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from ._github_fake import FakeApi, FakeTransport, http_error, load_client
+
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 _spec = importlib.util.spec_from_file_location(
     "lane_intake", _root / ".github" / "scripts" / "lane_intake.py"
@@ -280,46 +282,89 @@ def test_later_rule_fires_when_earlier_ones_pass():
     assert refusal == ("in-flight-status", "issue carries `status:review`")
 
 
-def _run_main(monkeypatch, tmp_path, class2_flag):
-    """Drive `main()` on an `afk:2-plan` issue with a valid plan; return the posted requests."""
-    calls = []
-    monkeypatch.setattr(
-        lane_intake,
-        "fetch_facts",
-        lambda repo, number: _facts(body=LOCKED_BODY, labels=["afk:2-plan", "agent:dispatch"]),
+def _issue_api(facts, writes=None):
+    """A FakeApi answering issue owner/repo#7 as `facts` describe it: the REST issue
+    read and the GraphQL edits/closing-PRs query that `fetch_facts` makes."""
+    issue = {
+        "body": facts["body"],
+        "state": facts["state"],
+        "labels": [{"name": name} for name in facts["labels"]],
+        "issue_dependencies_summary": {"blocked_by": facts["blocked_by"]},
+    }
+    node = {
+        "userContentEdits": {"nodes": [{"editor": {"login": who}} for who in facts["editors"]]},
+        "closedByPullRequestsReferences": {"nodes": [{"number": n} for n in facts["closing_prs"]]},
+    }
+    return FakeApi(
+        responses={"repos/owner/repo/issues/7": issue},
+        writes={"graphql": {"data": {"repository": {"issue": node}}}, **(writes or {})},
     )
-    monkeypatch.setattr(
-        lane_intake, "_request", lambda method, path, body=None: calls.append((method, path, body))
-    )
+
+
+def _writes(api):
+    """The writes `main()` made, past its two reads (the issue GET and the GraphQL query)."""
+    return [call for call in api.calls if call[0] != "GET" and call[1] != "graphql"]
+
+
+def _env(monkeypatch, tmp_path, payload_body, sender="Osasuwu", bot=BOT):
     out = tmp_path / "out.txt"
     monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
     monkeypatch.setenv("ISSUE_NUMBER", "7")
-    monkeypatch.setenv("PAYLOAD_BODY", LOCKED_BODY)
-    monkeypatch.setenv("LABEL_SENDER", "Osasuwu")
+    monkeypatch.setenv("GITHUB_TOKEN", "job-token")
+    monkeypatch.setenv("PAYLOAD_BODY", payload_body)
+    monkeypatch.setenv("LABEL_SENDER", sender)
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
+    monkeypatch.setenv("LANE_BOT_LOGIN", bot)
+    return out
+
+
+def _main(api):
+    """`main()` over `api`, recording the token it built its client with on `api.token`."""
+
+    def make_client(token):
+        api.token = token
+        return api
+
+    lane_intake.main(make_client=make_client)
+
+
+def _run_main(monkeypatch, tmp_path, class2_flag, writes=None):
+    """Drive `main()` on an `afk:2-plan` issue with a valid plan; return the API and output."""
+    api = _issue_api(
+        _facts(body=LOCKED_BODY, labels=["afk:2-plan", "agent:dispatch"]), writes=writes
+    )
+    out = _env(monkeypatch, tmp_path, LOCKED_BODY)
     if class2_flag is None:
         monkeypatch.delenv("LANE_CLASS2_AFK", raising=False)
     else:
         monkeypatch.setenv("LANE_CLASS2_AFK", class2_flag)
-    lane_intake.main()
-    return calls, out.read_text(encoding="utf-8")
+    _main(api)
+    return api, out.read_text(encoding="utf-8")
 
 
 def test_main_dispatches_afk_2_plan_when_the_host_sets_the_class2_flag(monkeypatch, tmp_path):
-    calls, output = _run_main(monkeypatch, tmp_path, "true")
+    api, output = _run_main(monkeypatch, tmp_path, "true")
     assert output == "pass=true\n"
-    assert calls[0] == (
-        "POST",
-        "repos/owner/repo/issues/7/labels",
-        {"labels": ["status:in-progress"]},
-    )
+    # The intake job's own token (Decision g, #2068), not the bot PAT.
+    assert api.token == "job-token"
+    assert _writes(api) == [
+        ("POST", "repos/owner/repo/issues/7/labels", {"labels": ["status:in-progress"]}),
+        ("DELETE", "repos/owner/repo/issues/7/labels/agent%3Adispatch", None),
+    ]
+
+
+def test_main_dispatches_when_the_dispatch_label_is_already_gone(monkeypatch, tmp_path):
+    """A 404 on removing `agent:dispatch` means a human or a rerun already took it off."""
+    gone = {"repos/owner/repo/issues/7/labels/agent%3Adispatch": http_error(404)}
+    api, output = _run_main(monkeypatch, tmp_path, "true", writes=gone)
+    assert output == "pass=true\n"
+    assert _writes(api)[-1] == ("DELETE", "repos/owner/repo/issues/7/labels/agent%3Adispatch", None)
 
 
 def test_main_refuses_afk_2_plan_when_the_host_leaves_the_class2_flag_unset(monkeypatch, tmp_path):
-    calls, output = _run_main(monkeypatch, tmp_path, None)
+    api, output = _run_main(monkeypatch, tmp_path, None)
     assert output == "pass=false\n"
-    assert calls == [
+    assert _writes(api) == [
         (
             "POST",
             "repos/owner/repo/issues/7/comments",
@@ -338,17 +383,12 @@ def test_main_treats_a_class2_flag_other_than_true_as_unset(monkeypatch, tmp_pat
 
 
 def test_main_without_a_bot_login_refuses_to_run_and_touches_nothing(monkeypatch, tmp_path, capsys):
-    calls = []
-    monkeypatch.setattr(lane_intake, "fetch_facts", lambda repo, number: _facts())
-    monkeypatch.setattr(lane_intake, "_request", lambda *a, **k: calls.append(a))
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    monkeypatch.setenv("ISSUE_NUMBER", "7")
-    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
-    monkeypatch.setenv("LANE_BOT_LOGIN", "")
+    api = _issue_api(_facts())
+    _env(monkeypatch, tmp_path, PAYLOAD_BODY, bot="")
     with pytest.raises(SystemExit) as exit_info:
-        lane_intake.main()
+        _main(api)
     assert exit_info.value.code == 1
-    assert calls == []
+    assert api.calls == []
     assert capsys.readouterr().out.strip() == (
         "::error::lane_intake: LANE_BOT_LOGIN is empty; the calling workflow must pass the "
         "lane's bot login"
@@ -356,21 +396,11 @@ def test_main_without_a_bot_login_refuses_to_run_and_touches_nothing(monkeypatch
 
 
 def test_main_refuses_a_dispatch_label_applied_by_the_bot(monkeypatch, tmp_path):
-    calls = []
-    monkeypatch.setattr(lane_intake, "fetch_facts", lambda repo, number: _facts())
-    monkeypatch.setattr(
-        lane_intake, "_request", lambda method, path, body=None: calls.append((method, path, body))
-    )
-    out = tmp_path / "out.txt"
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    monkeypatch.setenv("ISSUE_NUMBER", "7")
-    monkeypatch.setenv("PAYLOAD_BODY", PAYLOAD_BODY)
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    monkeypatch.setenv("LABEL_SENDER", "osasuwu-bot")
-    monkeypatch.setenv("LANE_BOT_LOGIN", "osasuwu-bot")
-    lane_intake.main()
+    api = _issue_api(_facts())
+    out = _env(monkeypatch, tmp_path, PAYLOAD_BODY, sender="osasuwu-bot", bot="osasuwu-bot")
+    _main(api)
     assert out.read_text(encoding="utf-8") == "pass=false\n"
-    assert calls == [
+    assert _writes(api) == [
         (
             "POST",
             "repos/owner/repo/issues/7/comments",
@@ -383,32 +413,22 @@ def test_main_refuses_a_dispatch_label_applied_by_the_bot(monkeypatch, tmp_path)
 
 
 def _run_main_refusal(monkeypatch, tmp_path, facts, payload_body):
-    """Drive `main()` with a human labeller; return the requests made and the output file."""
-    calls = []
-    monkeypatch.setattr(lane_intake, "fetch_facts", lambda repo, number: facts)
-    monkeypatch.setattr(
-        lane_intake, "_request", lambda method, path, body=None: calls.append((method, path, body))
-    )
-    out = tmp_path / "out.txt"
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    monkeypatch.setenv("ISSUE_NUMBER", "7")
-    monkeypatch.setenv("PAYLOAD_BODY", payload_body)
-    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
-    monkeypatch.setenv("LABEL_SENDER", "Osasuwu")
-    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
-    lane_intake.main()
-    return calls, out.read_text(encoding="utf-8")
+    """Drive `main()` with a human labeller; return the API and the output file."""
+    api = _issue_api(facts)
+    out = _env(monkeypatch, tmp_path, payload_body)
+    _main(api)
+    return api, out.read_text(encoding="utf-8")
 
 
 def test_main_refuses_a_needs_star_label_with_one_comment_and_no_worker(monkeypatch, tmp_path):
-    calls, output = _run_main_refusal(
+    api, output = _run_main_refusal(
         monkeypatch,
         tmp_path,
         _facts(labels=["afk:1-auto", "agent:dispatch", "needs-grill"]),
         PAYLOAD_BODY,
     )
     assert output == "pass=false\n"
-    assert calls == [
+    assert _writes(api) == [
         (
             "POST",
             "repos/owner/repo/issues/7/comments",
@@ -421,11 +441,11 @@ def test_main_refuses_a_needs_star_label_with_one_comment_and_no_worker(monkeypa
 
 
 def test_main_refuses_a_body_without_ac_with_one_comment_and_no_worker(monkeypatch, tmp_path):
-    calls, output = _run_main_refusal(
+    api, output = _run_main_refusal(
         monkeypatch, tmp_path, _facts(body="Do the thing."), "Do the thing."
     )
     assert output == "pass=false\n"
-    assert calls == [
+    assert _writes(api) == [
         (
             "POST",
             "repos/owner/repo/issues/7/comments",
@@ -434,4 +454,41 @@ def test_main_refuses_a_body_without_ac_with_one_comment_and_no_worker(monkeypat
                 " heading in the issue body; add one, then re-apply `agent:dispatch`."
             },
         )
+    ]
+
+
+def test_main_posts_its_refusal_comment_without_a_5xx_retry(monkeypatch, tmp_path):
+    """A 5xx can follow a committed comment; a retry would post the refusal twice (#2068)."""
+    api, _ = _run_main_refusal(monkeypatch, tmp_path, _facts(body="Do the thing."), "Do the thing.")
+    assert api.once == [("POST", "repos/owner/repo/issues/7/comments")]
+
+
+def test_main_writes_no_outcome_when_the_issue_read_comes_back_empty(monkeypatch, tmp_path):
+    """An empty issue read is no issue. Read as one, it was refused or dispatched on
+    facts nobody read; it must raise before `pass=` is written, so no worker starts."""
+    gh = load_client()
+    # A lenient reader would go on to the GraphQL query and the refusal comment.
+    graphql = {
+        "data": {
+            "repository": {
+                "issue": {
+                    "userContentEdits": {"nodes": []},
+                    "closedByPullRequestsReferences": {"nodes": []},
+                }
+            }
+        }
+    }
+    transport = FakeTransport([b"", graphql, {}])
+    out = _env(monkeypatch, tmp_path, PAYLOAD_BODY)
+    with pytest.raises(
+        ValueError, match=r"^empty response body for GET repos/owner/repo/issues/7$"
+    ):
+        lane_intake.main(
+            make_client=lambda token: gh.Client(
+                token, user_agent="t", transport=transport, sleep=lambda s: None
+            )
+        )
+    assert not out.exists()
+    assert [r.url for r in transport.requests] == [
+        "https://api.github.com/repos/owner/repo/issues/7"
     ]
