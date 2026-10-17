@@ -112,8 +112,7 @@ removed label leaves the green check standing on that SHA until then.
 Residual: the check tests for a human *account*, not a human. Local and unattended agent sessions
 run under the operator's `gh` token, so such a session can label an `osasuwu-bot` PR
 `priority:critical` and the actor reads as that human account — the bypass is granted with no
-human involved. Closing that needs an agent-side carrier, not this check (tracked as a follow-up
-to #2082).
+human involved. Closing that needs an agent-side carrier, not this check (tracked in #2111).
 
 ## Superseded siblings
 
