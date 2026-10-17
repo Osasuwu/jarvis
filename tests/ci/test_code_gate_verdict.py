@@ -2821,13 +2821,31 @@ def test_real_cancelled_run_does_not_hide_a_later_clean_run():
     assert (got.green, got.code) == (True, "evidence-clean")
 
 
-def test_real_expired_artifact_response_is_red_expired():
+def test_real_expired_artifact_is_unlisted_so_its_attempt_is_red_missing():
+    """GitHub does not list an expired artifact as `expired: true`: it drops it from
+    the run's listing and 404s it by id. So evidence that expires reaches the gate as
+    a succeeded attempt with nothing listed, a keyed missing entry: red, and sticky
+    unobserved (#2062) for an attempt the gate never read."""
     fx = REAL["expired_artifact"]
     run = fx["run"]
-    assert fx["artifacts"]["artifacts"][0]["expired"] is True  # derived: see _about
-    api = _real_api(fx)
+    gone = fx["expired_artifact_id"]
+    assert fx["upload_log"][-1].endswith(f"Artifact ID is {gone}")  # it was uploaded
+    assert fx["expired_artifact_get"]["status"] == 404
+    listed = fx["artifacts"]["artifacts"]
+    assert [(a["id"], a["expired"]) for a in listed] == [(11663001308, False)]  # not 'gone'
+    # The run's evidence expires the same way, leaving this listing. Derived: the
+    # evidence (90-day retention) has not expired yet; the execution log above has.
+    after = {**fx["artifacts"], "total_count": 0, "artifacts": []}
+    api = FakeApi({f"repos/o/r/actions/runs/{run['id']}/artifacts": after})
     entries = gate.load_entries(api, "o/r", run)
-    assert [e["state"] for e in entries] == ["expired"]
-    assert not any(c[0] == "DOWNLOAD" for c in api.calls)
-    got = gate.evaluate_evidence(entries, 1991, run["head_sha"], "main", "main")
-    assert (got.green, got.code) == (False, "evidence-expired")
+    assert entries == [{"run": run, "artifact": None, "state": "missing", "key": "38032557503:1"}]
+    # Captured after PR #2037 merged, which empties pull_requests[]; relink it so the
+    # run binds and the verdict, not provenance, decides.
+    pr_link = {"number": 2037, "base": {"ref": "main"}}
+    bound = [dict(e, run=dict(run, pull_requests=[pr_link])) for e in entries]
+    sha = run["head_sha"]
+    assert gate.run_provenance(bound[0]["run"], 2037, sha, "main") == "bound"
+    got = gate.evaluate_evidence(bound, 2037, sha, "main", "main")
+    assert (got.green, got.code) == (False, "evidence-missing")
+    seen = gate.observe(bound, 2037, sha, "main", "main")
+    assert seen == gate.Observation(frozenset(), frozenset({"38032557503:1"}), False)
