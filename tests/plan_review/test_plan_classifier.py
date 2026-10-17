@@ -41,7 +41,8 @@ _CFG = PlanReviewConfig(
 @pytest.mark.parametrize(
     "paths,churn,prod_areas,mechanical,expected",
     [
-        # default — nothing trips
+        # default — nothing trips; also the prod-areas below-boundary case
+        # (1 < min_prod_areas=2)
         (("agents/foo.py",), 10, 1, (), 1),
         # shared-surface glob hit alone trips class 2
         (("mcp-memory/server.py",), 5, 1, (), 2),
@@ -51,8 +52,8 @@ _CFG = PlanReviewConfig(
         # churn boundary: exactly at threshold does NOT trip (strictly above)
         (("agents/foo.py",), 400, 1, (), 1),
         (("agents/foo.py",), 401, 1, (), 2),
-        # prod-areas boundary: at-or-above min_prod_areas trips
-        (("agents/foo.py",), 10, 1, (), 1),
+        # prod-areas boundary: at-or-above min_prod_areas trips (below: the
+        # default row above)
         (("agents/foo.py",), 10, 2, (), 2),
         (("agents/foo.py",), 10, 3, (), 2),
         # exempt mechanical short-circuits even a shared-surface hit
