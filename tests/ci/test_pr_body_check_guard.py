@@ -349,9 +349,7 @@ def test_most_recent_labeled_event_for_the_label_decides():
         _label_event("labeled", "maintainer-x"),
         _label_event("labeled", "osasuwu-bot", label="documentation"),
     )
-    assert run("urgent", labels=CRITICAL, events=bot_then_human) == _critical_bypass(
-        "maintainer-x"
-    )
+    assert run("urgent", labels=CRITICAL, events=bot_then_human) == _critical_bypass("maintainer-x")
 
 
 def test_label_events_past_the_first_page_are_read():
