@@ -140,13 +140,18 @@ def test_cost_index_is_partial(migration_sql: str) -> None:
 
 
 def test_pg_notify_trigger_present(migration_sql: str) -> None:
-    """Trigger must exist + use channel 'events_canonical' so LISTEN
-    clients can subscribe by name."""
-    assert "CREATE TRIGGER events_canonical_notify" in migration_sql
-    assert "AFTER INSERT ON events_canonical" in migration_sql
-    assert "pg_notify(\n    'events_canonical'" in migration_sql or (
-        "pg_notify(" in migration_sql and "'events_canonical'" in migration_sql
+    """Trigger must fire per inserted row into the notify function, and the
+    function must notify on channel 'events_canonical' so LISTEN clients can
+    subscribe by name."""
+    trigger = _statement(migration_sql, r"CREATE TRIGGER events_canonical_notify\b")
+    assert trigger == (
+        "CREATE TRIGGER events_canonical_notify AFTER INSERT ON events_canonical "
+        "FOR EACH ROW EXECUTE FUNCTION notify_events_canonical()"
     )
+    fn_block = _extract_function_body(migration_sql, "notify_events_canonical")
+    channel = re.search(r"pg_notify\(\s*'([^']*)'", fn_block)
+    assert channel, f"notify_events_canonical() makes no pg_notify call: {fn_block}"
+    assert channel.group(1) == "events_canonical"
 
 
 def test_notify_payload_includes_trace_id(migration_sql: str) -> None:
@@ -223,28 +228,24 @@ def test_rls_enabled_with_allow_all_policies(
     original create migration which still has the broad `Allow all for anon`.
     """
     source = request.getfixturevalue(source_attr)
-    if source_attr == "schema_sql":
-        source = _extract_events_canonical_block(source)
-    assert "ALTER TABLE events_canonical ENABLE ROW LEVEL SECURITY" in source, (
-        f"RLS not enabled in {source_attr}"
+    assert (
+        _statement(source, r"ALTER TABLE events_canonical ENABLE ROW LEVEL SECURITY")
+        == "ALTER TABLE events_canonical ENABLE ROW LEVEL SECURITY"
     )
-    assert '"Allow all for authenticated" ON events_canonical' in source, (
-        f"authenticated policy missing in {source_attr}"
+    assert (
+        _policy(source, "Allow all for authenticated") == "FOR ALL USING (true) WITH CHECK (true)"
     )
     if source_attr == "migration_sql":
-        assert '"Allow all for anon" ON events_canonical' in source, (
-            "anon policy missing in migration_sql"
+        assert _policy(source, "Allow all for anon") == (
+            "FOR ALL TO anon USING (true) WITH CHECK (true)"
         )
     else:
-        # post-#542 split-anon shape in schema.sql
-        assert '"Anon select" ON events_canonical' in source, (
-            "anon SELECT policy missing in schema_sql"
-        )
-        assert '"Anon sandcastle insert" ON events_canonical' in source, (
-            "anon sandcastle INSERT policy missing in schema_sql"
-        )
-        assert "actor LIKE 'sandcastle:%'" in source, (
-            "anon INSERT must be gated on sandcastle: provenance"
+        # post-#542 split-anon shape in schema.sql; each policy is read from its
+        # own statement, so the sandcastle gate on UPDATE/DELETE cannot stand in
+        # for a missing gate on INSERT.
+        assert _policy(source, "Anon select") == "FOR SELECT TO anon USING (true)"
+        assert _policy(source, "Anon sandcastle insert") == (
+            "FOR INSERT TO anon WITH CHECK (actor LIKE 'sandcastle:%')"
         )
 
 
@@ -260,18 +261,37 @@ def _line_for_column(sql: str, column: str) -> str:
     raise AssertionError(f"column {column!r} not found")
 
 
+def _raw_statement(sql: str, head: str) -> str:
+    """The one SQL statement starting at regex `head`, up to (not including)
+    its `;`, line structure intact. Only for statements with no `;` inside them
+    (tables, triggers, policies) — function bodies go through
+    `_extract_function_body`."""
+    matches = list(re.finditer(head, sql))
+    assert len(matches) == 1, (
+        f"expected exactly one statement matching {head!r}, got {len(matches)}"
+    )
+    start = matches[0].start()
+    end = sql.find(";", start)
+    assert end != -1, f"statement {head!r} has no closing ;"
+    return sql[start:end]
+
+
+def _statement(sql: str, head: str) -> str:
+    """`_raw_statement` with whitespace collapsed to single spaces."""
+    return " ".join(_raw_statement(sql, head).split())
+
+
+def _policy(sql: str, name: str) -> str:
+    """The clauses after `CREATE POLICY "<name>" ON events_canonical`."""
+    prefix = f'CREATE POLICY "{name}" ON events_canonical'
+    statement = _statement(sql, re.escape(prefix) + r"\s")
+    return statement[len(prefix) :].strip()
+
+
 def _extract_events_canonical_block(schema_sql: str) -> str:
-    """Pull the events_canonical CREATE TABLE block out of schema.sql so
-    column lookups don't accidentally match the legacy `events` table."""
-    marker = "CREATE TABLE IF NOT EXISTS events_canonical"
-    start = schema_sql.find(marker)
-    assert start != -1, "events_canonical CREATE TABLE missing from schema.sql"
-    end = schema_sql.find(");", start)
-    assert end != -1, "events_canonical block missing closing );"
-    # Include everything from the CREATE TABLE start through the rest of
-    # the file — the block extends to RLS + matviews and tests look for
-    # those further down.
-    return schema_sql[start:]
+    """The events_canonical CREATE TABLE statement alone, so column lookups
+    match neither the legacy `events` table nor any later table in the file."""
+    return _raw_statement(schema_sql, r"CREATE TABLE IF NOT EXISTS events_canonical\s*\(")
 
 
 def _extract_function_body(sql: str, fn_name: str) -> str:

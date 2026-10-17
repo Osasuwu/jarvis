@@ -210,12 +210,12 @@ def _disallowed_tools_blocks(path: Path) -> list[list[str]]:
 @pytest.mark.parametrize("path", [LIVE_WORKFLOW], ids=["live"])
 def test_required_git_tools_present(path: Path) -> None:
     for block in _allowed_tools_blocks(path):
-        for tool in REQUIRED_TOOLS:
-            assert tool in block, (
-                f"{path.name}: allowlist missing {tool!r} — headless action will "
-                f"DENY it, causing permission_denials and degraded post step "
-                f"(jarvis#1042). Allowlist was: {block}"
-            )
+        missing = set(REQUIRED_TOOLS) - set(block.split(","))
+        assert missing == set(), (
+            f"{path.name}: allowlist missing {sorted(missing)} — headless action will "
+            f"DENY them, causing permission_denials and degraded post step "
+            f"(jarvis#1042). Allowlist was: {block}"
+        )
 
 
 @pytest.mark.parametrize("path", [LIVE_WORKFLOW], ids=["live"])
