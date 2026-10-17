@@ -24,7 +24,8 @@ REPO = {"owner": "Osasuwu", "repo": "jarvis"}
 NO_LINK = (
     'PR body must include a linked issue reference (e.g. "Closes #123" to auto-close, or '
     '"Refs #123" to link a partial-work PR without closing), a [no-issue] line for trivial '
-    "fix-inline drive-bys (#428), or the priority:critical label for hotfixes."
+    "fix-inline drive-bys (#428), or a priority:critical label applied by a human other than "
+    "the PR author, for hotfixes (#2082)."
 )
 NOTICE_NO_ISSUE = "require-linked-issue bypassed: [no-issue] — fix-inline drive-by per #428."
 PASSED_NO_LOOKUP = {"failed": [], "notices": [], "lookups": []}
@@ -64,8 +65,13 @@ def run(
     closed: tuple[str, ...] = (),
     pulls: tuple[str, ...] = (),
     outages: tuple[str, ...] = (),
+    events: tuple[dict, ...] = (),
+    events_outage: bool = False,
 ) -> dict:
-    """`step_env` replaces the step's own `env:` (read from the workflow by default)."""
+    """`step_env` replaces the step's own `env:` (read from the workflow by default).
+
+    `events` are the PR's issue events, oldest first, as `GET /issues/{n}/events` serves them.
+    """
     node = shutil.which("node")
     assert node, "node is not on PATH; the pytest job runs on ubuntu-latest, which ships it"
     payload = {
@@ -89,6 +95,8 @@ def run(
                 "closed": list(closed),
                 "pulls": list(pulls),
                 "outages": list(outages),
+                "events": list(events),
+                "events_outage": events_outage,
             }
         ),
         capture_output=True,
@@ -160,14 +168,6 @@ def test_bot_author_bypasses_with_notice():
         "notices": [
             "require-linked-issue bypassed: bot author — dependabot[bot] cannot author linked issues."
         ],
-        "lookups": [],
-    }
-
-
-def test_priority_critical_label_bypasses_with_notice():
-    assert run("urgent prod fix", labels=("priority:critical",)) == {
-        "failed": [],
-        "notices": ["require-linked-issue bypassed: priority:critical — hotfix label present."],
         "lookups": [],
     }
 
@@ -248,15 +248,6 @@ def test_lane_bot_linking_an_issue_passes_without_a_bypass_notice():
     assert result == {"failed": [], "notices": [], "lookups": ["Osasuwu/jarvis#42"]}
 
 
-def test_lane_bot_keeps_the_priority_critical_bypass():
-    """AC6: D14 removes only the two paperwork bypasses; the hotfix label is unchanged."""
-    assert run("urgent", labels=("priority:critical",), author="osasuwu-bot") == {
-        "failed": [],
-        "notices": ["require-linked-issue bypassed: priority:critical — hotfix label present."],
-        "lookups": [],
-    }
-
-
 def test_missing_lane_bot_login_fails_closed():
     """AC7: without the login the deny rule cannot apply, so no bypass is granted to anyone."""
     expected = {
@@ -268,6 +259,141 @@ def test_missing_lane_bot_login_fails_closed():
         "lookups": [],
     }
     assert run("Drive-by.\n\n[no-issue]\n", step_env={}) == expected
+
+
+# --- #2082: priority:critical counts only when a human other than the author applied it ------
+
+CRITICAL = ("priority:critical",)
+
+
+def _label_event(kind: str, login: str, actor_type: str = "User", label: str = "priority:critical"):
+    return {"event": kind, "label": {"name": label}, "actor": {"login": login, "type": actor_type}}
+
+
+def _critical_bypass(login: str) -> dict:
+    return {
+        "failed": [],
+        "notices": [
+            f"require-linked-issue bypassed: priority:critical — hotfix label applied by {login}."
+        ],
+        "lookups": [],
+    }
+
+
+def _refused(reason: str) -> str:
+    return (
+        f"require-linked-issue: priority:critical bypass refused — {reason}; only a label "
+        "applied by a human other than the PR author counts (#2082)."
+    )
+
+
+def _blocked_refused(reason: str, failed: str = NO_LINK) -> dict:
+    return {"failed": [failed], "notices": [], "lookups": [], "warnings": [_refused(reason)]}
+
+
+def test_priority_critical_applied_by_another_human_bypasses_with_notice():
+    """AC1 accepting half: the hotfix path stays for humans, on a human's PR and on the bot's."""
+    cases = [("Osasuwu", "maintainer-x"), ("osasuwu-bot", "Osasuwu")]
+    wrong = {}
+    for author, labeller in cases:
+        events = (_label_event("labeled", labeller),)
+        result = run("urgent", labels=CRITICAL, author=author, events=events)
+        if result != _critical_bypass(labeller):
+            wrong[(author, labeller)] = result
+    assert wrong == {}
+
+
+def test_lane_bot_applied_priority_critical_does_not_bypass():
+    """AC2: the bot labelling its own PR (the #2082 replay) or a human's PR gets no bypass."""
+    bot_pr = run(
+        "urgent", labels=CRITICAL, author="osasuwu-bot",
+        events=(_label_event("labeled", "osasuwu-bot"),),
+    )  # fmt: skip
+    assert bot_pr == _blocked_refused(
+        "applied by bot account osasuwu-bot", failed=BOT_BLOCKED["failed"][0]
+    )
+    human_pr = run("urgent", labels=CRITICAL, events=(_label_event("labeled", "Osasuwu-Bot"),))
+    assert human_pr == _blocked_refused("applied by bot account Osasuwu-Bot")
+
+
+def test_app_bot_applied_priority_critical_does_not_bypass():
+    """AC1: a GitHub App (actor type Bot) is a bot account whatever its login."""
+    event = _label_event("labeled", "github-actions[bot]", actor_type="Bot")
+    assert run("urgent", labels=CRITICAL, events=(event,)) == _blocked_refused(
+        "applied by bot account github-actions[bot]"
+    )
+
+
+def test_author_self_applied_priority_critical_does_not_bypass():
+    """AC1: the PR author labelling their own PR is not a second human, in any login case."""
+    event = _label_event("labeled", "osasuwu")
+    assert run("urgent", labels=CRITICAL, author="Osasuwu", events=(event,)) == _blocked_refused(
+        "applied by the PR author osasuwu"
+    )
+
+
+def test_most_recent_labeled_event_for_the_label_decides():
+    """AC2: human-applied, removed, bot re-applied → refused; the reverse → bypass. Events for
+    other labels do not count."""
+    human_then_bot = (
+        _label_event("labeled", "maintainer-x"),
+        _label_event("unlabeled", "osasuwu-bot"),
+        _label_event("labeled", "osasuwu-bot"),
+    )
+    assert run("urgent", labels=CRITICAL, events=human_then_bot) == _blocked_refused(
+        "applied by bot account osasuwu-bot"
+    )
+    bot_then_human = (
+        _label_event("labeled", "osasuwu-bot"),
+        _label_event("unlabeled", "maintainer-x"),
+        _label_event("labeled", "maintainer-x"),
+        _label_event("labeled", "osasuwu-bot", label="documentation"),
+    )
+    assert run("urgent", labels=CRITICAL, events=bot_then_human) == _critical_bypass(
+        "maintainer-x"
+    )
+
+
+def test_label_events_past_the_first_page_are_read():
+    """AC2 pagination: the bot's re-apply sits on page 2 behind 120 other events."""
+    filler = tuple(_label_event("labeled", "maintainer-x", label=f"l{i}") for i in range(120))
+    events = (
+        _label_event("labeled", "maintainer-x"),
+        *filler,
+        _label_event("unlabeled", "osasuwu-bot"),
+        _label_event("labeled", "osasuwu-bot"),
+    )
+    assert run("urgent", labels=CRITICAL, events=events) == _blocked_refused(
+        "applied by bot account osasuwu-bot"
+    )
+
+
+def test_label_events_outage_fails_closed():
+    """AC2: an unreadable event list is no verified human labeller, so no bypass."""
+    result = run(
+        "urgent", labels=CRITICAL, events=(_label_event("labeled", "maintainer-x"),),
+        events_outage=True,
+    )  # fmt: skip
+    assert result == _blocked_refused("could not read the PR's label events (HTTP 502)")
+
+
+def test_label_with_no_labeled_event_does_not_bypass():
+    """AC2: a label no `labeled` event accounts for has no verified labeller."""
+    events = (_label_event("labeled", "maintainer-x", label="documentation"),)
+    assert run("urgent", labels=CRITICAL, events=events) == _blocked_refused(
+        "no labeled event names who applied it"
+    )
+
+
+def test_refused_priority_critical_still_passes_on_a_linked_issue():
+    """A refused label only removes the bypass: a PR that links its issue stays green."""
+    events = (_label_event("labeled", "osasuwu-bot"),)
+    assert run("Closes #42", labels=CRITICAL, author="osasuwu-bot", events=events) == {
+        "failed": [],
+        "notices": [],
+        "lookups": ["Osasuwu/jarvis#42"],
+        "warnings": [_refused("applied by bot account osasuwu-bot")],
+    }
 
 
 # --- absorbed slices (#1178): a `(#N)` commit headline the body does not link ----------------
