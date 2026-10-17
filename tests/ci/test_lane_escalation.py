@@ -40,7 +40,8 @@ ISSUE = f"repos/{REPO}/issues/2011"
 # The run's PR, looked up by its owner-qualified head branch (lane_publish.branch_name).
 HEAD_QUERY = f"repos/{REPO}/pulls?head=Osasuwu:claude/issue-2011-9001&state=all&per_page=1"
 OPEN_PRS = f"repos/{REPO}/pulls?state=open"
-JOBS = f"repos/{REPO}/actions/runs/9001/jobs"
+RUNS = f"repos/{REPO}/actions/runs/"
+JOBS = f"{RUNS}9001/jobs"
 REVIEWS = f"repos/{REPO}/actions/workflows/code-review.yml/runs"
 LABEL_ADD = f"{ISSUE}/labels"
 IN_PROGRESS_DELETE = f"{ISSUE}/labels/status%3Ain-progress"
@@ -70,11 +71,14 @@ class FakeGitHub(FakeApi):
         self.check_runs = {}  # head sha -> REST check runs
         self.review_runs = []  # Code Review runs for the head SHA, REST shape
         self.dispatched_runs = []  # dispatched Code Review runs, REST shape
+        # run id -> the run's `actor` (who applied `agent:dispatch`); a missing id is a 404
+        self.run_actors = {"9001": {"login": "labeler-a", "type": "User"}}
         super().__init__(
             responses={
                 f"repos/{REPO}/pulls?head=": lambda *_: self.branch_prs,
                 f"{OPEN_PRS}&": lambda _m, path, _b: _page(self.open_prs, path),
                 f"repos/{REPO}/issues/": self._issues,
+                RUNS: self._runs,
                 JOBS: self._jobs,
                 f"repos/{REPO}/commits/": self._check_runs,
                 f"{REVIEWS}?head_sha=": lambda *_: {"workflow_runs": self.review_runs},
@@ -95,6 +99,13 @@ class FakeGitHub(FakeApi):
             for n, c in enumerate(self.comments.get(int(number), []), start=1)
         ]
         return _page(comments, path)
+
+    def _runs(self, _method, path, _body):
+        run_id = path.removeprefix(RUNS)
+        assert run_id.isdigit(), path
+        if run_id not in self.run_actors:
+            return http_error(404, '{"message":"Not Found"}')
+        return {"id": int(run_id), "actor": self.run_actors[run_id]}
 
     def _jobs(self, *_):
         if self.jobs is None:
@@ -135,6 +146,9 @@ def _env(**over):
         "GH_REPO": REPO,
         "ISSUE_NUMBER": "2011",
         "RUN_ID": "9001",
+        # Who applied `agent:dispatch` (the label event's sender), distinct from the
+        # operator so that every body below shows which of the two it reached (#2051).
+        "LANE_LABELER": "labeler-a",
         "LANE_OPERATOR": "Osasuwu",
         "LANE_BOT_LOGIN": BOT,
         "WORKER_RESULT": "success",
@@ -274,7 +288,7 @@ def test_escalation_labels_the_issue_and_posts_one_comment(github, tmp_path):
             COMMENTS,
             {
                 "body": "<!-- lane-escalation run=9001 -->\n"
-                "@Osasuwu run [9001](https://github.com/Osasuwu/jarvis/actions/runs/9001) ended"
+                "@labeler-a run [9001](https://github.com/Osasuwu/jarvis/actions/runs/9001) ended"
                 " without a PR: the worker stopped and escalated; its note is quoted below.\n"
                 "\n"
                 "The worker's `escalation.md`, quoted (untrusted):\n"
@@ -290,6 +304,39 @@ def test_escalation_labels_the_issue_and_posts_one_comment(github, tmp_path):
     ]
     # A 5xx after a committed comment must not post a second one (Decision d).
     assert github.once == [("POST", COMMENTS)]
+
+
+FALLBACK_NOTE = (
+    "Sent to the operator: the person who applied `agent:dispatch` could not be resolved."
+)
+
+
+def test_the_escalation_goes_to_whoever_applied_the_dispatch_label(github, tmp_path):
+    """#2051 AC1: one lane, two humans; the run's own labeller is asked, not the operator."""
+    lane_escalation.escalate(github, _env(LANE_LABELER="labeler-b"), _out(tmp_path, "x"))
+    lines = _comment_body(github).splitlines()
+    assert lines[1].startswith("@labeler-b run [9001](")
+    assert lines[2] == ""
+    assert "@Osasuwu" not in "\n".join(lines)
+
+
+@pytest.mark.parametrize(
+    "labeler",
+    [None, "", "  ", "osasuwu-bot", "OSASUWU-BOT", "dependabot[bot]", "two words", "-x"],
+    ids=["unset", "empty", "blank", "the-bot", "the-bot-cased", "an-app", "not-a-login", "dash"],
+)
+def test_an_unresolvable_labeller_falls_back_to_the_operator_and_says_so(github, tmp_path, labeler):
+    """#2051 AC2: a bot, an app or no sender at all is not a person to ask."""
+    env = _env()
+    if labeler is None:
+        del env["LANE_LABELER"]
+    else:
+        env["LANE_LABELER"] = labeler
+    lane_escalation.escalate(github, env, _out(tmp_path, escalation="x"))
+    lines = _comment_body(github).splitlines()
+    assert lines[1].startswith("@Osasuwu run [9001](")
+    assert lines[2] == FALLBACK_NOTE
+    assert lines[3] == ""
 
 
 def test_status_in_progress_is_dropped_only_when_present(github, tmp_path):
@@ -470,11 +517,11 @@ def test_nothing_in_a_run_touches_an_assignee_or_the_issue_body(github, tmp_path
             assert allowed[(method, path)](body)
 
 
-def test_without_an_operator_the_label_and_comment_still_land_and_the_command_fails(
+def test_without_a_labeller_or_an_operator_the_label_and_comment_still_land_and_the_command_fails(
     github, tmp_path, monkeypatch, capsys
 ):
     out = _out(tmp_path, escalation="x")
-    for key, value in _env(LANE_OPERATOR="", GH_TOKEN="bot-pat").items():
+    for key, value in _env(LANE_LABELER="", LANE_OPERATOR="", GH_TOKEN="bot-pat").items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("LANE_OUT", str(out))
     with pytest.raises(SystemExit) as exit_info:
@@ -487,7 +534,19 @@ def test_without_an_operator_the_label_and_comment_still_land_and_the_command_fa
     ]
     body = _comment_body(github)
     assert " @" not in body and not body.splitlines()[1].startswith("@")
+    # Nobody to send it to, so no "sent to the operator" line either.
+    assert FALLBACK_NOTE not in body
     assert "::warning::LANE_OPERATOR" in capsys.readouterr().out
+
+
+def test_a_resolved_labeller_without_an_operator_exits_clean(github, tmp_path, monkeypatch):
+    """The operator is the fallback now: unset, it fails a run only when it was needed."""
+    out = _out(tmp_path, escalation="x")
+    for key, value in _env(LANE_OPERATOR="", GH_TOKEN="bot-pat").items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("LANE_OUT", str(out))
+    assert _main(github, ["run"]) is None
+    assert _comment_body(github).splitlines()[1].startswith("@labeler-a run [9001](")
 
 
 def test_a_configured_operator_exits_clean(github, tmp_path, monkeypatch):
@@ -578,7 +637,7 @@ def test_run_through_main_builds_its_own_client_and_escalates(monkeypatch, tmp_p
     ]
     assert transport.requests[3].body == {"labels": ["needs-human"]}
     body = transport.requests[-1].body["body"]
-    assert body.startswith("<!-- lane-escalation run=9001 -->\n@Osasuwu run [9001](")
+    assert body.startswith("<!-- lane-escalation run=9001 -->\n@labeler-a run [9001](")
     assert "the worker hit its 45-minute job timeout." in body
     assert capsys.readouterr().out == f"{REPO}#2011: run 9001 escalated (timeout)\n"
 
@@ -627,8 +686,8 @@ def test_a_red_required_check_on_a_lane_pr_labels_it_and_comments_once(github):
     github.check_runs = {
         SHA: [_check("pytest", "failure", id_=7), _check("gitleaks", "success", 8)]
     }
-    flagged, handle = _watch(github)
-    assert flagged == [(40, "pytest")] and handle == "Osasuwu"
+    flagged, unmentioned = _watch(github)
+    assert flagged == [(40, "pytest")] and unmentioned == []
     assert github.written() == [
         ("POST", f"repos/{REPO}/issues/40/labels", {"labels": ["needs-human"]}),
         (
@@ -636,7 +695,7 @@ def test_a_red_required_check_on_a_lane_pr_labels_it_and_comments_once(github):
             f"repos/{REPO}/issues/40/comments",
             {
                 "body": f"<!-- lane-red-check pytest {SHA} -->\n"
-                "@Osasuwu required check `pytest` is red on `aaaaaaa`"
+                "@labeler-a required check `pytest` is red on `aaaaaaa`"
                 f" (https://github.com/{REPO}/actions/runs/7/job/1).\n"
                 "\n"
                 "Fix it and push, or close the PR. Remove `needs-human` once you have decided.\n"
@@ -644,6 +703,105 @@ def test_a_red_required_check_on_a_lane_pr_labels_it_and_comments_once(github):
         ),
     ]
     assert github.once == [("POST", f"repos/{REPO}/issues/40/comments")]
+    # The labeller is the actor of the run named by the PR's head branch.
+    assert f"{RUNS}9001" in github.reads()
+
+
+def test_each_red_lane_pr_goes_to_whoever_dispatched_its_own_run(github):
+    """#2051 AC1 on the PR side: two humans, two runs, two different mentions."""
+    other = "e" * 40
+    github.open_prs = [_pr(number=40), _pr(number=41, head="claude/issue-2012-9002", sha=other)]
+    github.check_runs = {
+        SHA: [_check("pytest", "failure", 1)],
+        other: [_check("gitleaks", "failure", 2)],
+    }
+    github.run_actors["9002"] = {"login": "labeler-b", "type": "User"}
+    assert _watch(github) == ([(40, "pytest"), (41, "gitleaks")], [])
+    bodies = {
+        p: b["body"].splitlines()
+        for m, p, b in github.written()
+        if m == "POST" and p.endswith("/comments")
+    }
+    assert bodies[f"repos/{REPO}/issues/40/comments"][1].startswith("@labeler-a required check")
+    assert bodies[f"repos/{REPO}/issues/41/comments"][1].startswith("@labeler-b required check")
+    assert not any(FALLBACK_NOTE in "\n".join(lines) for lines in bodies.values())
+
+
+@pytest.mark.parametrize(
+    ("actors", "head"),
+    [
+        ({}, "claude/issue-2011-9001"),
+        ({"9001": {"login": "dependabot[bot]", "type": "Bot"}}, "claude/issue-2011-9001"),
+        ({"9001": {"login": "some-app", "type": "Bot"}}, "claude/issue-2011-9001"),
+        ({"9001": {"login": BOT, "type": "User"}}, "claude/issue-2011-9001"),
+        ({"9001": None}, "claude/issue-2011-9001"),
+        ({"9001": {"type": "User"}}, "claude/issue-2011-9001"),
+        ({}, "claude/issue-2011-not-a-run"),
+    ],
+    ids=["run-gone", "app", "bot-typed", "the-lane-bot", "no-actor", "no-login", "no-run-id"],
+)
+def test_a_lane_pr_whose_labeller_cannot_be_resolved_goes_to_the_operator(github, actors, head):
+    """#2051 AC2 on the PR side."""
+    github.run_actors = actors
+    github.open_prs = [_pr(head=head)]
+    github.check_runs = {SHA: [_check("pytest", "failure", 1)]}
+    assert _watch(github) == ([(40, "pytest")], [])
+    (body,) = [b["body"] for m, p, b in github.written() if p.endswith("/comments")]
+    lines = body.splitlines()
+    assert lines[1].startswith("@Osasuwu required check `pytest` is red")
+    assert lines[2] == FALLBACK_NOTE
+    assert lines[3] == ""
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        http_error(404, '{"message":"Not Found"}'),
+        http_error(500, "boom"),
+        urllib.error.URLError("unreachable"),
+        TimeoutError("timed out"),
+        ValueError("empty response body for GET"),
+        {"id": 9001},
+        {"actor": None},
+        {"actor": {"login": "labeler-a"}},
+        {"actor": {"login": "labeler-a", "type": "Organization"}},
+    ],
+    ids=[
+        "404",
+        "500",
+        "url-error",
+        "timeout",
+        "empty-body",
+        "no-actor",
+        "null-actor",
+        "untyped",
+        "org",
+    ],
+)
+def test_a_run_answer_that_does_not_name_a_user_reads_as_no_labeller(answer):
+    api = FakeApi(responses={f"{RUNS}9001": answer})
+    assert lane_escalation.run_labeler(api, REPO, "claude/issue-2011-9001") is None
+
+
+def test_the_labeller_is_the_runs_actor_not_whoever_reran_it():
+    """A re-run changes `triggering_actor`; `actor` stays the label event's sender."""
+    api = FakeApi(
+        responses={
+            f"{RUNS}9001": {
+                "actor": {"login": "labeler-a", "type": "User"},
+                "triggering_actor": {"login": "someone-else", "type": "User"},
+            }
+        }
+    )
+    assert lane_escalation.run_labeler(api, REPO, "claude/issue-2011-9001") == "labeler-a"
+    assert api.calls == [("GET", f"{RUNS}9001", None)]
+
+
+@pytest.mark.parametrize("ref", ["claude/issue-2011-", "claude/issue-x-9001", "feat/9001"])
+def test_a_head_branch_that_names_no_run_is_not_looked_up(ref):
+    api = FakeApi()
+    assert lane_escalation.run_labeler(api, REPO, ref) is None
+    assert api.calls == []
 
 
 @pytest.mark.parametrize(
@@ -817,7 +975,10 @@ def test_watch_without_an_operator_exits_cleanly_when_nothing_is_red(github, mon
     assert "::warning::" not in capsys.readouterr().out
 
 
-def test_watch_without_an_operator_still_flags_and_exits_failing(github, monkeypatch, capsys):
+def test_watch_without_a_labeller_or_an_operator_still_flags_and_exits_failing(
+    github, monkeypatch, capsys
+):
+    github.run_actors = {}
     github.open_prs = [_pr()]
     github.check_runs = {SHA: [_check("pytest", "failure", 1)]}
     for key, value in {**_watch_env(), "GH_TOKEN": "bot-pat"}.items():
@@ -832,7 +993,19 @@ def test_watch_without_an_operator_still_flags_and_exits_failing(github, monkeyp
         ("POST", f"repos/{REPO}/issues/40/comments"),
     ]
     assert writes[1][2]["body"].splitlines()[1].startswith("required check")
+    assert FALLBACK_NOTE not in writes[1][2]["body"]
     assert "::warning::LANE_OPERATOR" in capsys.readouterr().out
+
+
+def test_watch_without_an_operator_exits_clean_when_the_labeller_is_mentioned(github, monkeypatch):
+    github.open_prs = [_pr()]
+    github.check_runs = {SHA: [_check("pytest", "failure", 1)]}
+    for key, value in {**_watch_env(), "GH_TOKEN": "bot-pat"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("LANE_OPERATOR", raising=False)
+    assert _main(github, ["watch"]) is None
+    (body,) = [b["body"] for m, p, b in github.written() if p.endswith("/comments")]
+    assert body.splitlines()[1].startswith("@labeler-a required check")
 
 
 def test_the_watched_checks_come_from_the_caller_not_from_the_script(github):
@@ -939,6 +1112,13 @@ def test_watch_through_main_builds_its_own_client_and_flags_the_lane_pr(monkeypa
                 }
             ],
             f"{API}/repos/{REPO}/issues/40/labels": [[{"name": "bug"}, {"name": "needs-human"}]],
+            f"{API}/{RUNS}9001": [
+                {
+                    "id": 9001,
+                    "actor": {"login": "labeler-a", "type": "User"},
+                    "triggering_actor": {"login": "Osasuwu", "type": "User"},
+                }
+            ],
             f"{comments_40}?per_page=100&page=1": [
                 [{"id": 1, "user": {"login": BOT}, "body": f"<!-- lane-red-check pytest {SHA} -->"}]
             ],
@@ -973,6 +1153,7 @@ def test_watch_through_main_builds_its_own_client_and_flags_the_lane_pr(monkeypa
             "lane-escalation",
         ),
         ("POST", f"{API}/repos/{REPO}/issues/40/labels", "Bearer bot-pat", "lane-escalation"),
+        ("GET", f"{API}/{RUNS}9001", "Bearer bot-pat", "lane-escalation"),
         ("GET", f"{comments_40}?per_page=100&page=1", "Bearer bot-pat", "lane-escalation"),
         ("POST", comments_40, "Bearer bot-pat", "lane-escalation"),
     ]
@@ -982,7 +1163,7 @@ def test_watch_through_main_builds_its_own_client_and_flags_the_lane_pr(monkeypa
         transport.requests[-1]
         .body["body"]
         .startswith(
-            f"<!-- lane-red-check code-gate {SHA} -->\n@Osasuwu required check `code-gate` is red"
+            f"<!-- lane-red-check code-gate {SHA} -->\n@labeler-a required check `code-gate` is red"
         )
     )
     assert capsys.readouterr().out == (

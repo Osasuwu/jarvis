@@ -7,7 +7,7 @@ the worker's own `escalation.md`) over as data and never through a shell:
 
 - `run`   (agent-dispatch.yml `escalate` job): when no PR exists for the run, label the
           issue `needs-human`, drop `status:in-progress`, and post one comment that names
-          the run, the cause and the operator, quoting `escalation.md` when there is one;
+          the run, the cause and the human, quoting `escalation.md` when there is one;
 - `watch` (lane-red-check-watcher.yml): label an open `claude/issue-*` PR `needs-human`
           and comment, once per check and head SHA, when a required check on it is red.
 
@@ -16,11 +16,14 @@ the whole signal: intake refuses an issue that carries it, so a human clears it 
 re-applies `agent:dispatch` to re-dispatch. Neither command touches an assignee or the
 issue body (a bot edit of the body would trip intake's `bot-edited` rule).
 
-The operator is whoever `LANE_OPERATOR` names (repository variable, no literal here).
-Unset or not a GitHub login, the label and comment still land without a mention and the
-command exits 1, so the misconfiguration shows red; a `watch` pass that flagged nothing
-exits 0 either way. Every GitHub call goes through `github_client.py` beside this script
-(#2068). Stdlib only.
+The human @-mentioned is whoever applied `agent:dispatch` for the run (#2051): `run`
+reads it from `LANE_LABELER` (the label event's sender), `watch` from the `actor` of the
+run named by the PR's branch. When that is not a person (the bot, an app, an unreadable
+answer) the mention falls back to the operator, whoever `LANE_OPERATOR` names (repository
+variable, no literal here), and the comment says so. When neither resolves, the label and
+comment still land without a mention and the command exits 1, so the misconfiguration
+shows red; a `watch` pass that flagged nothing exits 0 either way. Every GitHub call goes
+through `github_client.py` beside this script (#2068). Stdlib only.
 """
 
 import os
@@ -39,6 +42,7 @@ IN_PROGRESS = lane_publish.IN_PROGRESS
 RUN_MARKER = "lane-escalation"
 RED_MARKER = "lane-red-check"
 LANE_HEAD_PREFIX = "claude/issue-"
+_LANE_HEAD = re.compile(rf"^{re.escape(LANE_HEAD_PREFIX)}\d+-(\d+)$")
 
 # The watched checks are the host's required checks, less `waiting-human-review` and
 # `risk-tier`: those two are red by design while a human review is owed (a HIGH/CRITICAL
@@ -53,7 +57,10 @@ CANCELLED, CRASH = "cancelled", "crash"
 PUBLISH_FAILED, NO_OUTPUT = "publish-failed", "no-output"
 
 ESCALATION_CAP = 8000
-_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
+FALLBACK_NOTE = (
+    "Sent to the operator: the person who applied `agent:dispatch` could not be resolved."
+)
+_LOGIN = lane_publish.LOGIN
 _WORD = re.compile(r"^[a-z_]+$")
 _BACKTICKS = re.compile(r"`+")
 
@@ -73,6 +80,19 @@ def operator_handle(raw):
 
 def mention(handle):
     return f"@{handle} " if handle else ""
+
+
+def fallback_note(handle, fell_back):
+    """The line saying a mention went to the operator in place of the labeller (#2051)."""
+    return [FALLBACK_NOTE] if fell_back and handle else []
+
+
+def _run_recipient(env, bot):
+    """`(handle, fell_back)` for a run: who applied `agent:dispatch` (`LANE_LABELER`, the
+    label event's sender), else the operator."""
+    return lane_publish.recipient(
+        env.get("LANE_LABELER"), operator_handle(env.get("LANE_OPERATOR")), bot
+    )
 
 
 def fence(text):
@@ -133,11 +153,12 @@ def run_marker(run_id):
     return f"<!-- {RUN_MARKER} run={run_id} -->"
 
 
-def escalation_comment(*, run_id, run_url, handle, cause, cause_line, escalation):
+def escalation_comment(*, run_id, run_url, handle, cause, cause_line, escalation, fell_back=False):
     """The one comment of a run. `escalation` is untrusted: it is quoted, never interpreted."""
     lines = [
         run_marker(run_id),
         f"{mention(handle)}run [{run_id}]({run_url}) ended without a PR: {cause_line}",
+        *fallback_note(handle, fell_back),
         "",
     ]
     if escalation is not None:
@@ -228,8 +249,8 @@ def escalate(api, env, out_dir):
         has_bundle=(out / "work.bundle").exists(),
     )
 
-    handle = operator_handle(env.get("LANE_OPERATOR"))
     bot = lane_publish.require_bot(env, "lane_escalation")
+    handle, fell_back = _run_recipient(env, bot)
     server = env.get("GITHUB_SERVER_URL") or "https://github.com"
     comment = escalation_comment(
         run_id=run_id,
@@ -243,6 +264,7 @@ def escalate(api, env, out_dir):
             max_turns=max_turns,
         ),
         escalation=escalation,
+        fell_back=fell_back,
     )
 
     drop = IN_PROGRESS in _labels(api, repo, issue)
@@ -255,7 +277,10 @@ def escalate(api, env, out_dir):
         # Not retried on a 5xx: one that follows a posted comment would post a second.
         api("POST", f"repos/{repo}/issues/{issue}/comments", {"body": comment}, idempotent=False)
     if handle is None:
-        print("::warning::LANE_OPERATOR is not set to a GitHub login; escalated without a mention")
+        print(
+            "::warning::LANE_OPERATOR is not set to a GitHub login and the person who applied"
+            " `agent:dispatch` could not be resolved; escalated without a mention"
+        )
     print(f"{repo}#{issue}: run {run_id} escalated ({cause})")
     return cause
 
@@ -304,13 +329,38 @@ def red_marker(check, sha):
     return f"<!-- {RED_MARKER} {check} {sha} -->"
 
 
-def red_comment(*, check, sha, url, handle):
+def red_comment(*, check, sha, url, handle, fell_back=False):
     link = f" ({url})" if url.startswith("https://") else ""
+    note = "".join(f"{line}\n" for line in fallback_note(handle, fell_back))
     return (
         f"{red_marker(check, sha)}\n"
-        f"{mention(handle)}required check `{check}` is red on `{sha[:7]}`{link}.\n\n"
+        f"{mention(handle)}required check `{check}` is red on `{sha[:7]}`{link}.\n{note}\n"
         f"Fix it and push, or close the PR. Remove `{NEEDS_HUMAN}` once you have decided.\n"
     )
+
+
+def run_labeler(api, repo, ref):
+    """Who applied `agent:dispatch` for the lane run that opened branch `ref`, or None.
+
+    The watcher runs on `workflow_run`, so no label event is at hand: the run id comes
+    from the branch name (lane_publish.branch_name) and the person from that run's
+    `actor`, the sender of the event that started it (a re-run changes
+    `triggering_actor`, not `actor`). Anything but a user, or an answer that does not
+    say, reads as unresolved and the operator is asked instead."""
+    match = _LANE_HEAD.match(ref)
+    if not match:
+        return None
+    try:
+        actor = api("GET", f"repos/{repo}/actions/runs/{match.group(1)}")["actor"]
+        return actor["login"] if actor["type"] == "User" else None
+    except (
+        urllib.error.URLError,  # HTTPError included
+        OSError,  # a timeout
+        ValueError,  # an empty body
+        KeyError,
+        TypeError,  # a null actor
+    ):
+        return None
 
 
 def _check_runs(api, repo, sha):
@@ -337,9 +387,12 @@ def _review_runs(api, repo, number, sha):
 
 
 def watch(api, env):
-    """Label and comment on every open lane PR with a settled red required check."""
+    """Label and comment on every open lane PR with a settled red required check.
+
+    Returns `(flagged, unmentioned)`: the `(PR, check)` pairs flagged, and the PRs whose
+    comment could @-mention no one (neither its labeller nor an operator resolved)."""
     repo = env["GH_REPO"]
-    handle = operator_handle(env.get("LANE_OPERATOR"))
+    operator = operator_handle(env.get("LANE_OPERATOR"))
     bot = lane_publish.require_bot(env, "lane_escalation")
     watched = watched_checks(env)
     client = _load_client()
@@ -349,7 +402,7 @@ def watch(api, env):
     except client.ListingTruncated as exc:
         # The PRs read are still flagged; the rest went unread, so the run ends red below.
         prs, truncated = exc.items, exc
-    flagged = []
+    flagged, unmentioned = [], []
     for pr in prs:
         head = pr["head"]
         # A fork cannot name its head branch `claude/issue-...` in this repository; a head
@@ -364,10 +417,18 @@ def watch(api, env):
             continue
         if NEEDS_HUMAN not in [label["name"] for label in pr["labels"]]:
             api("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [NEEDS_HUMAN]})
+        # Each PR goes to whoever dispatched its own run (#2051), so it is resolved per PR.
+        handle, fell_back = lane_publish.recipient(
+            run_labeler(api, repo, head["ref"]), operator, bot
+        )
+        if handle is None:
+            unmentioned.append(number)
         comments = _comments(api, repo, number)
         for check, url in red:
             if not _has_marker(comments, bot, red_marker(check, sha)):
-                body = red_comment(check=check, sha=sha, url=url, handle=handle)
+                body = red_comment(
+                    check=check, sha=sha, url=url, handle=handle, fell_back=fell_back
+                )
                 # Not retried on a 5xx: one that follows a posted comment would post a second.
                 api(
                     "POST",
@@ -376,12 +437,15 @@ def watch(api, env):
                     idempotent=False,
                 )
             flagged.append((number, check))
-    if flagged and handle is None:
-        print("::warning::LANE_OPERATOR is not set to a GitHub login; flagged without a mention")
+    if unmentioned:
+        print(
+            "::warning::LANE_OPERATOR is not set to a GitHub login and the person who applied"
+            f" `agent:dispatch` could not be resolved; flagged without a mention: {unmentioned}"
+        )
     print(f"{repo}: red required checks on lane PRs: {flagged or 'none'}")
     if truncated is not None:
         raise truncated
-    return flagged, handle
+    return flagged, unmentioned
 
 
 def main(argv, make_client=None):
@@ -394,13 +458,14 @@ def main(argv, make_client=None):
     if command == "run":
         if escalate(api, env, env.get("LANE_OUT", "lane-out")) is None:
             return
-        handle = operator_handle(env.get("LANE_OPERATOR"))
+        handle, _ = _run_recipient(env, lane_publish.require_bot(env, "lane_escalation"))
+        if handle is None:
+            sys.exit(1)
     else:
-        flagged, handle = watch(api, env)
-        if not flagged:
-            return  # nothing escalated, so a missing operator is not this pass's failure
-    if handle is None:
-        sys.exit(1)
+        # Nothing flagged means no one was owed a mention, so no failure either.
+        _flagged, unmentioned = watch(api, env)
+        if unmentioned:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -8,9 +8,11 @@ description) — and this job, on a fresh checkout of the default branch, does t
 
 1. fetch the bundle into `claude/issue-<N>-<run_id>` and push exactly that branch;
 2. open the PR with `Closes #<N>` guaranteed in the body;
-3. request a review from the operator only when the body's `Risk:` line reads HIGH or
-   CRITICAL (a missing line counts as HIGH: fail closed), so LOW/MEDIUM PRs carry no
-   pending request for `waiting-human-review` to hold;
+3. request a review only when the body's `Risk:` line reads HIGH or CRITICAL (a
+   missing line counts as HIGH: fail closed), so LOW/MEDIUM PRs carry no pending
+   request for `waiting-human-review` to hold. The review goes to whoever applied
+   `agent:dispatch` (`LANE_LABELER`, #2051); a bot, an app or no sender falls back to
+   `LANE_REVIEWER` (operator config) with a warning;
 4. move the issue from `status:in-progress` to `status:review`.
 
 Auto-merge stays a separate step of the job. No bundle means the worker produced no
@@ -37,6 +39,28 @@ SEVERITY = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
 _RISK_LINE = re.compile(
     r"^[ \t>*_-]*Risk[ \t]*:[ \t*_]*(LOW|MEDIUM|HIGH|CRITICAL)\b", re.IGNORECASE | re.MULTILINE
 )
+# A GitHub user login. An app's login (`name[bot]`) does not match: it is no one to ask.
+LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
+
+
+def human_login(raw, bot):
+    """`raw` when it is a user's login other than the lane's own bot, else None."""
+    login = (raw or "").strip()
+    if not LOGIN.match(login) or login.casefold() == (bot or "").strip().casefold():
+        return None
+    return login
+
+
+def recipient(labeler, fallback, bot):
+    """Who a run's review request or escalation goes to, and whether it fell back (#2051).
+
+    The person who applied `agent:dispatch` dispatched the run, so it is theirs. A sender
+    that is the bot, an app or not a login at all leaves the operator (`fallback`, operator
+    config) as the one to ask, or no one when that is unset too."""
+    human = human_login(labeler, bot)
+    if human:
+        return human, False
+    return (fallback or None), True
 
 
 def require_bot(env, script):
@@ -162,13 +186,23 @@ def main(make_client=None):
     # no API call, so it is the one `gh` the lane still runs (#2068).
     subprocess.run(["gh", "auth", "setup-git"], check=True)
     api = (make_client or _make_client)(os.environ["GH_TOKEN"])
+    reviewer, fell_back = recipient(
+        os.environ.get("LANE_LABELER"),
+        os.environ.get("LANE_REVIEWER", ""),
+        os.environ.get("LANE_BOT_LOGIN", ""),
+    )
+    if fell_back:
+        print(
+            "::warning::the person who applied `agent:dispatch` could not be resolved"
+            " (LANE_LABELER); a review request goes to LANE_REVIEWER"
+        )
     number = publish(
         api,
         issue=os.environ["ISSUE_NUMBER"],
         run_id=os.environ["RUN_ID"],
         default_branch=os.environ["DEFAULT_BRANCH"],
         out_dir=os.environ.get("LANE_OUT", "lane-out"),
-        reviewer=os.environ.get("LANE_REVIEWER", ""),
+        reviewer=reviewer or "",
         repo=os.environ["GH_REPO"],
     )
     if number is not None and os.environ.get("GITHUB_OUTPUT"):

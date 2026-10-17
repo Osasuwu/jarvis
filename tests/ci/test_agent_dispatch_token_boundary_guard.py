@@ -95,6 +95,12 @@ class TestPublishJobHoldsThePat:
         step = _step(publish, "Publish the worker's branch")
         assert step["env"]["LANE_REVIEWER"] == "${{ inputs.operator || github.repository_owner }}"
 
+    def test_the_review_goes_to_the_dispatch_events_sender_first(self, publish):
+        """#2051: whoever applied `agent:dispatch` reviews; LANE_REVIEWER is the fallback."""
+        step = _step(publish, "Publish the worker's branch")
+        assert step["env"]["LANE_LABELER"] == "${{ github.event.sender.login }}"
+        assert step["env"]["LANE_BOT_LOGIN"] == "${{ inputs.bot-login }}"
+
     def test_publish_job_token_cannot_write(self, publish):
         assert "write" not in set(publish["permissions"].values())
 
