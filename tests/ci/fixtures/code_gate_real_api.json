@@ -1,5 +1,5 @@
 {
-  "_about": "Real GitHub API payloads captured 2026-10-07 from Osasuwu/jarvis (#1978 L6), trimmed to the fields the gate reads; actor and head_commit dropped (the fork and PR author handles are kept: public, and the fork shape needs them). Entries marked _derived are NOT captured: the first real artifact expiry is 2026-10-09 (90-day retention), so that one is a real response with `expired` flipped.",
+  "_about": "Real GitHub API payloads captured from Osasuwu/jarvis (#1978 L6), trimmed to the fields the gate reads; actor and head_commit dropped (the fork and PR author handles are kept: public, and the fork shape needs them). fork_head, skipped_artifact and cancelled_run were captured 2026-10-07, expired_artifact 2026-10-17. No response listing an artifact with `expired: true` exists to capture: a scan of every artifact in jarvis, music-intel-mcp, like-current-song and jarvis-oss on 2026-10-17 found none, and the artifacts that had expired were no longer listed at all, so expired_artifact records that shape instead.",
   "fork_head": {
     "_source": "canary run 37661571121 on fork PR #2020 (DaNi64j/jarvis, head canary/code-gate-5-fork)",
     "run": {
@@ -183,45 +183,21 @@
     "pr_head_sha": "61e811f4dd403247d20e79b6e3819017e5c3c080"
   },
   "expired_artifact": {
-    "_derived": "artifacts[0].expired flipped false -> true; everything else is the real response for run 37610348363 (PR #1991 @ 7882a99d)",
+    "_source": "Code Review run 38032557503 (PR #2037 @ d224e00d), captured 2026-10-17T14:52Z. The run uploaded two artifacts on 2026-10-10: review-evidence 11663001308 (retention-days 90) and its execution log claude-execution-output-38032557503-1, id 11662751483 (retention-days 7, uploaded 06:55:11Z, so expired 2026-10-17T06:55Z). `artifacts` is the run's listing and `expired_artifact_get` the GET of 11662751483, both as served ~8h after that expiry; `upload_log` is from the review job's log. The live evidence still has the pre-#2024 name. pull_requests[] is empty because the PR has merged since.",
     "run": {
-      "id": 37610348363,
-      "name": "Code review PR #1991 @ 7882a99d038902e12fae42342adf7cdedf352094",
+      "id": 38032557503,
+      "name": "Code review PR #2037 @ d224e00dd2cf7d8e8adb5f9b8c4096ec3a695dc7",
       "path": ".github/workflows/code-review.yml",
       "event": "pull_request",
       "status": "completed",
       "conclusion": "success",
-      "head_branch": "dependabot/github_actions/main/github-actions-01f9fbe353",
-      "head_sha": "7882a99d038902e12fae42342adf7cdedf352094",
-      "display_title": "Code review PR #1991 @ 7882a99d038902e12fae42342adf7cdedf352094",
-      "pull_requests": [
-        {
-          "url": "https://api.github.com/repos/Osasuwu/jarvis/pulls/1991",
-          "id": 4771574422,
-          "number": 1991,
-          "head": {
-            "ref": "dependabot/github_actions/main/github-actions-01f9fbe353",
-            "sha": "a08799d56e0453e7ec45c0a5d4a401bb6bc6c675",
-            "repo": {
-              "id": 1135738556,
-              "url": "https://api.github.com/repos/Osasuwu/jarvis",
-              "name": "jarvis"
-            }
-          },
-          "base": {
-            "ref": "main",
-            "sha": "5eb3824fb5664938af17391c94690438dd3c5997",
-            "repo": {
-              "id": 1135738556,
-              "url": "https://api.github.com/repos/Osasuwu/jarvis",
-              "name": "jarvis"
-            }
-          }
-        }
-      ],
+      "head_branch": "fix/weekly-release-semver-only-2036",
+      "head_sha": "d224e00dd2cf7d8e8adb5f9b8c4096ec3a695dc7",
+      "display_title": "Code review PR #2037 @ d224e00dd2cf7d8e8adb5f9b8c4096ec3a695dc7",
+      "pull_requests": [],
       "run_attempt": 1,
-      "created_at": "2026-10-07T10:53:15Z",
-      "run_started_at": "2026-10-07T10:53:15Z",
+      "created_at": "2026-10-10T06:54:31Z",
+      "run_started_at": "2026-10-10T06:54:31Z",
       "head_repository": {
         "full_name": "Osasuwu/jarvis"
       }
@@ -230,26 +206,40 @@
       "total_count": 1,
       "artifacts": [
         {
-          "id": 11477620828,
-          "node_id": "MDg6QXJ0aWZhY3QxMTQ3NzYyMDgyOA==",
+          "id": 11663001308,
+          "node_id": "MDg6QXJ0aWZhY3QxMTY2MzAwMTMwOA==",
           "name": "review-evidence",
-          "size_in_bytes": 266,
-          "url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11477620828",
-          "archive_download_url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11477620828/zip",
-          "expired": true,
-          "digest": "sha256:bae7dd8cb3f31380f35a0958f421d038c0dbed05f944f797bb950df9deaaf768",
-          "created_at": "2026-10-07T10:53:28Z",
-          "updated_at": "2026-10-07T10:53:28Z",
-          "expires_at": "2027-01-05T10:53:15Z",
+          "size_in_bytes": 278,
+          "url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11663001308",
+          "archive_download_url": "https://api.github.com/repos/Osasuwu/jarvis/actions/artifacts/11663001308/zip",
+          "expired": false,
+          "digest": "sha256:7994dda6dd68aa849d2f77143aebc217daca79d0ec58e17b66211f33f8fcadbb",
+          "created_at": "2026-10-10T06:55:12Z",
+          "updated_at": "2026-10-10T06:55:12Z",
+          "expires_at": "2027-01-08T06:54:31Z",
           "workflow_run": {
-            "id": 37610348363,
+            "id": 38032557503,
             "repository_id": 1135738556,
             "head_repository_id": 1135738556,
-            "head_branch": "dependabot/github_actions/main/github-actions-01f9fbe353",
-            "head_sha": "7882a99d038902e12fae42342adf7cdedf352094"
+            "head_branch": "fix/weekly-release-semver-only-2036",
+            "head_sha": "d224e00dd2cf7d8e8adb5f9b8c4096ec3a695dc7"
           }
         }
       ]
-    }
+    },
+    "expired_artifact_id": 11662751483,
+    "expired_artifact_get": {
+      "status": 404,
+      "body": {
+        "message": "Not Found",
+        "documentation_url": "https://docs.github.com/rest/actions/artifacts#get-an-artifact",
+        "status": "404"
+      }
+    },
+    "upload_log": [
+      "2026-10-10T06:55:11.3112596Z Artifact claude-execution-output-38032557503-1 successfully finalized. Artifact ID 11662751483",
+      "2026-10-10T06:55:11.3113291Z Artifact claude-execution-output-38032557503-1 has been successfully uploaded! Final size is 13896 bytes. Artifact ID is 11662751483"
+    ],
+    "retention_log": "2026-10-10T06:55:10.1343872Z   retention-days: 7"
   }
 }
