@@ -97,6 +97,23 @@ ref is not an absorbed slice. Closed issues and pull-request numbers pass; a for
 `owner/repo#N` only warns. It catches a superseded sibling's slices only while their commits
 keep their `(#N)` headlines — carrying the sibling's lines over (below) is still on you.
 
+The check's bypasses, each of which leaves a notice on the run: a Dependabot/Renovate author,
+a `[no-issue]` line (or title-final marker), a `refactor:` title prefix, and the
+`priority:critical` hotfix label. `osasuwu-bot` gets neither `[no-issue]` nor `refactor:`
+(D14, #2055). `priority:critical` counts only when a human other than the PR author applied
+it (#2082): the check reads the PR's issue events (all pages) and takes the actor of the most
+recent `labeled` event for that label. A bot account (actor type `Bot`, or `osasuwu-bot`, a
+machine user with write access), the author themself, no such event, or an events API error
+means no bypass — the run warns why and the linkage check applies as if the label were absent.
+A hotfix author therefore asks someone else to apply the label. Neither applying nor removing
+the label re-triggers the check; it re-runs on the next push, body edit or review event, so a
+removed label leaves the green check standing on that SHA until then.
+
+Residual: the check tests for a human *account*, not a human. Local and unattended agent sessions
+run under the operator's `gh` token, so such a session can label an `osasuwu-bot` PR
+`priority:critical` and the actor reads as that human account — the bypass is granted with no
+human involved. Closing that needs an agent-side carrier, not this check (tracked in #2111).
+
 ## Superseded siblings
 
 When you close a sibling PR as "superseded by #X", carry over **that sibling's own**

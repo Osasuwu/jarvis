@@ -51,10 +51,39 @@ jobs:
               return;
             }
 
-            // Hotfix escape: priority:critical label bypasses the linked-issue requirement.
+            // Hotfix escape: priority:critical bypasses the linked-issue requirement only when
+            // a human other than the PR author applied it (#2082) — the lane bot has write
+            // access and could otherwise label its own PR past the gate. The labeller is the
+            // actor of the most recent `labeled` event for the label (the events list is
+            // oldest first, so a bot re-apply after a human's supersedes it). No verified
+            // human labeller, the event list unreadable included, means no bypass: the PR
+            // falls through to the linkage check below.
             if (labels.includes('priority:critical')) {
-              bypass('priority:critical', 'hotfix label present.');
-              return;
+              let refused = '';
+              let labeller = null;
+              try {
+                const events = await github.paginate(github.rest.issues.listEvents, {
+                  ...repo, issue_number: pr.number, per_page: 100,
+                });
+                const applied = events.filter(
+                  e => e.event === 'labeled' && e.label && e.label.name === 'priority:critical');
+                labeller = applied.length ? applied[applied.length - 1].actor : null;
+              } catch (e) {
+                refused = `could not read the PR's label events (HTTP ${e.status || 'error'})`;
+              }
+              const login = (labeller && labeller.login) || '';
+              if (!refused && !login) {
+                refused = 'no labeled event names who applied it';
+              } else if (!refused && (labeller.type !== 'User' || login.toLowerCase() === laneBot)) {
+                refused = `applied by bot account ${login}`;
+              } else if (!refused && login.toLowerCase() === author.toLowerCase()) {
+                refused = `applied by the PR author ${login}`;
+              }
+              if (!refused) {
+                bypass('priority:critical', `hotfix label applied by ${login}.`);
+                return;
+              }
+              core.warning(`require-linked-issue: priority:critical bypass refused — ${refused}; only a label applied by a human other than the PR author counts (#2082).`);
             }
 
             // Fix-inline escape (#428): the [no-issue] directive, on a body line of its
@@ -96,7 +125,7 @@ jobs:
               return;
             }
             if (links.size === 0) {
-              core.setFailed('PR body must include a linked issue reference (e.g. "Closes #123" to auto-close, or "Refs #123" to link a partial-work PR without closing), a [no-issue] line for trivial fix-inline drive-bys (#428), or the priority:critical label for hotfixes.');
+              core.setFailed('PR body must include a linked issue reference (e.g. "Closes #123" to auto-close, or "Refs #123" to link a partial-work PR without closing), a [no-issue] line for trivial fix-inline drive-bys (#428), or a priority:critical label applied by a human other than the PR author, for hotfixes (#2082).');
               return;
             }
 

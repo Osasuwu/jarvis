@@ -5,13 +5,22 @@
 //          "issues": ["owner/repo#N", ...],   — issues.get succeeds only for these
 //          "closed": [...], "pulls": [...],  — optional: of those, closed ones / pull requests
 //          "outages": [...],                 — optional: issues.get throws a 502 for these
-//          "commits": [str, ...]}             — optional: the PR's commit messages
+//          "commits": [str, ...],             — optional: the PR's commit messages
+//          "events": [{...}, ...],            — optional: the PR's issue events, oldest first
+//          "events_outage": bool}             — optional: issues.listEvents throws a 502
+// List endpoints serve `per_page`-sized pages and `paginate` walks them until a short page,
+// so a script that reads one page instead of paginating sees only the first `per_page` items.
 // stdout: {"failed": [str], "notices": [str], "lookups": ["owner/repo#N"]}
 //         plus "warnings": [str] when the script warned (absent otherwise, so callers that
 //         never warn keep comparing the three-key shape)
 "use strict";
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+// One page of a list endpoint, as the REST API serves it (page 1 when `page` is absent).
+function page(items, { per_page: perPage = 30, page: p = 1 } = {}) {
+  return items.slice((p - 1) * perPage, p * perPage);
+}
 
 async function main() {
   const chunks = [];
@@ -48,14 +57,28 @@ async function main() {
           if (pulls.has(k)) data.pull_request = { url: "stub" };
           return { data };
         },
+        listEvents: async (params) => {
+          if (input.events_outage) {
+            throw Object.assign(new Error("Bad Gateway"), { status: 502 });
+          }
+          return { data: page(input.events || [], params) };
+        },
       },
       pulls: {
-        listCommits: async () => ({
-          data: (input.commits || []).map((message) => ({ commit: { message } })),
+        listCommits: async (params) => ({
+          data: page((input.commits || []).map((message) => ({ commit: { message } })), params),
         }),
       },
     },
-    paginate: async (method, params) => (await method(params)).data,
+    paginate: async (method, params) => {
+      const perPage = params.per_page || 30;
+      const all = [];
+      for (let p = 1; ; p++) {
+        const { data } = await method({ ...params, page: p });
+        all.push(...data);
+        if (data.length < perPage) return all;
+      }
+    },
   };
   const context = { repo: input.repo, payload: input.payload };
 

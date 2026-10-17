@@ -21,7 +21,7 @@ hardcoded on a shared code path.
 ## Development process
 
 - Branches from `main`, one issue per PR, PR body has `Closes #NNN`. Bypasses: `priority:critical`
-  hotfix, `refactor:` title prefix, `[no-issue]` commit marker.
+  hotfix applied by a non-author human (#2082), `refactor:` title prefix, `[no-issue]` marker.
 - Consolidation PRs cite `Closes #N` for every absorbed issue, not just the umbrella
   ([`docs/reference/pr-issue-linkage.md`](docs/reference/pr-issue-linkage.md)).
 - Trivial/reversible/<30min/own-repo → fix inline, no tracking issue. Architectural, cross-cutting,

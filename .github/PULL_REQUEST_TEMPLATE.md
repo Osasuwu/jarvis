@@ -11,7 +11,8 @@ Closes #
 <!--
 PR scope rules:
   - Code change       → keep "Closes #NNN" above.
-  - Hotfix            → remove the line and apply the priority:critical label.
+  - Hotfix            → remove the line; a human other than you applies the
+                        priority:critical label (yours or a bot's does not count, #2082).
   - Design / RFC      → wrong place. Use GitHub Discussions, not a PR.
 -->
 
