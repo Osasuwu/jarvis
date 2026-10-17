@@ -2292,8 +2292,19 @@ def test_post_check_waits_out_a_rate_limited_check_runs_page(failing_page, statu
         {"check_runs": ["x"]},
         http_error(500, "server error"),
         json.JSONDecodeError("Expecting value", "", 0),
+        # #2085 AC4: a check of ours whose body is malformed fails in the ledger
+        # merge, which sits inside the guarded read: moved out, check 9 is never
+        # patched and no red is posted.
+        {"check_runs": [{"id": 9, "app": {"id": 123}, "output": "x"}]},
     ],
-    ids=["no-check_runs-key", "check_runs-null", "check_run-not-an-object", "http-500", "bad-json"],
+    ids=[
+        "no-check_runs-key",
+        "check_runs-null",
+        "check_run-not-an-object",
+        "http-500",
+        "bad-json",
+        "own-check-output-not-an-object",
+    ],
 )
 def test_post_check_that_cannot_read_its_listing_posts_a_new_red_check_then_raises(listing):
     """An earlier green check of ours cannot be patched unread, so it would stay
@@ -2365,6 +2376,110 @@ def test_verdict_whose_check_listing_is_malformed_posts_red_and_fails_the_job(mo
     assert (method, path, body["conclusion"]) == ("POST", "repos/o/r/check-runs", "failure")
     assert body["output"]["title"] == "code-gate: verdict-error"
     assert "`evidence-clean`" in body["output"]["summary"]
+
+
+def test_verdict_that_crashed_over_an_unreadable_check_listing_keeps_the_crash(monkeypatch):
+    """#2085 AC3: the verdict crashed, then the check listing could not be read
+    either. The red check's summary carries the crash text, and the listing error
+    the job fails with is chained to the crash."""
+    crash = urllib.error.URLError("dns")
+    write = _run_verdict(monkeypatch, {f"repos/o/r/pulls/{PR}": crash})
+    write.responses[CHECKS_PATH] = {}
+    with pytest.raises(ValueError, match="check_runs") as raised:
+        gate.cmd_verdict(write.args)
+    assert raised.value.__cause__ is crash
+    ((method, _, body),) = [c for c in write.calls if c[0] != "GET"]
+    assert (method, body["output"]["title"]) == ("POST", "code-gate: verdict-error")
+    assert "(URLError: <urlopen error dns>)" in body["output"]["summary"]
+
+
+# --- post_check whose PATCH fails (#2085) ------------------------------------
+
+
+PATCH_9 = "repos/o/r/check-runs/9"
+
+
+@pytest.mark.parametrize(
+    "make_failure",
+    [
+        lambda: http_error(502),
+        # github_client raises these at once, with no retry: the likeliest
+        # single-shot PATCH failures (#2102 review m1).
+        lambda: urllib.error.URLError("dns"),
+        lambda: TimeoutError("timed out"),
+    ],
+    ids=["http-502", "url-error", "timeout"],
+)
+def test_post_check_whose_patch_fails_on_a_red_verdict_posts_a_new_red_check_then_raises(
+    make_failure,
+):
+    """Check 9 (green) could not be patched red, so it would stay the latest: a new
+    red check carrying the merged ledger is posted, and the PATCH's error still
+    leaves post_check so the job fails — whatever kind of error the PATCH raised."""
+    failed = make_failure()
+    prior = _check(text=_ledger_text(None, ["1001:1"]))
+    api = FakeApi({CHECKS_PATH: {"check_runs": [prior]}}, writes={PATCH_9: failed})
+    obs = gate.Observation(frozenset({"1001:2"}), frozenset(), False)
+    with pytest.raises(type(failed)) as raised:
+        gate.post_check(api, "o/r", SHA, RED, 123, obs)
+    assert raised.value is failed
+    writes = [(m, p, b["conclusion"]) for m, p, b in api.calls if m != "GET"]
+    assert writes == [
+        ("PATCH", PATCH_9, "failure"),
+        ("POST", "repos/o/r/check-runs", "failure"),
+    ]
+    body = api.calls[-1][2]
+    assert (body["name"], body["head_sha"], body["status"]) == ("code-gate", SHA, "completed")
+    assert body["output"]["title"] == "code-gate: evidence-none"
+    assert _ledger_of(body) == {"v": 1, "sticky": None, "observed": ["1001:1", "1001:2"]}
+
+
+def test_post_check_whose_patch_fails_on_a_green_verdict_posts_nothing_new():
+    """A green that could not be written leaves the earlier check as it was; the
+    job failing is enough."""
+    failed = http_error(502)
+    api = FakeApi({CHECKS_PATH: {"check_runs": [_check()]}}, writes={PATCH_9: failed})
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        gate.post_check(api, "o/r", SHA, CLEAN, 123)
+    assert raised.value is failed
+    assert [(m, p) for m, p, _ in api.calls if m != "GET"] == [("PATCH", PATCH_9)]
+
+
+def test_post_check_whose_patch_and_red_post_both_fail_raises_the_patch_error(capsys):
+    """The PATCH fails on a red verdict and the red POST that should replace it
+    fails too: the PATCH's error is the one raised, and `::error::` says an earlier
+    check may still stand."""
+    failed = http_error(502)
+    api = FakeApi(
+        {CHECKS_PATH: {"check_runs": [_check()]}},
+        writes={PATCH_9: failed, "repos/o/r/check-runs": http_error(503)},
+    )
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        gate.post_check(api, "o/r", SHA, RED, 123)
+    assert raised.value is failed
+    assert [m for m, _, _ in api.calls] == ["GET", "PATCH", "POST"]
+    assert api.calls[-1][2]["conclusion"] == "failure"
+    assert f"an earlier code-gate check may still stand for {SHA}" in capsys.readouterr().err
+
+
+def test_post_check_whose_later_patch_fails_on_a_red_verdict_posts_a_new_red_check():
+    """Two checks of ours: check 9 is patched red, check 10 cannot be. Check 10 may
+    be the latest green, so a new red check is still posted after it, and the
+    PATCH's error leaves post_check (#2102 review m2)."""
+    failed = http_error(502)
+    api = FakeApi(
+        {CHECKS_PATH: {"check_runs": [_check(), _check(id=10)]}},
+        writes={"repos/o/r/check-runs/10": failed},
+    )
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        gate.post_check(api, "o/r", SHA, RED, 123)
+    assert raised.value is failed
+    writes = [(m, p, b["conclusion"]) for m, p, b in api.calls if m != "GET"]
+    assert writes == [
+        ("PATCH", PATCH_9, "failure"),
+        ("PATCH", "repos/o/r/check-runs/10", "failure"),
+        ("POST", "repos/o/r/check-runs", "failure"),
+    ]
 
 
 # --- cmd_verdict end to end: stickiness past the artifact (#2062) ------------

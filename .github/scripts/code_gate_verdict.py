@@ -936,6 +936,8 @@ def _read_own_checks(api, repo, head_sha, app_id):
     # Only this App's check runs: another app's same-named check can neither lift
     # nor plant a sticky red.
     mine = [c for c in existing if str((c.get("app") or {}).get("id")) == str(app_id)]
+    # The ledger merge stays inside this guarded read: a check of ours with a
+    # malformed body is an unreadable listing, not an unguarded crash (#2085).
     return mine, merge_ledgers(parse_ledger(c) for c in mine), truncated
 
 
@@ -955,11 +957,18 @@ def _post_unreadable_listing(api, repo, head_sha, verdict, observation, exc):
         "summary": (
             f"The verdict could not read this SHA's `{CHECK_NAME}` check runs "
             f"({type(exc).__name__}: {str(exc)[:200]}), so it posted this new red check "
-            f"instead of updating them; the verdict it had computed was `{verdict.code}`. "
-            "Re-run the verdict job."
+            "instead of updating them. Re-run the verdict job.\n\n"
+            f"The verdict it had computed: `{verdict.code}` — {verdict.message}"
         ),
         "text": ledger_text(ledger),
     }
+    _post_red(api, repo, head_sha, output)
+
+
+def _post_red(api, repo, head_sha, output):
+    """POST a new red `code-gate` check with `output`. A failing POST is reported
+    as `::error::`, not raised, so the caller's error stays the one the job fails
+    with."""
     try:
         api(
             "POST",
@@ -985,7 +994,12 @@ def post_check(api, repo, head_sha, verdict, app_id, observation=None):
     """PATCH this App's `code-gate` check runs for the SHA; create one only if
     none exists. The ledger they carry is merged, updated with `observation` and
     written back, and a sticky red it holds is what gets posted. A listing that
-    cannot be read posts a new red check, then raises its error.
+    cannot be read posts a new red check, then raises its error. A PATCH that
+    fails on a red verdict posts a new red check carrying the merged ledger, then
+    raises its error (an earlier green would otherwise stay the latest, #2085);
+    on a green verdict it raises with nothing new posted. A red POST that fails
+    is reported as `::error::` (an earlier check may still stand) and the
+    original error is raised.
 
     Returns (how, the verdict posted)."""
     try:
@@ -1006,12 +1020,17 @@ def post_check(api, repo, head_sha, verdict, app_id, observation=None):
         "text": ledger_text(ledger),
     }
     conclusion = "success" if verdict.green else "failure"
-    for c in mine:
-        api(
-            "PATCH",
-            f"repos/{repo}/check-runs/{c['id']}",
-            {"status": "completed", "conclusion": conclusion, "output": output},
-        )
+    try:
+        for c in mine:
+            api(
+                "PATCH",
+                f"repos/{repo}/check-runs/{c['id']}",
+                {"status": "completed", "conclusion": conclusion, "output": output},
+            )
+    except Exception:
+        if not verdict.green:
+            _post_red(api, repo, head_sha, output)
+        raise
     if mine and truncated is None:
         return "patched", verdict
     api(
@@ -1277,14 +1296,20 @@ def cmd_verdict(args):
         )
     # The ledger (see `apply_ledger`) is read and written even on a crash: a
     # verdict-error must not erase a sticky red.
-    how, verdict = post_check(
-        args.make_client(os.environ["GATE_TOKEN"]),
-        repo,
-        head_sha,
-        verdict,
-        os.environ["GATE_APP_ID"],
-        observation,
-    )
+    try:
+        how, verdict = post_check(
+            args.make_client(os.environ["GATE_TOKEN"]),
+            repo,
+            head_sha,
+            verdict,
+            os.environ["GATE_APP_ID"],
+            observation,
+        )
+    except Exception as exc:
+        if failure is None:
+            raise
+        # The check write failed too: the job's error keeps the crash it was posting.
+        raise exc from failure
     _summary(
         f"### {CHECK_NAME}: {'green' if verdict.green else 'red'} — `{verdict.code}`\n\n{verdict.message}"
     )
