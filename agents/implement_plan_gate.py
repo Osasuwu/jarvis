@@ -19,14 +19,11 @@ from dataclasses import dataclass
 from agents.plan_classifier import classify_task_row, prod_areas_from_paths
 from agents.plan_review_config import PlanReviewConfig
 
-PRIORITY_CRITICAL_LABEL = "priority:critical"
-
 
 @dataclass(frozen=True)
 class TriggerResult:
     classification: int
     requires_plan: bool
-    carve_out: bool
 
 
 def build_task_row(
@@ -53,16 +50,16 @@ def evaluate_trigger(
 ) -> TriggerResult:
     """Classify the estimated change and decide whether the plan stage runs.
 
-    The `priority:critical` carve-out (AC3) skips only `requires_plan` — it
-    never changes `classification` itself, so a class-2 hotfix is still
-    reported as ordinal 2 (visible for audit), just not gated on a plan.
+    Every class-2 change requires a plan. No label waives it: `labels` is
+    supplied by the calling agent, not read from GitHub, so a waiver keyed
+    on it (the old `priority:critical` carve-out) let any agent skip the
+    planner + critic panel by labelling the issue or by passing the label
+    (#2110). `labels` stays in the signature so existing callers (the
+    `/implement` step 2a one-liner) keep working; it is not consulted.
     Ordinal 3 (true-HITL, #1707) never requires the class-2 plan gate
     either — it routes to a human, not the planner.
     """
+    del labels  # accepted for caller compatibility, never a waiver (#2110)
     row = build_task_row(paths, churn_lines, mechanical_criteria)
     classification = classify_task_row(config, row)
-    carve_out = PRIORITY_CRITICAL_LABEL in tuple(labels)
-    requires_plan = classification == 2 and not carve_out
-    return TriggerResult(
-        classification=classification, requires_plan=requires_plan, carve_out=carve_out
-    )
+    return TriggerResult(classification=classification, requires_plan=classification == 2)
