@@ -1,0 +1,56 @@
+name: Lane Pin Drift
+
+# #2087: jarvis runs the shared lane and the risk-tier classifier at one pinned jarvis commit.
+# A fix to that code merges green but does not run until the pin is bumped by hand. On every
+# push to main that touches the pinned code or moves the pin, this lists the commits the pin is
+# missing and emits one warning annotation plus a step summary ("stale" or "current").
+#
+# Advisory only: push/dispatch triggers, never a pull_request check, never required, never
+# fails (an unresolvable pin is a warning too), never writes to issues or PRs. The `paths:`
+# list is PINNED_PATHS in the script plus the four files that carry the pin; the carriers
+# trigger the run but are not pinned code (tests/ci/test_lane_pin_drift.py holds both).
+# Logic: .github/scripts/lane_pin_drift.py.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Pinned code (PINNED_PATHS).
+      - ".github/workflows/lane.yml"
+      - ".github/workflows/lane-watch.yml"
+      - ".github/workflows/lane-close.yml"
+      - ".github/actions/risk-tier/**"
+      - ".github/scripts/lane_intake.py"
+      - ".github/scripts/lane_publish.py"
+      - ".github/scripts/lane_escalation.py"
+      - ".github/scripts/lane_ledger.py"
+      - ".github/scripts/risk_tier.py"
+      - ".github/scripts/github_client.py"
+      - "agents/__init__.py"
+      - "agents/plan_lock.py"
+      - "agents/plan_classifier.py"
+      - "agents/plan_review_config.py"
+      - "agents/path_policy.py"
+      - "config/plan_review.yaml"
+      # The pin itself: a bump or rollback re-runs the check.
+      - ".github/workflows/pr-body-check.yml"
+      - ".github/workflows/agent-dispatch.yml"
+      - ".github/workflows/lane-ledger-close.yml"
+      - ".github/workflows/lane-red-check-watcher.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Report commits the lane pin is missing
+        run: python3 .github/scripts/lane_pin_drift.py
