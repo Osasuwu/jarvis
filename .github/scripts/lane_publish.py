@@ -17,9 +17,12 @@ Auto-merge stays a separate step of the job. No bundle means the worker produced
 commits: nothing is published and the script exits 0.
 
 The worker's output is data, not instructions: the title is the head commit's subject
-and the body is passed as a file, never through a shell. Stdlib only.
+and the body is sent as JSON, never through a shell. Every GitHub call goes through
+`github_client.py` beside this script (#2068); `gh` only installs git's credential
+helper for the push. Stdlib only.
 """
 
+import importlib.util
 import os
 import re
 import subprocess
@@ -85,29 +88,30 @@ def git(*args, cwd=None):
     return result.stdout.strip()
 
 
-def gh(*args):
-    """Run `gh`, return its stdout; on failure print why to stderr, then re-raise (#2057).
-
-    The lane scripts share this helper: `capture_output` hides gh's own message, so a
-    rejected token or a missing permission ended as a bare `CalledProcessError`. Only the
-    leading words of the command are printed (its arguments carry comment bodies), and each
-    stderr line is indented so the runner cannot read one as a workflow command (`::...`).
-    """
+def _load_client():
+    """`github_client.py` beside this script, under the sys.modules key every
+    caller shares, so `ListingTruncated` is one class across them."""
+    name = "_jarvis_github_client"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().with_name("github_client.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     try:
-        result = subprocess.run(["gh", *args], check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        words = []
-        for arg in args[:3]:
-            if arg.startswith("-"):
-                break
-            words.append(arg)
-        reason = "".join(f"  {line}\n" for line in (exc.stderr or "").splitlines())
-        print(f"gh {' '.join(words)} exited {exc.returncode}:\n{reason}", end="", file=sys.stderr)
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)  # a half-built module must not be handed out next time
         raise
-    return result.stdout.strip()
+    return module
 
 
-def publish(*, issue, run_id, default_branch, out_dir, reviewer, repo_dir=None):
+def _make_client(token):
+    return _load_client().Client(token, user_agent="lane-publish")
+
+
+def publish(api, *, issue, run_id, default_branch, out_dir, reviewer, repo, repo_dir=None):
     """Push the worker's branch, open its PR, move the issue to review. Returns the PR number.
 
     Returns None when the worker left no bundle.
@@ -129,37 +133,43 @@ def publish(*, issue, run_id, default_branch, out_dir, reviewer, repo_dir=None):
     final = out_dir / "pr-body.final.md"
     final.write_text(with_closes(body, issue), encoding="utf-8")
 
-    create = [
-        "pr",
-        "create",
-        "--head",
-        branch,
-        "--base",
-        default_branch,
-        "--title",
-        git("log", "-1", "--format=%s", f"refs/heads/{branch}", cwd=repo_dir),
-        "--body-file",
-        str(final),
-    ]
+    title = git("log", "-1", "--format=%s", f"refs/heads/{branch}", cwd=repo_dir)
+    # Not retried on a 5xx: one that follows a created PR would open a second one.
+    pr = api(
+        "POST",
+        f"repos/{repo}/pulls",
+        {
+            "head": branch,
+            "base": default_branch,
+            "title": title,
+            "body": final.read_text(encoding="utf-8"),
+        },
+        idempotent=False,
+    )
+    number = pr["number"]
     if needs_human_review(risk) and reviewer:
         # No reviewer to ask is not a failure after the branch is pushed: the
         # `waiting-human-review` and `risk-tier` holds still stop the merge.
-        create += ["--reviewer", reviewer]
-    url = gh(*create)
-    gh("issue", "edit", str(issue), "--remove-label", IN_PROGRESS, "--add-label", REVIEW)
-    print(f"#{issue}: opened {url} (risk {risk or 'unreadable'})")
-    return int(url.rstrip("/").rsplit("/", 1)[1])
+        api("POST", f"repos/{repo}/pulls/{number}/requested_reviewers", {"reviewers": [reviewer]})
+    api("POST", f"repos/{repo}/issues/{issue}/labels", {"labels": [REVIEW]})
+    _load_client().remove_label(api, repo, issue, IN_PROGRESS)
+    print(f"#{issue}: opened {pr['html_url']} (risk {risk or 'unreadable'})")
+    return number
 
 
-def main():
-    # Credential helper for the push, backed by GH_TOKEN (the bot PAT).
-    gh("auth", "setup-git")
+def main(make_client=None):
+    # Credential helper for the push, backed by GH_TOKEN (the bot PAT). It makes
+    # no API call, so it is the one `gh` the lane still runs (#2068).
+    subprocess.run(["gh", "auth", "setup-git"], check=True)
+    api = (make_client or _make_client)(os.environ["GH_TOKEN"])
     number = publish(
+        api,
         issue=os.environ["ISSUE_NUMBER"],
         run_id=os.environ["RUN_ID"],
         default_branch=os.environ["DEFAULT_BRANCH"],
         out_dir=os.environ.get("LANE_OUT", "lane-out"),
         reviewer=os.environ.get("LANE_REVIEWER", ""),
+        repo=os.environ["GH_REPO"],
     )
     if number is not None and os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:

@@ -21,7 +21,10 @@ commit, comment or non-approving review by anyone but the bot or a `*[bot]` logi
 
 A row is a visible one-line table plus a JSON object in an HTML comment. The JSON is the
 record; the table is rendered from it. Only comments authored by the bot count, so a
-forged row from anyone else is ignored. Stdlib only.
+forged row from anyone else is ignored.
+
+Every GitHub call goes through `github_client.py` beside this script (#2068), with the
+token in `GH_TOKEN`; by hand that is `GH_TOKEN=$(gh auth token)`. Stdlib only.
 """
 
 import json
@@ -215,32 +218,27 @@ def split_ref(ref):
     return (match.group(1), int(match.group(2))) if match else None
 
 
-gh = lane_publish.gh  # the lane's one gh helper; it prints gh's stderr when a call fails
+# `github_client.py`, loaded once under the key every lane script shares.
+_load_client = lane_publish._load_client
 
 
-def _comments(ledger_repo, ledger_issue):
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{ledger_repo}/issues/{ledger_issue}/comments",
-        "--jq",
-        ".[] | {id, user: .user.login, body} | tojson",
-    )
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+def _make_client(token):
+    return _load_client().Client(token, user_agent="lane-ledger")
 
 
-def _api_list(path):
-    out = gh("api", "--paginate", path, "--jq", ".[] | tojson")
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+def _comments(api, ledger_repo, ledger_issue):
+    # Capped (ListingTruncated): a partly read ledger would miss a row or miscount the gate.
+    return _load_client().comments(api, ledger_repo, ledger_issue)
 
 
-def fetch_touches(host, number, bot):
+def fetch_touches(api, host, number, bot):
     """The non-bot touches on a PR, read from GitHub (see `human_touches`)."""
+    paged = _load_client().paged
     return human_touches(
-        _api_list(f"repos/{host}/pulls/{number}/commits"),
-        _api_list(f"repos/{host}/issues/{number}/comments"),
-        _api_list(f"repos/{host}/pulls/{number}/comments"),
-        _api_list(f"repos/{host}/pulls/{number}/reviews"),
+        paged(api, f"repos/{host}/pulls/{number}/commits"),
+        paged(api, f"repos/{host}/issues/{number}/comments"),
+        paged(api, f"repos/{host}/pulls/{number}/comments"),
+        paged(api, f"repos/{host}/pulls/{number}/reviews"),
         bot,
     )
 
@@ -258,22 +256,16 @@ def _find_row(comments, bot, repo, run_id):
     return None
 
 
-def _write(ledger_repo, ledger_issue, comment_id, row):
-    body = render(row)
+def _write(api, ledger_repo, ledger_issue, comment_id, row):
+    body = {"body": render(row)}
     if comment_id is None:
-        gh("api", f"repos/{ledger_repo}/issues/{ledger_issue}/comments", "-f", f"body={body}")
+        # Not retried on a 5xx: one after a posted row would add a second row for the run.
+        api("POST", f"repos/{ledger_repo}/issues/{ledger_issue}/comments", body, idempotent=False)
     else:
-        gh(
-            "api",
-            "-X",
-            "PATCH",
-            f"repos/{ledger_repo}/issues/comments/{comment_id}",
-            "-f",
-            f"body={body}",
-        )
+        api("PATCH", f"repos/{ledger_repo}/issues/comments/{comment_id}", body)
 
 
-def add_row(env, out_dir, now):
+def add_row(api, env, out_dir, now):
     """Add (or, on a re-run of the same run, refresh) the row for one run past intake."""
     ledger = split_ref(env.get("LANE_LEDGER_ISSUE"))
     if ledger is None:
@@ -283,37 +275,17 @@ def add_row(env, out_dir, now):
     bot = lane_publish.require_bot(env, "lane_ledger")
 
     branch = lane_publish.branch_name(issue, run_id)
-    prs = json.loads(
-        gh(
-            "pr",
-            "list",
-            "--repo",
-            host,
-            "--head",
-            branch,
-            "--state",
-            "all",
-            "--json",
-            "number,additions,deletions,body",
-            "--limit",
-            "1",
-        )
-        or "[]"
-    )
-    pr = prs[0] if prs else None
-    labels = [
-        label["name"]
-        for label in json.loads(
-            gh("issue", "view", issue, "--repo", host, "--json", "labels", "-q", ".labels")
-        )
-    ]
+    owner = host.split("/", 1)[0]
+    # The list answer lacks the size, so the PR found is read once more on its own.
+    found = api("GET", f"repos/{host}/pulls?head={owner}:{branch}&state=all&per_page=1")
+    pr = api("GET", f"repos/{host}/pulls/{found[0]['number']}") if found else None
+    labels = [label["name"] for label in api("GET", f"repos/{host}/issues/{issue}")["labels"]]
 
     smoke = split_ref(env.get("LANE_LEDGER_SMOKE_ISSUE"))
     if smoke is None:
         print("::warning::LANE_LEDGER_SMOKE_ISSUE is not owner/repo#N; every run counts")
-    in_smoke = smoke is not None and (
-        gh("issue", "view", str(smoke[1]), "--repo", smoke[0], "--json", "state", "-q", ".state")
-        == "OPEN"
+    in_smoke = (
+        smoke is not None and api("GET", f"repos/{smoke[0]}/issues/{smoke[1]}")["state"] == "open"
     )
 
     row = {
@@ -331,17 +303,17 @@ def add_row(env, out_dir, now):
         "window": WINDOW_SMOKE if in_smoke else WINDOW_COUNTED,
         "at": now.isoformat(timespec="seconds"),
     }
-    existing = _find_row(_comments(*ledger), bot, host, run_id)
+    existing = _find_row(_comments(api, *ledger), bot, host, run_id)
     if existing:
         # A re-run must not undo what the PR close already settled, or the smoke call.
         for key in ("at", "final", "window"):
             row[key] = existing[1].get(key, row[key])
-    _write(*ledger, existing[0] if existing else None, row)
+    _write(api, *ledger, existing[0] if existing else None, row)
     print(f"{host}#{issue}: ledger row for run {run_id} ({row['outcome']}, {row['window']})")
     return row
 
 
-def close_row(env):
+def close_row(api, env):
     """Finalise the ledger row of a lane PR that just closed."""
     ledger = split_ref(env.get("LANE_LEDGER_ISSUE"))
     match = _LANE_BRANCH.match(env["PR_HEAD_REF"])
@@ -351,45 +323,49 @@ def close_row(env):
     host, number = env["GH_REPO"], int(env["PR_NUMBER"])
     bot = lane_publish.require_bot(env, "lane_ledger")
 
-    found = _find_row(_comments(*ledger), bot, host, match.group(2))
+    found = _find_row(_comments(api, *ledger), bot, host, match.group(2))
     # The PR number in the row must match: a branch name alone is easy to imitate.
     if not found or str(found[1].get("pr")) != str(number):
         print(f"{host}#{number}: no ledger row for this PR; nothing to finalise")
         return None
-    touches = fetch_touches(host, number, bot)
+    touches = fetch_touches(api, host, number, bot)
     print(report_touches(touches))
     final = final_outcome(env["PR_MERGED"] == "true", touches)
     row = {**found[1], "final": final}
-    _write(*ledger, found[0], row)
+    _write(api, *ledger, found[0], row)
     print(f"{host}#{number}: ledger row for run {row['run_id']} is {final}")
     return row
 
 
-def main(argv):
+def main(argv, make_client=None):
     command = argv[1] if len(argv) > 1 else ""
     env = os.environ
     now = datetime.now(timezone.utc)
-    if command in ("add", "close", "tally"):
-        lane_publish.require_bot(env, "lane_ledger")
-    if command == "add":
-        add_row(env, env.get("LANE_OUT", "lane-out"), now)
-    elif command == "close":
-        close_row(env)
-    elif command == "touched":
+    if command not in ("add", "close", "tally", "touched"):
+        sys.exit("usage: lane_ledger.py add|close|tally|touched")
+    target = ledger = None
+    if command == "touched":  # the usage first, as before: it needs no environment
         target = split_ref(argv[2] if len(argv) > 2 else "")
         if target is None:
             sys.exit("usage: lane_ledger.py touched owner/repo#N")
-        bot = lane_publish.require_bot(env, "lane_ledger")
-        print(report_touches(fetch_touches(*target, bot)))
-    elif command == "tally":
+    bot = lane_publish.require_bot(env, "lane_ledger")
+    if command == "tally":
         ledger = split_ref(env.get("LANE_LEDGER_ISSUE"))
         if ledger is None:
             sys.exit("LANE_LEDGER_ISSUE must be owner/repo#N")
-        print(
-            json.dumps(tally(_comments(*ledger), now, lane_publish.require_bot(env, "lane_ledger")))
-        )
+    token = env.get("GH_TOKEN")
+    if not token:
+        # By hand, gh's stored login used to be read implicitly; the client needs it named.
+        sys.exit("GH_TOKEN must be set (e.g. GH_TOKEN=$(gh auth token))")
+    api = (make_client or _make_client)(token)
+    if command == "add":
+        add_row(api, env, env.get("LANE_OUT", "lane-out"), now)
+    elif command == "close":
+        close_row(api, env)
+    elif command == "touched":
+        print(report_touches(fetch_touches(api, *target, bot)))
     else:
-        sys.exit("usage: lane_ledger.py add|close|tally|touched")
+        print(json.dumps(tally(_comments(api, *ledger), now, bot)))
 
 
 if __name__ == "__main__":

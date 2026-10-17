@@ -19,14 +19,14 @@ issue body (a bot edit of the body would trip intake's `bot-edited` rule).
 The operator is whoever `LANE_OPERATOR` names (repository variable, no literal here).
 Unset or not a GitHub login, the label and comment still land without a mention and the
 command exits 1, so the misconfiguration shows red; a `watch` pass that flagged nothing
-exits 0 either way. Stdlib only.
+exits 0 either way. Every GitHub call goes through `github_client.py` beside this script
+(#2068). Stdlib only.
 """
 
-import json
 import os
 import re
-import subprocess
 import sys
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 
@@ -58,7 +58,11 @@ _WORD = re.compile(r"^[a-z_]+$")
 _BACKTICKS = re.compile(r"`+")
 
 
-gh = lane_publish.gh  # the lane's one gh helper; it prints gh's stderr when a call fails
+_load_client = lane_publish._load_client
+
+
+def _make_client(token):
+    return _load_client().Client(token, user_agent="lane-escalation")
 
 
 def operator_handle(raw):
@@ -151,15 +155,10 @@ def escalation_comment(*, run_id, run_url, handle, cause, cause_line, escalation
     return "\n".join(lines) + "\n"
 
 
-def _comments(repo, number):
-    out = gh(
-        "api",
-        "--paginate",
-        f"repos/{repo}/issues/{number}/comments",
-        "--jq",
-        ".[] | {user: .user.login, body} | tojson",
-    )
-    return [json.loads(line) for line in out.splitlines() if line.strip()]
+def _comments(api, repo, number):
+    """Every comment as {id, user (login), body}. A listing past its cap raises
+    `ListingTruncated`: the marker could sit in the part left unread."""
+    return _load_client().comments(api, repo, number)
 
 
 def _has_marker(comments, bot, marker):
@@ -167,36 +166,42 @@ def _has_marker(comments, bot, marker):
     return any(c.get("user") == bot and (c.get("body") or "").startswith(marker) for c in comments)
 
 
-def _worker_minutes(repo, run_id):
-    """Wall-clock minutes of the `worker` job, or None when the jobs API does not say."""
+def _worker_minutes(api, repo, run_id):
+    """Wall-clock minutes of the `worker` job, or None when the jobs API does not say.
+
+    Only the cause's wording rests on it (without it a timeout reads as `cancelled`), so
+    a failed read falls back to the worker's result rather than block the escalation."""
     try:
-        out = gh(
-            "api",
-            f"repos/{repo}/actions/runs/{run_id}/jobs",
-            "--jq",
-            '.jobs[] | select(.name == "worker") | [.started_at, .completed_at] | @tsv',
-        )
-        started, completed = out.splitlines()[0].split("\t")
+        jobs = api("GET", f"repos/{repo}/actions/runs/{run_id}/jobs")["jobs"]
+        worker = next(job for job in jobs if job["name"] == "worker")
         stamp = lambda s: datetime.fromisoformat(s.replace("Z", "+00:00"))  # noqa: E731
-        return (stamp(completed) - stamp(started)).total_seconds() / 60
-    except (subprocess.CalledProcessError, ValueError, IndexError):
+        started, completed = stamp(worker["started_at"]), stamp(worker["completed_at"])
+        return (completed - started).total_seconds() / 60
+    except (
+        urllib.error.URLError,  # HTTPError included
+        OSError,  # a timeout
+        ValueError,  # an empty body, a malformed timestamp
+        KeyError,
+        AttributeError,  # completed_at null while the job still runs
+        StopIteration,  # no worker job
+    ):
         return None
 
 
-def _pr_exists(repo, branch):
-    prs = gh("pr", "list", "--repo", repo, "--head", branch, "--state", "all", "--json", "number")
-    return bool(json.loads(prs or "[]"))
+def _pr_exists(api, repo, branch):
+    """Whether a PR in any state has `branch` of this repository as its head."""
+    owner = repo.split("/", 1)[0]
+    return bool(api("GET", f"repos/{repo}/pulls?head={owner}:{branch}&state=all&per_page=1"))
 
 
-def _labels(repo, number):
-    out = gh("issue", "view", str(number), "--repo", repo, "--json", "labels", "-q", ".labels")
-    return [label["name"] for label in json.loads(out or "[]")]
+def _labels(api, repo, number):
+    return [label["name"] for label in api("GET", f"repos/{repo}/issues/{number}")["labels"]]
 
 
-def escalate(env, out_dir):
+def escalate(api, env, out_dir):
     """Label and comment on the issue of a run that ended without a PR. Returns the cause."""
     repo, issue, run_id = env["GH_REPO"], env["ISSUE_NUMBER"], env["RUN_ID"]
-    if _pr_exists(repo, lane_publish.branch_name(issue, run_id)):
+    if _pr_exists(api, repo, lane_publish.branch_name(issue, run_id)):
         print(f"{repo}#{issue}: run {run_id} opened a PR; nothing to escalate")
         return None
 
@@ -211,7 +216,7 @@ def escalate(env, out_dir):
     )
     minutes = None
     if escalation is None and worker_result != "success":
-        minutes = _worker_minutes(repo, run_id)
+        minutes = _worker_minutes(api, repo, run_id)
     cause = classify(
         escalation=escalation,
         worker_result=worker_result,
@@ -240,14 +245,15 @@ def escalate(env, out_dir):
         escalation=escalation,
     )
 
-    edit = ["issue", "edit", issue, "--repo", repo, "--add-label", NEEDS_HUMAN]
-    if IN_PROGRESS in _labels(repo, issue):
-        edit += ["--remove-label", IN_PROGRESS]
-    gh(*edit)
-    if _has_marker(_comments(repo, issue), bot, run_marker(run_id)):
+    drop = IN_PROGRESS in _labels(api, repo, issue)
+    api("POST", f"repos/{repo}/issues/{issue}/labels", {"labels": [NEEDS_HUMAN]})
+    if drop:
+        _load_client().remove_label(api, repo, issue, IN_PROGRESS)
+    if _has_marker(_comments(api, repo, issue), bot, run_marker(run_id)):
         print(f"{repo}#{issue}: run {run_id} already escalated; no second comment")
     else:
-        gh("issue", "comment", issue, "--repo", repo, "--body", comment)
+        # Not retried on a 5xx: one that follows a posted comment would post a second.
+        api("POST", f"repos/{repo}/issues/{issue}/comments", {"body": comment}, idempotent=False)
     if handle is None:
         print("::warning::LANE_OPERATOR is not set to a GitHub login; escalated without a mention")
     print(f"{repo}#{issue}: run {run_id} escalated ({cause})")
@@ -307,93 +313,92 @@ def red_comment(*, check, sha, url, handle):
     )
 
 
-def _jsonl(*args):
-    return [json.loads(line) for line in gh(*args).splitlines() if line.strip()]
+def _check_runs(api, repo, sha):
+    return _load_client().paged(api, f"repos/{repo}/commits/{sha}/check-runs", key="check_runs")
 
 
-def _check_runs(repo, sha):
-    return _jsonl(
-        "api",
-        "--paginate",
-        f"repos/{repo}/commits/{sha}/check-runs",
-        "--jq",
-        ".check_runs[] | {id, name, status, conclusion, completed_at, details_url} | tojson",
-    )
-
-
-def _review_runs(repo, number, sha):
+def _review_runs(api, repo, number, sha):
     """Code Review runs for this head: its `pull_request` runs, and dispatched ones by title."""
     base = f"repos/{repo}/actions/workflows/code-review.yml/runs"
-    jq = ".workflow_runs[] | {status, updated_at, title: .display_title} | tojson"
-    direct = _jsonl("api", f"{base}?head_sha={sha}&per_page=100", "--jq", jq)
+
+    def runs(query):
+        return [
+            {"status": r["status"], "updated_at": r["updated_at"], "title": r["display_title"]}
+            for r in api("GET", f"{base}?{query}&per_page=100")["workflow_runs"]
+        ]
+
+    direct = runs(f"head_sha={sha}")
     dispatched = [
         r
-        for r in _jsonl("api", f"{base}?event=workflow_dispatch&per_page=100", "--jq", jq)
+        for r in runs("event=workflow_dispatch")
         if r["title"] == f"Code review PR #{number} @ {sha}"
     ]
     return direct + dispatched
 
 
-def watch(env):
+def watch(api, env):
     """Label and comment on every open lane PR with a settled red required check."""
     repo = env["GH_REPO"]
     handle = operator_handle(env.get("LANE_OPERATOR"))
     bot = lane_publish.require_bot(env, "lane_escalation")
     watched = watched_checks(env)
-    prs = json.loads(
-        gh(
-            "pr",
-            "list",
-            "--repo",
-            repo,
-            "--state",
-            "open",
-            "--limit",
-            "100",
-            "--json",
-            "number,headRefName,headRefOid,isCrossRepository,labels",
-        )
-        or "[]"
-    )
+    client = _load_client()
+    truncated = None
+    try:
+        prs = client.paged(api, f"repos/{repo}/pulls?state=open")
+    except client.ListingTruncated as exc:
+        # The PRs read are still flagged; the rest went unread, so the run ends red below.
+        prs, truncated = exc.items, exc
     flagged = []
     for pr in prs:
-        # A fork cannot name its head branch `claude/issue-...` in this repository.
-        if pr["isCrossRepository"] or not pr["headRefName"].startswith(LANE_HEAD_PREFIX):
+        head = pr["head"]
+        # A fork cannot name its head branch `claude/issue-...` in this repository; a head
+        # repository that was deleted (None) is no lane branch either.
+        source = (head.get("repo") or {}).get("full_name") or ""
+        if source.lower() != repo.lower() or not head["ref"].startswith(LANE_HEAD_PREFIX):
             continue
-        number, sha = pr["number"], pr["headRefOid"]
-        reviews = _review_runs(repo, number, sha) if CODE_GATE in watched else []
-        red = red_checks(_check_runs(repo, sha), reviews, watched)
+        number, sha = pr["number"], head["sha"]
+        reviews = _review_runs(api, repo, number, sha) if CODE_GATE in watched else []
+        red = red_checks(_check_runs(api, repo, sha), reviews, watched)
         if not red:
             continue
         if NEEDS_HUMAN not in [label["name"] for label in pr["labels"]]:
-            gh("pr", "edit", str(number), "--repo", repo, "--add-label", NEEDS_HUMAN)
-        comments = _comments(repo, number)
+            api("POST", f"repos/{repo}/issues/{number}/labels", {"labels": [NEEDS_HUMAN]})
+        comments = _comments(api, repo, number)
         for check, url in red:
             if not _has_marker(comments, bot, red_marker(check, sha)):
                 body = red_comment(check=check, sha=sha, url=url, handle=handle)
-                gh("pr", "comment", str(number), "--repo", repo, "--body", body)
+                # Not retried on a 5xx: one that follows a posted comment would post a second.
+                api(
+                    "POST",
+                    f"repos/{repo}/issues/{number}/comments",
+                    {"body": body},
+                    idempotent=False,
+                )
             flagged.append((number, check))
     if flagged and handle is None:
         print("::warning::LANE_OPERATOR is not set to a GitHub login; flagged without a mention")
     print(f"{repo}: red required checks on lane PRs: {flagged or 'none'}")
+    if truncated is not None:
+        raise truncated
     return flagged, handle
 
 
-def main(argv):
+def main(argv, make_client=None):
     command = argv[1] if len(argv) > 1 else ""
     env = os.environ
-    if command in ("run", "watch"):
-        lane_publish.require_bot(env, "lane_escalation")
+    if command not in ("run", "watch"):
+        sys.exit("usage: lane_escalation.py run|watch")
+    lane_publish.require_bot(env, "lane_escalation")
+    api = (make_client or _make_client)(env["GH_TOKEN"])
     if command == "run":
-        if escalate(env, env.get("LANE_OUT", "lane-out")) is None:
+        if escalate(api, env, env.get("LANE_OUT", "lane-out")) is None:
             return
         handle = operator_handle(env.get("LANE_OPERATOR"))
-    elif command == "watch":
-        flagged, handle = watch(env)
+    else:
+        flagged, handle = watch(api, env)
         if not flagged:
             return  # nothing escalated, so a missing operator is not this pass's failure
-    else:
-        sys.exit("usage: lane_escalation.py run|watch")
     if handle is None:
         sys.exit(1)
 

@@ -1,18 +1,22 @@
 """The N-run gate ledger of the AFK lane (.github/scripts/lane_ledger.py, #2012, D13).
 
 What must hold: every run past intake leaves one bot-authored row, a closed lane PR
-finalises that row, and the rows alone give the gate's verdict. `gh` is replaced by an
-in-memory ledger issue; the row format, the tally and the workflow wiring run for real.
+finalises that row, and the rows alone give the gate's verdict. The GitHub REST API is
+replaced by an in-memory ledger issue behind the `github_client` seam (#2068); the row
+format, the tally and the workflow wiring run for real.
 """
 
 import importlib.util
 import json
 import re
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import yaml
+
+from ._github_fake import FakeApi, FakeTransport, http_error, load_client
 
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 _spec = importlib.util.spec_from_file_location(
@@ -264,60 +268,74 @@ def test_a_pr_with_no_readable_commits_is_a_touch():
 # --- add / close against an in-memory ledger issue -----------------------------------
 
 
-class FakeGitHub:
-    """Answers the `gh` calls the script makes; keeps the ledger issue's comments."""
+REPO = "Osasuwu/jarvis"
+LEDGER_COMMENTS = f"repos/{REPO}/issues/3000/comments"
+# The run's PR, looked up by its owner-qualified head branch (lane_publish.branch_name).
+HEAD_QUERY = f"repos/{REPO}/pulls?head=Osasuwu:claude/issue-55-9001&state=all&per_page=1"
+PULLS = f"repos/{REPO}/pulls"
+
+
+class FakeGitHub(FakeApi):
+    """The REST API as the script reads and writes it; keeps the ledger issue's comments.
+
+    Every route is a literal path (plus `paged`'s query for a listing), so a request
+    to any other path is an unrouted GET and fails the test."""
 
     def __init__(self):
-        self.comments = []  # {"id", "user", "body"}
-        self.prs = []
+        self.comments = []  # the ledger issue's, flat: {"id", "user", "body"}
+        self.prs = []  # the run's PR as `GET pulls/N` answers it
         self.labels = ["afk:1-auto", "status:in-progress"]
-        self.smoke_state = "CLOSED"
+        self.smoke_state = "closed"
         self.commits = [_commit()]  # the PR's commits, REST shape
         self.pr_comments = []  # the PR's issue comments
         self.review_comments = []
         self.reviews = []
-        self.calls = []
+        super().__init__(
+            responses={
+                HEAD_QUERY: lambda *_: [{"number": p["number"]} for p in self.prs[:1]],
+                f"{PULLS}/77": lambda *_: next(p for p in self.prs if p["number"] == 77),
+                f"{PULLS}/77/commits?": lambda *_: self.commits,
+                f"repos/{REPO}/issues/77/comments?": lambda *_: self.pr_comments,
+                f"{PULLS}/77/comments?": lambda *_: self.review_comments,
+                f"{PULLS}/77/reviews?": lambda *_: self.reviews,
+                f"repos/{REPO}/issues/55": lambda *_: {
+                    "number": 55,
+                    "labels": [{"name": n} for n in self.labels],
+                },
+                f"repos/{REPO}/issues/2014": lambda *_: {"number": 2014, "state": self.smoke_state},
+                f"{LEDGER_COMMENTS}?": lambda *_: [
+                    {"id": c["id"], "user": {"login": c["user"]}, "body": c["body"]}
+                    for c in self.comments
+                ],
+            },
+            writes={
+                LEDGER_COMMENTS: self._post,
+                f"repos/{REPO}/issues/comments/": self._patch,
+            },
+        )
 
-    def __call__(self, *args):
-        self.calls.append(args)
-        if args[:2] == ("issue", "view") and args[2] == "2014":
-            return self.smoke_state
-        if args[:2] == ("issue", "view"):
-            return json.dumps([{"name": n} for n in self.labels])
-        if args[:2] == ("pr", "list"):
-            return json.dumps(self.prs)
-        pr_lists = {
-            "repos/Osasuwu/jarvis/pulls/77/commits": self.commits,
-            "repos/Osasuwu/jarvis/issues/77/comments": self.pr_comments,
-            "repos/Osasuwu/jarvis/pulls/77/comments": self.review_comments,
-            "repos/Osasuwu/jarvis/pulls/77/reviews": self.reviews,
-        }
-        if args[0] == "api" and args[2] in pr_lists:
-            return "\n".join(json.dumps(item) for item in pr_lists[args[2]])
-        if args[0] == "api" and "--paginate" in args:
-            return "\n".join(json.dumps(c) for c in self.comments)
-        if args[0] == "api" and "-X" in args:
-            comment_id = int(args[3].rsplit("/", 1)[1])
-            next(c for c in self.comments if c["id"] == comment_id)["body"] = args[5][
-                len("body=") :
-            ]
-            return ""
-        if args[0] == "api":
-            self.comments.append(
-                {"id": 100 + len(self.comments), "user": BOT, "body": args[3][len("body=") :]}
-            )
-            return ""
-        raise AssertionError(f"unexpected gh call {args}")
+    def _post(self, method, path, body):
+        assert (method, path) == ("POST", LEDGER_COMMENTS)
+        comment = {"id": 100 + len(self.comments), "user": BOT, "body": body["body"]}
+        self.comments.append(comment)
+        return {"id": comment["id"]}
+
+    def _patch(self, method, path, body):
+        assert method == "PATCH"
+        comment_id = int(path.rsplit("/", 1)[1])
+        next(c for c in self.comments if c["id"] == comment_id)["body"] = body["body"]
+        return {"id": comment_id}
+
+    def writes_made(self):
+        return [(method, path) for method, path, _ in self.calls if method != "GET"]
 
     def rows(self):
-        return [lane_ledger.parse(c["body"]) for c in self.comments]
+        return [lane_ledger.parse(c["body"]) for c in self.comments if c["user"] == BOT]
 
 
 @pytest.fixture
-def github(monkeypatch):
-    fake = FakeGitHub()
-    monkeypatch.setattr(lane_ledger, "gh", fake)
-    return fake
+def github():
+    return FakeGitHub()
 
 
 def _add_env(**over):
@@ -335,7 +353,7 @@ def _add_env(**over):
 
 def test_a_run_with_a_pr_gets_a_row_with_its_diff_size_and_tier(github, tmp_path):
     github.prs = [{"number": 77, "additions": 30, "deletions": 12, "body": "Risk: MEDIUM — helper"}]
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     assert github.rows() == [
         {
             "run_id": "9001",
@@ -352,62 +370,129 @@ def test_a_run_with_a_pr_gets_a_row_with_its_diff_size_and_tier(github, tmp_path
             "at": "2026-10-20T12:00:00+00:00",
         }
     ]
+    assert [(method, path) for method, path, _ in github.calls] == [
+        ("GET", HEAD_QUERY),
+        ("GET", f"{PULLS}/77"),
+        ("GET", f"repos/{REPO}/issues/55"),
+        ("GET", f"{LEDGER_COMMENTS}?per_page=100&page=1"),
+        ("POST", LEDGER_COMMENTS),
+    ]
+    # A 5xx after a committed row must not post a second one (Decision d).
+    assert github.once == [("POST", LEDGER_COMMENTS)]
+
+
+def test_add_looks_up_the_runs_pr_by_its_owner_qualified_head_branch(tmp_path):
+    branch = lane_ledger.lane_publish.branch_name(7, "run-99")
+    api = FakeApi(
+        responses={
+            "repos/o/r/pulls?head=": [],
+            "repos/o/r/issues/7": {"labels": []},
+            "repos/x/y/issues/3/comments?": [],
+        }
+    )
+    env = _add_env(LANE_LEDGER_ISSUE="x/y#3", GH_REPO="o/r", ISSUE_NUMBER="7", RUN_ID="run-99")
+    lane_ledger.add_row(api, env, tmp_path, NOW)
+    assert api.calls[0][:2] == ("GET", f"repos/o/r/pulls?head=o:{branch}&state=all&per_page=1")
+    assert api.calls[0][1] == "repos/o/r/pulls?head=o:claude/issue-7-run-99&state=all&per_page=1"
+
+
+def test_an_empty_pr_list_answer_raises_and_writes_no_row(tmp_path):
+    """Base read gh's empty output as "no PR" and wrote a no-PR row; now nothing is written."""
+    transport = FakeTransport([b""])
+    api = load_client().Client("t", user_agent="t", transport=transport)
+    with pytest.raises(ValueError, match="empty response body"):
+        lane_ledger.add_row(api, _add_env(), tmp_path, NOW)
+    assert [(r.method, r.url) for r in transport.requests] == [
+        ("GET", f"https://api.github.com/{HEAD_QUERY}")
+    ]
+
+
+def test_a_502_on_the_row_post_raises_after_exactly_one_post(tmp_path):
+    transport = FakeTransport(
+        [[], {"labels": []}, []] + [http_error(502, "bad gateway") for _ in range(5)]
+    )
+    sleeps = []
+    api = load_client().Client("t", user_agent="t", transport=transport, sleep=sleeps.append)
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        lane_ledger.add_row(api, _add_env(), tmp_path, NOW)
+    assert raised.value.code == 502
+    assert [r.method for r in transport.requests] == ["GET", "GET", "GET", "POST"]
+    assert sleeps == []
+
+
+def test_a_truncated_ledger_listing_on_add_raises_before_any_write(github, tmp_path):
+    github.comments = [{"id": n, "user": BOT, "body": "x"} for n in range(100)]
+    with pytest.raises(load_client().ListingTruncated):
+        lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
+    assert github.writes_made() == []
 
 
 def test_a_pr_with_no_risk_line_is_recorded_as_high(github, tmp_path):
     github.prs = [{"number": 77, "additions": 1, "deletions": 0, "body": "no risk line"}]
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     assert github.rows()[0]["tier"] == "HIGH"
 
 
 def test_a_run_that_escalated_has_no_pr_and_a_dash_for_diff_and_tier(github, tmp_path):
     (tmp_path / "escalation.md").write_text("blocked on X\n", encoding="utf-8")
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     row = github.rows()[0]
     assert (row["outcome"], row["pr"], row["diff"], row["tier"]) == ("escalated", "—", "—", "—")
 
 
 def test_a_run_with_no_pr_and_no_escalation_is_no_artifact(github, tmp_path):
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     assert github.rows()[0]["outcome"] == "no-artifact"
 
 
 def test_an_afk_2_plan_issue_is_recorded_with_that_class(github, tmp_path):
     github.labels = ["afk:2-plan", "status:in-progress"]
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     assert github.rows()[0]["class"] == "afk:2-plan"
 
 
 def test_a_run_while_the_smoke_checkpoint_is_open_is_marked_smoke(github, tmp_path):
-    github.smoke_state = "OPEN"
-    lane_ledger.add_row(_add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW)
+    github.smoke_state = "open"  # REST's spelling; gh's was "OPEN"
+    lane_ledger.add_row(
+        github, _add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW
+    )
     assert github.rows()[0]["window"] == "smoke"
 
 
 def test_a_run_after_the_smoke_checkpoint_closed_is_counted(github, tmp_path):
-    github.smoke_state = "CLOSED"
-    lane_ledger.add_row(_add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW)
+    github.smoke_state = "closed"
+    lane_ledger.add_row(
+        github, _add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW
+    )
     assert github.rows()[0]["window"] == "counted"
 
 
 def test_a_rerun_of_the_same_run_refreshes_its_row_instead_of_adding_one(github, tmp_path):
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     later = datetime(2026, 10, 20, 13, 0, tzinfo=timezone.utc)
     github.prs = [{"number": 77, "additions": 1, "deletions": 1, "body": "Risk: LOW — x"}]
-    lane_ledger.add_row(_add_env(), tmp_path, later)
+    lane_ledger.add_row(github, _add_env(), tmp_path, later)
     assert [(r["outcome"], r["at"]) for r in github.rows()] == [
         ("pr-opened", "2026-10-20T12:00:00+00:00")
+    ]
+    assert github.writes_made() == [
+        ("POST", LEDGER_COMMENTS),
+        ("PATCH", f"repos/{REPO}/issues/comments/100"),
     ]
 
 
 def test_a_rerun_after_the_pr_closed_keeps_the_settled_final_and_window(github, tmp_path):
     github.prs = [{"number": 77, "additions": 1, "deletions": 1, "body": "Risk: LOW — x"}]
-    lane_ledger.add_row(_add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW)
+    lane_ledger.add_row(
+        github, _add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW
+    )
     github.comments[0]["body"] = lane_ledger.render(
         {**github.rows()[0], "final": "merged-unedited", "window": "smoke"}
     )
-    # #2014 is CLOSED in the fake, so a fresh evaluation would say `counted` / `pending`.
-    lane_ledger.add_row(_add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW)
+    # #2014 is closed in the fake, so a fresh evaluation would say `counted` / `pending`.
+    lane_ledger.add_row(
+        github, _add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"), tmp_path, NOW
+    )
     assert [(r["final"], r["window"]) for r in github.rows()] == [("merged-unedited", "smoke")]
 
 
@@ -419,17 +504,17 @@ def test_a_forged_row_for_the_same_run_is_not_taken_for_the_runs_own_row(github,
             "body": lane_ledger.render(_row(9001, repo="Osasuwu/jarvis")),
         }
     )
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     assert [c["user"] for c in github.comments] == ["someone-else", BOT]
 
 
 def test_an_unset_smoke_checkpoint_is_warned_about(github, tmp_path, capsys):
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     assert "LANE_LEDGER_SMOKE_ISSUE" in capsys.readouterr().out
 
 
 def test_without_a_configured_ledger_nothing_is_written(github, tmp_path, capsys):
-    assert lane_ledger.add_row(_add_env(LANE_LEDGER_ISSUE=""), tmp_path, NOW) is None
+    assert lane_ledger.add_row(github, _add_env(LANE_LEDGER_ISSUE=""), tmp_path, NOW) is None
     assert github.calls == []
     assert "::warning::" in capsys.readouterr().out
 
@@ -450,12 +535,12 @@ def _close_env(**over):
 @pytest.fixture
 def open_row(github, tmp_path):
     github.prs = [{"number": 77, "additions": 1, "deletions": 1, "body": "Risk: LOW — x"}]
-    lane_ledger.add_row(_add_env(), tmp_path, NOW)
+    lane_ledger.add_row(github, _add_env(), tmp_path, NOW)
     return github
 
 
 def test_a_merged_pr_of_only_bot_work_finalises_its_row_as_unedited(open_row, capsys):
-    lane_ledger.close_row(_close_env())
+    lane_ledger.close_row(open_row, _close_env())
     assert [r["final"] for r in open_row.rows()] == ["merged-unedited"]
     assert open_row.rows()[0]["outcome"] == "pr-opened"
     assert "human-touched: no\n" in capsys.readouterr().out
@@ -463,34 +548,55 @@ def test_a_merged_pr_of_only_bot_work_finalises_its_row_as_unedited(open_row, ca
 
 def test_a_merged_pr_with_a_human_commit_is_finalised_as_edited(open_row):
     open_row.commits = [_commit(), _commit(author="Osasuwu")]
-    lane_ledger.close_row(_close_env())
+    lane_ledger.close_row(open_row, _close_env())
     assert [r["final"] for r in open_row.rows()] == ["merged-edited"]
 
 
 def test_a_merged_pr_with_a_human_comment_is_finalised_as_edited(open_row, capsys):
     open_row.pr_comments = [{"user": {"login": "Osasuwu"}}]
-    lane_ledger.close_row(_close_env())
+    lane_ledger.close_row(open_row, _close_env())
     assert [r["final"] for r in open_row.rows()] == ["merged-edited"]
     assert capsys.readouterr().out.startswith("human-touched: yes\nissue comment by Osasuwu\n")
 
 
 def test_a_merged_pr_with_only_a_human_approval_is_finalised_as_unedited(open_row):
     open_row.reviews = [{"user": {"login": "Osasuwu"}, "state": "APPROVED"}]
-    lane_ledger.close_row(_close_env())
+    lane_ledger.close_row(open_row, _close_env())
     assert [r["final"] for r in open_row.rows()] == ["merged-unedited"]
+
+
+def _main(github, argv, tokens=None):
+    """`main` with the fake behind its client seam; `tokens` collects the token it was given."""
+
+    def make_client(token):
+        if tokens is not None:
+            tokens.append(token)
+        return github
+
+    lane_ledger.main(["lane_ledger.py", *argv], make_client=make_client)
 
 
 def test_touched_prints_no_for_an_untouched_pr(github, capsys, monkeypatch):
     monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
-    lane_ledger.main(["lane_ledger.py", "touched", "Osasuwu/jarvis#77"])
+    monkeypatch.setenv("GH_TOKEN", "local-token")
+    tokens = []
+    _main(github, ["touched", "Osasuwu/jarvis#77"], tokens)
     assert capsys.readouterr().out == "human-touched: no\n"
+    assert tokens == ["local-token"]
+    assert [path for _, path, _ in github.calls] == [
+        f"{PULLS}/77/commits?per_page=100&page=1",
+        f"repos/{REPO}/issues/77/comments?per_page=100&page=1",
+        f"{PULLS}/77/comments?per_page=100&page=1",
+        f"{PULLS}/77/reviews?per_page=100&page=1",
+    ]
 
 
 def test_touched_prints_yes_and_each_touch(github, capsys, monkeypatch):
     monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
+    monkeypatch.setenv("GH_TOKEN", "local-token")
     github.commits = [_commit(author="Osasuwu")]
     github.review_comments = [{"user": {"login": "Osasuwu"}}]
-    lane_ledger.main(["lane_ledger.py", "touched", "Osasuwu/jarvis#77"])
+    _main(github, ["touched", "Osasuwu/jarvis#77"])
     assert capsys.readouterr().out == (
         "human-touched: yes\ncommit abcdef0: author Osasuwu\nreview comment by Osasuwu\n"
     )
@@ -498,21 +604,151 @@ def test_touched_prints_yes_and_each_touch(github, capsys, monkeypatch):
 
 def test_touched_without_a_ref_exits_with_the_usage(github):
     with pytest.raises(SystemExit, match="usage: lane_ledger.py touched owner/repo#N"):
-        lane_ledger.main(["lane_ledger.py", "touched"])
+        _main(github, ["touched"])
+
+
+@pytest.mark.parametrize(
+    "argv", [["add"], ["close"], ["tally"], ["touched", "Osasuwu/jarvis#77"]], ids=lambda a: a[0]
+)
+def test_a_command_without_gh_token_says_how_to_set_it(github, monkeypatch, tmp_path, argv):
+    """tally/touched run by hand: gh's stored login is no longer read (Decision g)."""
+    for key, value in {**_add_env(), **_close_env()}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("LANE_OUT", str(tmp_path))
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    tokens = []
+    with pytest.raises(SystemExit) as exit_info:
+        _main(github, argv, tokens)
+    assert exit_info.value.code == "GH_TOKEN must be set (e.g. GH_TOKEN=$(gh auth token))"
+    assert tokens == []
+    assert github.calls == []
+
+
+def test_tally_prints_the_verdict_read_from_the_ledger_issue(github, capsys, monkeypatch):
+    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
+    monkeypatch.setenv("GH_TOKEN", "local-token")
+    monkeypatch.setenv("LANE_LEDGER_ISSUE", "Osasuwu/jarvis#3000")
+    github.comments = [
+        {"id": 1, "user": BOT, "body": lane_ledger.render(_row(1))},
+        # Not the bot's: a forged row must not count.
+        {"id": 2, "user": "someone-else", "body": lane_ledger.render(_row(2))},
+    ]
+    _main(github, ["tally"])
+    tally = json.loads(capsys.readouterr().out)
+    assert (tally["counted"], tally["successes"], tally["failures"]) == (1, 1, 0)
+    assert [path for _, path, _ in github.calls] == [f"{LEDGER_COMMENTS}?per_page=100&page=1"]
+
+
+def test_tally_over_a_truncated_ledger_raises_instead_of_counting_part_of_it(github, monkeypatch):
+    monkeypatch.setenv("LANE_BOT_LOGIN", BOT)
+    monkeypatch.setenv("GH_TOKEN", "local-token")
+    monkeypatch.setenv("LANE_LEDGER_ISSUE", "Osasuwu/jarvis#3000")
+    github.comments = [
+        {"id": n, "user": BOT, "body": lane_ledger.render(_row(n))} for n in range(1, 101)
+    ]
+    with pytest.raises(load_client().ListingTruncated):
+        _main(github, ["tally"])
+    assert len(github.calls) == 10
+
+
+def test_close_over_a_truncated_ledger_raises_before_any_write(open_row):
+    open_row.comments.extend(
+        {"id": n, "user": "someone-else", "body": "x"} for n in range(200, 299)
+    )
+    with pytest.raises(load_client().ListingTruncated):
+        lane_ledger.close_row(open_row, _close_env())
+    assert open_row.writes_made() == [("POST", LEDGER_COMMENTS)]  # the add's, nothing after
+    assert [r["final"] for r in open_row.rows()] == ["pending"]
+
+
+def test_a_truncated_touches_listing_raises_before_close_writes(open_row):
+    open_row.reviews = [{"user": {"login": BOT}, "state": "COMMENTED"}] * 100
+    with pytest.raises(load_client().ListingTruncated):
+        lane_ledger.close_row(open_row, _close_env())
+    assert open_row.writes_made() == [("POST", LEDGER_COMMENTS)]
+    assert [r["final"] for r in open_row.rows()] == ["pending"]
+
+
+def test_close_through_main_finalises_the_row_with_a_patch(open_row, monkeypatch, capsys):
+    for key, value in {**_close_env(), "GH_TOKEN": "bot-pat"}.items():
+        monkeypatch.setenv(key, value)
+    _main(open_row, ["close"])
+    assert open_row.writes_made() == [
+        ("POST", LEDGER_COMMENTS),
+        ("PATCH", f"repos/{REPO}/issues/comments/100"),
+    ]
+    assert [r["final"] for r in open_row.rows()] == ["merged-unedited"]
+    assert capsys.readouterr().out.endswith(
+        f"{REPO}#77: ledger row for run 9001 is merged-unedited\n"
+    )
+
+
+def test_add_through_main_builds_its_own_client_and_posts_the_row(monkeypatch, tmp_path, capsys):
+    """The production `_make_client`, with only the transport patched: the token, the user
+    agent, every request path and the REST-to-row mapping (PR size and tier, class label,
+    smoke window, ledger comment authors) are pinned at main level."""
+    transport = FakeTransport(
+        [
+            [{"number": 77}],
+            {"number": 77, "additions": 30, "deletions": 12, "body": "Risk: MEDIUM — helper"},
+            {"number": 55, "labels": [{"name": "status:in-progress"}, {"name": "afk:2-plan"}]},
+            {"number": 2014, "state": "open"},
+            # A forged row for the same run, by someone else: it is not this run's row.
+            [{"id": 5, "user": {"login": "someone-else"}, "body": lane_ledger.render(_row(9001))}],
+            {"id": 101},
+        ]
+    )
+    monkeypatch.setattr(load_client(), "urllib_transport", transport)
+    env = {
+        **_add_env(LANE_LEDGER_SMOKE_ISSUE="Osasuwu/jarvis#2014"),
+        "GH_TOKEN": "bot-pat",
+        "LANE_OUT": str(tmp_path),
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    lane_ledger.main(["lane_ledger.py", "add"])
+    api = "https://api.github.com"
+    assert [
+        (r.method, r.url, r.headers["authorization"], r.headers["user-agent"])
+        for r in transport.requests
+    ] == [
+        ("GET", f"{api}/{HEAD_QUERY}", "Bearer bot-pat", "lane-ledger"),
+        ("GET", f"{api}/{PULLS}/77", "Bearer bot-pat", "lane-ledger"),
+        ("GET", f"{api}/repos/{REPO}/issues/55", "Bearer bot-pat", "lane-ledger"),
+        ("GET", f"{api}/repos/{REPO}/issues/2014", "Bearer bot-pat", "lane-ledger"),
+        ("GET", f"{api}/{LEDGER_COMMENTS}?per_page=100&page=1", "Bearer bot-pat", "lane-ledger"),
+        ("POST", f"{api}/{LEDGER_COMMENTS}", "Bearer bot-pat", "lane-ledger"),
+    ]
+    row = lane_ledger.parse(transport.requests[-1].body["body"])
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00", row.pop("at"))
+    assert row == {
+        "run_id": "9001",
+        "repo": REPO,
+        "issue": "#55",
+        "pr": 77,
+        "lane_sha": "0123456789ab",
+        "class": "afk:2-plan",
+        "tier": "MEDIUM",
+        "diff": 42,
+        "outcome": "pr-opened",
+        "final": "pending",
+        "window": "smoke",
+    }
+    assert capsys.readouterr().out == f"{REPO}#55: ledger row for run 9001 (pr-opened, smoke)\n"
 
 
 def test_a_closed_unmerged_pr_is_finalised_as_closed_unmerged(open_row):
-    lane_ledger.close_row(_close_env(PR_MERGED="false"))
+    lane_ledger.close_row(open_row, _close_env(PR_MERGED="false"))
     assert [r["final"] for r in open_row.rows()] == ["closed-unmerged"]
 
 
 def test_a_pr_that_is_not_the_one_in_the_row_is_left_alone(open_row):
-    lane_ledger.close_row(_close_env(PR_NUMBER="78"))
+    lane_ledger.close_row(open_row, _close_env(PR_NUMBER="78"))
     assert [r["final"] for r in open_row.rows()] == ["pending"]
 
 
 def test_a_branch_outside_the_lane_naming_is_left_alone(open_row):
-    lane_ledger.close_row(_close_env(PR_HEAD_REF="feat/issue-55-9001"))
+    lane_ledger.close_row(open_row, _close_env(PR_HEAD_REF="feat/issue-55-9001"))
     assert [r["final"] for r in open_row.rows()] == ["pending"]
 
 
@@ -632,9 +868,12 @@ def test_every_ledger_command_without_a_bot_login_refuses_to_run(
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("LANE_OUT", str(tmp_path))
+    monkeypatch.setenv("GH_TOKEN", "bot-pat")
+    tokens = []
     with pytest.raises(SystemExit) as exit_info:
-        lane_ledger.main(["lane_ledger.py", command])
+        _main(github, [command], tokens)
     assert exit_info.value.code == 1
+    assert tokens == []
     assert github.calls == []
     assert capsys.readouterr().out.strip() == (
         "::error::lane_ledger: LANE_BOT_LOGIN is empty; the calling workflow must pass the "
