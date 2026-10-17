@@ -2399,15 +2399,28 @@ def test_verdict_that_crashed_over_an_unreadable_check_listing_keeps_the_crash(m
 PATCH_9 = "repos/o/r/check-runs/9"
 
 
-def test_post_check_whose_patch_fails_on_a_red_verdict_posts_a_new_red_check_then_raises():
+@pytest.mark.parametrize(
+    "make_failure",
+    [
+        lambda: http_error(502),
+        # github_client raises these at once, with no retry: the likeliest
+        # single-shot PATCH failures (#2102 review m1).
+        lambda: urllib.error.URLError("dns"),
+        lambda: TimeoutError("timed out"),
+    ],
+    ids=["http-502", "url-error", "timeout"],
+)
+def test_post_check_whose_patch_fails_on_a_red_verdict_posts_a_new_red_check_then_raises(
+    make_failure,
+):
     """Check 9 (green) could not be patched red, so it would stay the latest: a new
     red check carrying the merged ledger is posted, and the PATCH's error still
-    leaves post_check so the job fails."""
-    failed = http_error(502)
+    leaves post_check so the job fails — whatever kind of error the PATCH raised."""
+    failed = make_failure()
     prior = _check(text=_ledger_text(None, ["1001:1"]))
     api = FakeApi({CHECKS_PATH: {"check_runs": [prior]}}, writes={PATCH_9: failed})
     obs = gate.Observation(frozenset({"1001:2"}), frozenset(), False)
-    with pytest.raises(urllib.error.HTTPError) as raised:
+    with pytest.raises(type(failed)) as raised:
         gate.post_check(api, "o/r", SHA, RED, 123, obs)
     assert raised.value is failed
     writes = [(m, p, b["conclusion"]) for m, p, b in api.calls if m != "GET"]
@@ -2433,6 +2446,9 @@ def test_post_check_whose_patch_fails_on_a_green_verdict_posts_nothing_new():
 
 
 def test_post_check_whose_patch_and_red_post_both_fail_raises_the_patch_error(capsys):
+    """The PATCH fails on a red verdict and the red POST that should replace it
+    fails too: the PATCH's error is the one raised, and `::error::` says an earlier
+    check may still stand."""
     failed = http_error(502)
     api = FakeApi(
         {CHECKS_PATH: {"check_runs": [_check()]}},
@@ -2442,7 +2458,28 @@ def test_post_check_whose_patch_and_red_post_both_fail_raises_the_patch_error(ca
         gate.post_check(api, "o/r", SHA, RED, 123)
     assert raised.value is failed
     assert [m for m, _, _ in api.calls] == ["GET", "PATCH", "POST"]
+    assert api.calls[-1][2]["conclusion"] == "failure"
     assert f"an earlier code-gate check may still stand for {SHA}" in capsys.readouterr().err
+
+
+def test_post_check_whose_later_patch_fails_on_a_red_verdict_posts_a_new_red_check():
+    """Two checks of ours: check 9 is patched red, check 10 cannot be. Check 10 may
+    be the latest green, so a new red check is still posted after it, and the
+    PATCH's error leaves post_check (#2102 review m2)."""
+    failed = http_error(502)
+    api = FakeApi(
+        {CHECKS_PATH: {"check_runs": [_check(), _check(id=10)]}},
+        writes={"repos/o/r/check-runs/10": failed},
+    )
+    with pytest.raises(urllib.error.HTTPError) as raised:
+        gate.post_check(api, "o/r", SHA, RED, 123)
+    assert raised.value is failed
+    writes = [(m, p, b["conclusion"]) for m, p, b in api.calls if m != "GET"]
+    assert writes == [
+        ("PATCH", PATCH_9, "failure"),
+        ("PATCH", "repos/o/r/check-runs/10", "failure"),
+        ("POST", "repos/o/r/check-runs", "failure"),
+    ]
 
 
 # --- cmd_verdict end to end: stickiness past the artifact (#2062) ------------
