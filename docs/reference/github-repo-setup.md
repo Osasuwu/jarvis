@@ -197,6 +197,10 @@ fails) clears by re-running the verdict job. When the crash is in reading the SH
 `code-gate` check runs, the verdict cannot patch them, so it posts a new red `verdict-error`
 check (keeping as sticky only a blocking verdict it read in this run) rather than leave an
 earlier green one standing; the re-run patches every check of the App, that one included.
+When patching a check of the App fails on a red verdict, the verdict likewise posts a new red
+check carrying the merged ledger, then fails; on a green verdict it only fails, since the earlier
+check keeps whatever it said. If that red POST fails too, the job fails with an `::error::` that
+an earlier `code-gate` check may still stand for the SHA, and the original error is raised.
 `shared-head` clears by closing the other PR or pushing a distinct commit. `listing-truncated` means a listing the verdict reads (open PRs, the
 review workflow's runs, a run's artifacts, the PR's files, or the SHA's `code-gate` check runs)
 filled its last allowed page, so it may go on unread; the verdict is red rather than decided on
