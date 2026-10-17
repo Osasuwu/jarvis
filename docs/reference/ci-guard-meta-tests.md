@@ -65,18 +65,44 @@ for a sprint.
 `tests/ci/` included, on every PR. Deliberately **not** itself path-filtered —
 path-filtering the suite that exists to catch path-filter bugs would be self-undermining.
 
-## `review` can't see edits to its own workflow
+## `code-gate` can't trust a review of its own workflow
 
-A PR that edits `.github/workflows/code-review.yml` can't get a verdict from the workflow version
-it's changing — the run that would review it either uses the pre-edit definition or skips
-validation outright, so no verdict comment posts. The gate on the other end fails **CLOSED**, not
-open: `auto-merge-enable.yml`'s positive-evidence check (`has_code=true`, no verdict comment,
-nothing failed or in flight ⇒ `exit 1`, #1434) sits atop the head-lineage/PR-state probes (#1228),
-so a review-blind PR reads `review` as RED rather than a silent pass. Verified live on PR #1499
-(runs `31378173152`/`31378378047`, 2026-08-10). This makes such a PR review-blind in the
-`~/.claude/reference/merge-gates.md` → *review-blind carve-out* sense — "gate cannot run" is not
-"gate ran and raised no objection" — and `auto-merge-enable` correctly withholds merge until an
-admin-merge is used per the sanctioned stop-gap case.
+A PR that edits `.github/workflows/code-review.yml` is reviewed by the thing it changes, so its
+review evidence cannot be trusted. `code-gate` therefore never reads that evidence: it reports
+the PR **red** with the code `gate-machinery`, whatever the `Code Review` run uploaded. It fails
+closed, not open.
+
+How that comes about, in the current code:
+
+- `code-review.yml` only produces evidence (a `review-evidence-<attempt>` artifact); it decides
+  nothing. `code-gate` is posted by `code-gate-verdict.yml`, which runs from the default branch
+  (`pull_request_target`, `workflow_run`, `schedule`) and checks out only `.github/scripts`,
+  `agents` and `config` at that branch, never PR code.
+- `evaluate_pr` in `.github/scripts/code_gate_verdict.py` calls `is_gate_machinery` on the
+  PR's changed paths (both sides of a rename) before it looks at evidence or the cosmetic
+  allow-list. The set is the `gate` bucket of the base repo's entry in
+  `config/protected-paths.json`, matched through `agents/path_policy.py`, both read from the
+  default-branch checkout. A PR that edits the list cannot drop itself from it. Today that
+  bucket holds `code-review.yml`, `code-gate-verdict.yml`, `code_gate_verdict.py`,
+  `github_client.py`, `.github/actions/**`, `agents/path_policy.py` and
+  `config/protected-paths.json`, and every one of them gets the same red.
+- The check reads `code-gate: gate-machinery`, with a summary saying the PR changes the gate
+  itself and that a human merges it by review-blind admin-merge, backed by a fresh-session
+  `/code-review` posted with the final SHA.
+- Checks that run earlier can show a different red code on the same PR: `draft`,
+  `files-incomplete` or `files-empty` (in `evaluate_pr`), and `shared-head` (in `cmd_verdict`,
+  before `evaluate_pr`). A sticky `evidence-blocking` or `evidence-unobserved` red recorded in
+  the check's ledger (`apply_ledger`) replaces the posted code too. A list with no `gate`
+  bucket for the repo raises, and that is posted as `verdict-error`. All of these are red;
+  none is a pass.
+
+Tests: `test_gate_machinery_with_clean_evidence_is_red` (red despite clean evidence),
+`test_gate_machinery_paths`, `test_machinery_on_the_old_side_of_a_rename_counts`,
+`test_the_gate_set_is_the_lists_gate_bucket_not_a_literal_in_the_script` and
+`test_a_list_that_cannot_name_the_gate_set_raises`, all in `tests/ci/test_code_gate_verdict.py`.
+
+Such a PR is review-blind. The way to merge it is the review-blind admin-merge carve-out in
+`~/.claude/reference/merge-gates.md`.
 
 ## Related
 
