@@ -161,9 +161,13 @@ jobs:
 
   # The `risk-tier` required check (#2004; grammar and rules: .github/scripts/risk_tier.md).
   # No `name:` key: the check context is the job id, which branch protection binds.
-  # Trusted execution: only the PR's *base* branch is checked out and run, so a PR cannot
-  # shorten the protected-path list or loosen the classifier it is judged by. The PR is
-  # read through the API as data. Not pull_request_target (D11/D11b).
+  # Trust model: the protected-path list (`config/`) comes from the PR's *base* branch, so a
+  # PR cannot shorten it. The classifier comes from the jarvis commit pinned below, and the
+  # pin is chosen by the PR's own copy of this file: a PR that edits the pin runs the new pin
+  # on itself. What constrains the pin is the guard in tests/ci/test_lane_distribution_guard.py
+  # (one 40-hex SHA, an ancestor of origin/main) plus the HIGH floor on `.github/**`; see
+  # docs/reference/lane-host-setup.md -> *Residual*. The PR is read through the API as data.
+  # Not pull_request_target (D11/D11b).
   risk-tier:
     runs-on: ubuntu-latest
     timeout-minutes: 10

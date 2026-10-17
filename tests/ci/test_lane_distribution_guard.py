@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -236,3 +238,48 @@ def test_callers_hold_no_job_steps():
         if "steps" in job or "runs-on" in job
     ]
     assert offenders == []
+
+
+def _jarvis_pins() -> set[str]:
+    pins = set()
+    for workflow in _all_workflows().values():
+        for job in workflow["jobs"].values():
+            found = [job["uses"]] if "uses" in job else []
+            found += [s["uses"] for s in job.get("steps", []) if "uses" in s]
+            for ref in found:
+                match = USES.fullmatch(ref)
+                if match and match["repo"] == "Osasuwu/jarvis" and match["sha"]:
+                    pins.add(match["sha"])
+    return pins
+
+
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True, check=False
+    )
+
+
+def test_the_pin_is_a_commit_on_jarvis_main():
+    # #2087: GitHub resolves a commit that exists only in a fork as `Osasuwu/jarvis@<sha>`, so a
+    # well-formed pin can name code that was never reviewed on main. The pin must be an ancestor
+    # of origin/main. A re-pin PR names an earlier merge commit, which is already on main.
+    if _git("rev-parse", "--is-shallow-repository").stdout.strip() != "false":
+        pytest.skip("shallow or non-git checkout: cannot tell whether the pin is on main")
+    if _git("rev-parse", "--verify", "--quiet", "origin/main^{commit}").returncode != 0:
+        pytest.skip("no origin/main ref: cannot tell whether the pin is on main")
+    pins = _jarvis_pins()
+    assert pins, "no jarvis pin found"
+    off_main = [
+        sha
+        for sha in sorted(pins)
+        if _git("merge-base", "--is-ancestor", sha, "origin/main").returncode != 0
+    ]
+    assert off_main == [], f"pinned commit(s) not on origin/main: {off_main}"
+
+
+def test_ci_runs_the_pin_on_main_check_with_full_history():
+    # The check above skips on a shallow clone; CI's default checkout is depth 1, so without
+    # full history the skip would fire on every PR and the guard would be fail-open.
+    steps = _load(WORKFLOWS / "pytest.yml")["jobs"]["pytest"]["steps"]
+    checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout.get("with", {}).get("fetch-depth") == 0

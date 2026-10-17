@@ -186,6 +186,12 @@ it is a different workflow.
 3. That PR is a `.github/**` change, so it is HIGH and waits for a human approval on its head SHA
    (below).
 
+In jarvis itself the pin must be a commit already on `main` (an earlier merge commit):
+`tests/ci/test_lane_distribution_guard.py` goes red on a pin that is not an ancestor of
+`origin/main`, so a fork-only commit cannot be pinned (#2087). When a later `main` commit touches
+the pinned code, the advisory `lane-pin-drift.yml` run emits a warning naming the pin and the
+commits it is missing; it is not a required check and never fails.
+
 Changing the `model` input or the action version resets the N-run gate count (D13). A lane fix
 does not.
 
