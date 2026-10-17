@@ -141,13 +141,22 @@ def test_start_clean_archives_backlog() -> None:
 
 
 def test_notify_trigger_present() -> None:
-    """Trigger must fire on INSERT into events, mirroring events_canonical pattern."""
+    """Trigger must fire per row inserted into events, mirroring the
+    events_canonical pattern, and notify on the 'events' channel."""
     text = MIGRATION.read_text(encoding="utf-8")
-    assert "CREATE TRIGGER events_notify" in text
-    assert "AFTER INSERT ON events" in text
-    assert "pg_notify(\n    'events'" in text or ("pg_notify(" in text and "'events'" in text), (
-        "pg_notify must use 'events' channel"
+    heads = list(re.finditer(r"CREATE TRIGGER events_notify\b", text))
+    assert len(heads) == 1, f"expected one CREATE TRIGGER events_notify, got {len(heads)}"
+    end = text.find(";", heads[0].start())
+    assert end != -1, "CREATE TRIGGER events_notify has no closing ;"
+    trigger = " ".join(text[heads[0].start() : end].split())
+    assert trigger == (
+        "CREATE TRIGGER events_notify AFTER INSERT ON events "
+        "FOR EACH ROW EXECUTE FUNCTION notify_events_insert()"
     )
+    fn_block = _extract_function_body(text, "notify_events_insert")
+    channel = re.search(r"pg_notify\(\s*'([^']*)'", fn_block)
+    assert channel, f"notify_events_insert() makes no pg_notify call: {fn_block}"
+    assert channel.group(1) == "events"
 
 
 def test_notify_payload_keys() -> None:

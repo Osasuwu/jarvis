@@ -42,8 +42,8 @@ def test_window_caps_at_one_month_and_flags_truncation():
         cap_days=30,
     )
     assert r.truncated is True
-    # capped start is (now - 30d), not the real last-release date
-    assert not r.start.startswith("2026-01-01")
+    # capped start is now - 30d (2026-08-20 - 30d), not the real last-release date
+    assert r.start == "2026-07-21T00:00:00+00:00"
 
 
 def test_no_prior_anchor_at_all_falls_back_to_cap_and_flags_truncation():

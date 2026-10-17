@@ -370,10 +370,10 @@ class TestIntegration:
     """Multi-guard scenarios."""
 
     def test_multiple_guards_could_fire_first_one_wins(self):
-        """If multiple guards would fire, which takes precedence?
+        """When scope creep and no-convergence both fire, scope wins.
 
-        Current design: guards are independent, any one firing terminates.
-        We assert the actual result, not a precedence order.
+        `decide()` documents its guard order: scope, convergence, conflict,
+        attempts — the first guard that fires sets the verdict.
         """
         # Scope creep + no convergence (identical fingerprint set) both present
         history = [
@@ -385,11 +385,9 @@ class TestIntegration:
             history=history,
             initial_files={"a.py"},
         )
-        # Should hit one of the stuck guards
-        assert result.decision in (
-            LoopDecision.STUCK_SCOPE,
-            LoopDecision.STUCK_NO_CONVERGENCE,
-        )
+        # 100 -> 151 LOC is a 51% delta, over the 50% scope threshold.
+        assert result.decision == LoopDecision.STUCK_SCOPE
+        assert result.reason == "LOC delta 51.0% exceeds threshold (50%)"
 
     def test_happy_path_attempt_2_converging(self):
         """Happy path: attempt 2 reaches empty findings → converged."""
