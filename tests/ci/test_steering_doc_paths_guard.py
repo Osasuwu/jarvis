@@ -42,10 +42,6 @@ DEAD_PATH_ALLOWLIST: dict[str, str] = {
     "project-sync.yml": "historical: deleted in #1835",
     "event-dispatch.yml": "historical: retired with the severity ladder (#70)",
     "schema-drift-check.yml": "historical: the original WORKFLOW_TEST_OVERRIDES case",
-    "auto-merge-enable.yml": (
-        "stale: ci-guard-meta-tests.md's review-blind section still describes it as live; "
-        "rewrite is #2048"
-    ),
 }
 
 
