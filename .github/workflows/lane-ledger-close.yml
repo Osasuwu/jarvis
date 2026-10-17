@@ -17,7 +17,7 @@ jobs:
   finalise:
     permissions:
       contents: read
-    uses: Osasuwu/jarvis/.github/workflows/lane-close.yml@88cee2a53a3a7afe0315e0052ddb4eba66210abb
+    uses: Osasuwu/jarvis/.github/workflows/lane-close.yml@2d4b5aeb9b3ff8a0a6c204ccadbec81aea04ad0d
     with:
       bot-login: osasuwu-bot
       ledger-issue: ${{ vars.LANE_LEDGER_ISSUE }}
