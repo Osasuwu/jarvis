@@ -54,8 +54,8 @@ cp .env.example .env
 `uv sync` is idempotent — safe to re-run anytime — and creates `.venv/`, installing the
 locked dependencies from `uv.lock`. Fill in the copied `.env` per [§3](#3-fill-in-secrets-env)
 below. Install the Claude Code plugins listed in [§6](#6-plugins) separately — the
-vendored fork from `.claude/marketplace`, the rest from the official Anthropic
-marketplace.
+vendored fork from this repo's `.claude/marketplace/` (registered as a GitHub source), the
+rest from the official Anthropic marketplace.
 
 ## 3. Fill in secrets (`.env`)
 
@@ -91,14 +91,56 @@ retired in [#1800](https://github.com/Osasuwu/jarvis/issues/1800).** Per decisio
 personal `dotfiles` repo for shell config) — not something synced in from
 this repo by a script.
 
-This repo ships no user-level skills (#1923). The reference instance keeps its skills,
-`CLAUDE.md`, `SOUL.md` and their tests in a private dotfiles repo cloned **next to**
-`~/.claude` (never inside it — `~/.claude` holds live credentials and transcripts), wired in
-per device: `~/.claude/skills` and `~/.claude/reference` are directory junctions (symlinks on
-macOS/Linux) into the clone, and `~/.claude/CLAUDE.md` is a stub of bare `@import` lines
-pointing at the clone. Use [`config/SOUL.md`](../config/SOUL.md) as the template for your
-own `SOUL.md`, and adapt the layout to your own setup. The manual MCP registration checklist below is exactly what
-replaces what the legacy installer would otherwise have auto-seeded.
+This repo ships no user-level skills (#1923). The reference instance
+([`Osasuwu/jarvis-private`](https://github.com/Osasuwu/jarvis-private), private) keeps its
+skills, subagents, hooks, `CLAUDE.md`, `SOUL.md`, `reference/` docs and their tests in a
+private dotfiles repo that is **its own Claude Code plugin marketplace** — Claude Code clones
+and updates it, so nothing is junctioned, symlinked or synced into `~/.claude/` by hand. The
+pattern:
+
+- **The repo is a one-plugin marketplace.** `.claude-plugin/marketplace.json` lists a single
+  plugin whose `source` is `"./"` (the repo root), and `.claude-plugin/plugin.json` gives it
+  a name. Leave `version` out of both: Claude Code then versions the plugin by commit SHA, so
+  every pushed commit is an update.
+- **Skills, subagents and hooks live in the plugin** — `skills/<name>/SKILL.md`,
+  `agents/<name>.md`, and `hooks/hooks.json` (same shape as the `hooks` object in
+  `settings.json`; reference the plugin's own scripts as `${CLAUDE_PLUGIN_ROOT}/...`).
+  Plugin skills are namespaced `/<plugin>:<name>`; the bare `/<name>` also works unless
+  another command already uses that name (e.g. a project skill in `.claude/skills/`).
+  Plugin subagents are named `<plugin>:<agent>`.
+- **Each device declares the marketplace** in `~/.claude/settings.json`:
+
+  ```json
+  {
+    "extraKnownMarketplaces": {
+      "<marketplace>": {
+        "source": { "source": "github", "repo": "<you>/<dotfiles-repo>" },
+        "autoUpdate": true
+      }
+    },
+    "enabledPlugins": { "<plugin>@<marketplace>": true }
+  }
+  ```
+
+  `autoUpdate` defaults to `false` for third-party marketplaces, so set it explicitly. A
+  private repo is cloned with the device's normal git credentials (credential helper or SSH
+  key).
+- **`~/.claude/CLAUDE.md` stays a stub** of bare `@import` lines, each on its own line,
+  pointing into the marketplace clone at
+  `~/.claude/plugins/marketplaces/<marketplace>/` (e.g. its `CLAUDE.md` and `SOUL.md`).
+  Claude Code doesn't load a `CLAUDE.md` at a plugin root, so the import is how rules ride
+  the same auto-updated checkout.
+- **Per-device settings stay per device.** A plugin's own `settings.json` applies only
+  `agent` and `subagentStatusLine`; `permissions`, `env`, `autoMode`, `defaultMode` and the
+  like stay in each device's `~/.claude/settings.json`.
+
+Edit the rules and skills in a separate clone of the repo and push — never in
+`~/.claude/plugins/marketplaces/`, which Claude Code updates in place. The reference
+repo's README (*Per-device setup*) has the one-command install for a new device. Use
+[`config/SOUL.md`](../config/SOUL.md) as the template for your own `SOUL.md`, and adapt the
+layout to your own setup. Plugins enabled only in user settings don't load in cloud
+sessions (see [§9](#9-cloud-scheduled-tasks)). The manual MCP registration checklist below is
+exactly what replaces what the legacy installer would otherwise have auto-seeded.
 
 ## 5. Manual MCP registration checklist
 
@@ -134,12 +176,39 @@ Install commands below for each plugin:
 
 | Plugin | Source | Install |
 |---|---|---|
-| `code-review` | **Fork** of `anthropics/claude-plugins-official`, tag-pinned in this repo's `.claude/marketplace/` ([`docs/reference/vendored-plugin-pins.md`](reference/vendored-plugin-pins.md)). Kept forked: upstream silently drops review results when a sub-reviewer runs backgrounded under headless CI (`claude -p`) — jarvis#1239 / PR #1237. | `claude plugins marketplace add ./.claude/marketplace` (from the repo root), then `/plugin install code-review@jarvis-fork-plugins` |
+| `code-review` | **Fork** of `anthropics/claude-plugins-official`, tag-pinned in this repo's `.claude/marketplace/` ([`docs/reference/vendored-plugin-pins.md`](reference/vendored-plugin-pins.md)). Kept forked: upstream silently drops review results when a sub-reviewer runs backgrounded under headless CI (`claude -p`) — jarvis#1239 / PR #1237. | Declare the marketplace in `~/.claude/settings.json` (below), then `/plugin install code-review@jarvis-fork-plugins` |
 | `pr-review-toolkit` | Official Anthropic marketplace, unmodified | `/plugin install pr-review-toolkit@claude-plugins-official` |
 | `session-report` | Official Anthropic marketplace, unmodified | `/plugin install session-report@claude-plugins-official` |
 | `hookify` | Official Anthropic marketplace, unmodified | `/plugin install hookify@claude-plugins-official` |
 | `claude-md-management` | Official Anthropic marketplace, unmodified | `/plugin install claude-md-management@claude-plugins-official` |
 | `mcp-server-dev` | Official Anthropic marketplace, unmodified | `/plugin install mcp-server-dev@claude-plugins-official` |
+
+The fork's marketplace file sits at `.claude/marketplace/.claude-plugin/marketplace.json`,
+not at the repo root, and `claude plugin marketplace add` has no option for a non-default
+marketplace path — so declare it as a GitHub source in `~/.claude/settings.json`, with a
+sparse checkout of just that directory:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "jarvis-fork-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "Osasuwu/jarvis",
+        "path": ".claude/marketplace/.claude-plugin/marketplace.json",
+        "sparsePaths": [".claude/marketplace"]
+      },
+      "autoUpdate": true
+    }
+  }
+}
+```
+
+This tracks `main` on GitHub and works on any device, with or without a clone of this
+repo. If you registered the fork the old way (`claude plugins marketplace add
+./.claude/marketplace`, a `directory` source), remove that marketplace first — removing a
+marketplace also uninstalls every plugin installed from it, so run the
+`/plugin install code-review@jarvis-fork-plugins` again after switching.
 
 If `/plugin install <id>@claude-plugins-official` fails with an unknown-marketplace
 error, the official marketplace isn't registered on your device yet — check with
@@ -211,7 +280,10 @@ Run /research
 ```
 
 `/research` selects discovery mode automatically when no topic argument is supplied.
-Updating a skill in your own `~/.claude/` automatically updates scheduled-task behavior.
+Cloud sessions (routines) don't load plugins enabled only in your user settings or skills
+from your machine's `~/.claude/`: a skill a cloud task calls has to be enabled for your
+claude.ai account or committed to the repo's `.claude/skills/`. Desktop scheduled tasks run
+locally and do load your plugin, so they pick up each pushed skill change on its next update.
 
 ## 10. Lockfile regeneration
 
@@ -262,4 +334,4 @@ Then open the project in Claude Code and run `/triage`.
 | Supabase schema (declarative target) | `supabase/schema.sql` |
 | Vendored plugin fork + its pin | `.claude/marketplace/`, [`docs/reference/vendored-plugin-pins.md`](reference/vendored-plugin-pins.md) |
 | Project-scoped skills (jarvis-only) | `.claude/skills/` |
-| User-level skills source of truth | your private dotfiles repo, junctioned into `~/.claude/skills/` — not in this repo (#1923, see [§4](#4-claude--make-it-your-own-private-dotfiles-repo)) |
+| User-level skills source of truth | your private dotfiles repo, delivered as a Claude Code plugin from its own marketplace (clone at `~/.claude/plugins/marketplaces/<marketplace>/`) — not in this repo (#1923, see [§4](#4-claude--make-it-your-own-private-dotfiles-repo)) |

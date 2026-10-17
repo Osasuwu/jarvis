@@ -57,10 +57,11 @@ current status"). If a field would be wrong in two weeks, it belongs in GitHub, 
 ## Skills live in the operator's private dotfiles repo
 
 User-level skills have one copy (#1923): `skills/<name>/SKILL.md` in the operator's private
-dotfiles repo, which `~/.claude/skills` junctions into — so the loaded copy is the tested copy.
+dotfiles repo, which each device loads as a Claude Code plugin from that repo's own marketplace
+— so the loaded copy is the tested copy.
 Their structural tests and CI live in that repo too; this repo carries no skill copy (rare
 project overrides under `.claude/skills/` aside). Edit in the clone, run its tests, commit and
-push; other devices `git pull` (see [`docs/setup.md`](../setup.md)).
+push; plugin auto-update brings the commit to every device (see [`docs/setup.md`](../setup.md)).
 
 ## Other pointers
 
