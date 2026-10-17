@@ -8,7 +8,7 @@ implementation of thresholds/classification here (AC1, AC6).
 
 from __future__ import annotations
 
-from agents.implement_plan_gate import PRIORITY_CRITICAL_LABEL, evaluate_trigger
+from agents.implement_plan_gate import evaluate_trigger
 from agents.plan_review_config import (
     Class2Thresholds,
     Class3Criteria,
@@ -62,32 +62,16 @@ def test_config_driven_no_hardcoded_threshold():
     assert result.requires_plan is True
 
 
-# ── AC3: priority:critical carve-out skips only the plan requirement ────────
+# ── #2110: a priority:critical label never waives the class-2 plan ─────────
 
 
-def test_priority_critical_skips_plan_requirement_on_class_2():
-    result = evaluate_trigger(
-        _CFG, paths=("mcp-memory/server.py",), labels=(PRIORITY_CRITICAL_LABEL,)
-    )
-    assert result.classification == 2, "carve-out must not mask the real classification"
-    assert result.carve_out is True
-    assert result.requires_plan is False
-
-
-def test_priority_critical_is_a_noop_on_class_1():
-    result = evaluate_trigger(_CFG, paths=("agents/foo.py",), labels=(PRIORITY_CRITICAL_LABEL,))
-    assert result.classification == 1
-    assert result.carve_out is True
-    assert result.requires_plan is False
-
-
-# ── AC4: class-1 issues see no behavior change ───────────────────────────────
-
-
-def test_class_1_never_carries_carve_out_when_no_critical_label():
-    result = evaluate_trigger(_CFG, paths=("agents/foo.py",))
-    assert result.carve_out is False
-    assert result.requires_plan is False
+def test_priority_critical_label_does_not_skip_plan_requirement_on_class_2():
+    """#2110: the labels come from the caller, not from GitHub, so a
+    priority:critical label (applied by a bot, or merely claimed) must not
+    skip the planner + critic panel on a class-2 change."""
+    result = evaluate_trigger(_CFG, paths=("mcp-memory/server.py",), labels=("priority:critical",))
+    assert result.classification == 2
+    assert result.requires_plan is True
 
 
 # ── #1707: class 3 (true-HITL) never gets requires_plan silently rewritten ──
