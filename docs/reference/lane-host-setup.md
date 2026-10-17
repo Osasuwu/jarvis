@@ -76,14 +76,25 @@ The escalation comment then says it was sent to the operator. When neither resol
 and comment still land without a mention, and the step fails so that someone sees it.
 
 Applying a label takes triage access or more, so a resolved labeller can always be asked to
-review. Releasing a HIGH/CRITICAL `risk-tier` hold still takes an admin's approval of the head
-SHA, so a non-admin labeller's review alone does not release it.
+review. Today, releasing a HIGH/CRITICAL `risk-tier` hold still takes an admin's approval of the
+head SHA, so a non-admin labeller's review alone does not release it. The policy
+(`docs/decisions/2026-Q4.md`, 2026-10-17) lets the labeller release their own lane PR on a host
+that opts in. The code for it is #2107, and a host with non-admin labellers needs it before it
+adopts the lane ([Who releases HIGH](#enablement-order-d16), step 0).
 
 ## Enablement order (D16)
 
 Do the steps in this order. A caller that goes live before its labels and `risk-tier` exist runs
 without the hold, and open PRs sit on a stale required-check set.
 
+0. **Enforceability, and who releases HIGH.** Settle both before anything else.
+   - The host must be able to make `risk-tier` a required check (step 3.3), which takes a public
+     repo, a paid plan or an organisation. A private repo on the Free plan cannot. There the hold is
+     advisory only, and the lane's auto-merge fails.
+   - Name who releases a HIGH/CRITICAL lane PR. On a personal-account repo the roles are the owner
+     (admin) and write collaborators, so only the owner can release unless the host opts in to
+     labeller release (#2107). Labellers without admin need that opt-in before the callers go
+     live.
 1. **Labels.** Create `agent:dispatch`, `afk:1-auto`, `afk:2-plan`, `afk:3-human`,
    `needs-human`, `status:in-progress` and `status:review` (`gh label create <name>
    --description "…"`). `needs-human` is what an escalation applies; publish moves the issue
