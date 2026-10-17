@@ -94,6 +94,11 @@ class TestEscalateJob:
         assert env["LANE_OPERATOR"] == "${{ inputs.operator }}"
         assert env["LANE_BOT_LOGIN"] == "${{ inputs.bot-login }}"
 
+    def test_the_labeller_is_the_dispatch_events_sender(self, escalate):
+        """#2051: the escalation goes to whoever applied `agent:dispatch`."""
+        env = _step(escalate, RUN_STEP)["env"]
+        assert env["LANE_LABELER"] == "${{ github.event.sender.login }}"
+
     def test_worker_facts_come_from_the_worker_job(self, escalate):
         env = _step(escalate, RUN_STEP)["env"]
         assert env["WORKER_RESULT"] == "${{ needs.worker.result }}"

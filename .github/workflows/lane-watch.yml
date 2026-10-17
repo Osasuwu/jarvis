@@ -3,7 +3,9 @@ name: Lane Watch
 # Escalation marker, PR side (#2011), as a reusable workflow (#2013): when a
 # watched check goes red on an open `claude/issue-*` PR, label the PR
 # `needs-human` and comment once with the failed check, its run link and an
-# @-mention of the operator. Green checks, pending checks and non-lane PRs get
+# @-mention of whoever applied `agent:dispatch` for the PR's run (the run's
+# `actor`, #2051; the `operator` input when that is not a user, and the
+# comment says so). Green checks, pending checks and non-lane PRs get
 # nothing. Rules and the settledness test for `code-gate`:
 # .github/scripts/lane_escalation.py.
 #
@@ -24,7 +26,7 @@ on:
         type: string
         required: true
       operator:
-        description: Login @-mentioned when a PR needs a human (D14); empty means no mention.
+        description: "Fallback login @-mentioned when a PR needs a human and its run's dispatcher cannot be resolved (D14, #2051)."
         type: string
         default: ""
       watched-checks:

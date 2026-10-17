@@ -31,7 +31,7 @@ on:
         type: string
         required: true
       operator:
-        description: Login @-mentioned when a run or PR needs a human (D14); empty means no mention.
+        description: "Fallback login asked when a run or PR needs a human and whoever applied `agent:dispatch` cannot be resolved (D14, #2051)."
         type: string
         default: ""
       ledger-issue:
@@ -456,8 +456,9 @@ jobs:
   # default branch fresh (no `ref`), takes the worker's output as inert files,
   # and runs `lane_publish.py` from the pinned lane checkout: fetch the bundle into
   # exactly `claude/issue-N-<run_id>`, push that one ref, open the PR with
-  # `Closes #N`, ask the operator to review only on a HIGH/CRITICAL `Risk:` line
-  # (D10), and move the issue to `status:review` (D14).
+  # `Closes #N`, ask for a review only on a HIGH/CRITICAL `Risk:` line (D10),
+  # and move the issue to `status:review` (D14). The review goes to whoever
+  # applied `agent:dispatch`, else the `operator` input (#2051).
   publish:
     needs: [intake, worker]
     # `always()` so a worker that timed out after committing is still
@@ -525,6 +526,9 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           RUN_ID: ${{ github.run_id }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Whoever applied `agent:dispatch` reviews (#2051); LANE_REVIEWER only
+          # when that is the bot, an app or no one.
+          LANE_LABELER: ${{ github.event.sender.login }}
           LANE_REVIEWER: ${{ inputs.operator || github.repository_owner }}
           LANE_BOT_LOGIN: ${{ inputs.bot-login }}
         run: python3 .lane-src/.github/scripts/lane_publish.py
@@ -593,8 +597,9 @@ jobs:
   # The escalation marker (#2011, D14): a run that passed intake and ended with
   # no PR on its branch (the worker escalated, crashed, timed out, ran out of
   # turns, or `publish` failed) leaves `needs-human` on the issue and one bot
-  # comment with the run id, the operator @-mention (the `operator`
-  # input) and either the worker's `escalation.md` or the cause. A human
+  # comment with the run id, an @-mention of whoever applied `agent:dispatch`
+  # (#2051; the `operator` input when that is the bot, an app or no one, and
+  # the comment says so) and either the worker's `escalation.md` or the cause. A human
   # decides, removes `needs-human`, and re-applies `agent:dispatch`; intake
   # refuses the issue until then. The issue's assignees are never touched.
   # Rules and the cause table: .github/scripts/lane_escalation.py.
@@ -653,6 +658,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           RUN_ID: ${{ github.run_id }}
+          LANE_LABELER: ${{ github.event.sender.login }}
           LANE_OPERATOR: ${{ inputs.operator }}
           LANE_BOT_LOGIN: ${{ inputs.bot-login }}
           WORKER_RESULT: ${{ needs.worker.result }}

@@ -247,7 +247,7 @@ def test_no_bundle_publishes_nothing(lane):
 # --- main: the job's entry point --------------------------------------------------------
 
 
-def _main_env(monkeypatch, lane, *, body="Risk: LOW — docs\n"):
+def _main_env(monkeypatch, lane, *, body="Risk: LOW — docs\n", labeler="labeler-a"):
     """The publish step's environment, run from the publisher checkout as in lane.yml."""
     (lane.out / "pr-body.md").write_text(body, encoding="utf-8")
     output = lane.out.parent / "github-output"
@@ -261,6 +261,8 @@ def _main_env(monkeypatch, lane, *, body="Risk: LOW — docs\n"):
         "DEFAULT_BRANCH": "main",
         "LANE_OUT": str(lane.out),
         "LANE_REVIEWER": "Osasuwu",
+        "LANE_LABELER": labeler,
+        "LANE_BOT_LOGIN": "osasuwu-bot",
         "GITHUB_OUTPUT": str(output),
     }.items():
         monkeypatch.setenv(name, value)
@@ -326,6 +328,51 @@ def test_main_builds_its_own_client_with_the_bot_token_and_the_lane_publish_agen
         "body": "Risk: LOW — docs\n\nCloses #2007\n",
     }
     assert output.read_text(encoding="utf-8") == "pr=77\n"
+
+
+def _requested(api):
+    return [b["reviewers"] for m, p, b in api.calls if p.endswith("/requested_reviewers")]
+
+
+def test_a_high_risk_pr_asks_whoever_applied_the_dispatch_label(lane, monkeypatch, gh_cli, capsys):
+    """#2051 AC1: the run's own labeller reviews its PR, not the operator."""
+    _main_env(monkeypatch, lane, body="Risk: HIGH — logic\n", labeler="labeler-b")
+    lane_publish.main(make_client=lambda token: lane.api)
+    assert _requested(lane.api) == [["labeler-b"]]
+    assert "::warning::" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("labeler", ["", "osasuwu-bot", "Osasuwu-Bot", "dependabot[bot]"])
+def test_an_unresolvable_labeller_falls_back_to_the_reviewer_and_says_so(
+    lane, monkeypatch, gh_cli, capsys, labeler
+):
+    """#2051 AC2: a bot, an app or no sender leaves the operator's review request."""
+    _main_env(monkeypatch, lane, body="Risk: HIGH — logic\n", labeler=labeler)
+    lane_publish.main(make_client=lambda token: lane.api)
+    assert _requested(lane.api) == [["Osasuwu"]]
+    assert capsys.readouterr().out.startswith(
+        "::warning::the person who applied `agent:dispatch` could not be resolved"
+        " (LANE_LABELER); a review request goes to LANE_REVIEWER\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "login"),
+    [
+        ("labeler-a", "labeler-a"),
+        (" labeler-a ", "labeler-a"),
+        ("osasuwu-bot", None),
+        ("OSASUWU-BOT", None),
+        ("dependabot[bot]", None),
+        ("@labeler-a", None),
+        ("", None),
+        (None, None),
+        ("a" * 40, None),
+        ("name\n@other", None),
+    ],
+)
+def test_human_login_is_a_user_login_other_than_the_bot(raw, login):
+    assert lane_publish.human_login(raw, "osasuwu-bot") == login
 
 
 def test_a_502_on_the_pr_create_is_not_retried_and_writes_no_pr_output(lane, monkeypatch, gh_cli):

@@ -28,7 +28,7 @@ callers (`agent-dispatch.yml`, `lane-red-check-watcher.yml`, `lane-ledger-close.
 | `bot-login` | input, required | the lane bot's login (D1) |
 | `bot-email` | input, required | its commit email (`<id>+<login>@users.noreply.github.com`) |
 | `model` | input, required | the worker model; a D13 fixed axis, changing it resets the count |
-| `operator` | input | login @-mentioned when a run escalates |
+| `operator` | input | fallback login for escalations and review requests, used when whoever applied `agent:dispatch` cannot be resolved ([Who receives escalations](#who-receives-escalations)) |
 | `ledger-issue`, `ledger-smoke-issue` | input | `owner/repo#N` of the N-run gate tracking issue, and of the checkpoint issue whose open state marks rows `smoke`; empty `ledger-issue` writes no row (a warning only) |
 | `class2-afk` | input, boolean, default false | whether `afk:2-plan` issues run unattended |
 | `CLAUDE_CODE_OAUTH_TOKEN`, `AGENT_DISPATCH_PAT` | secrets | worker auth; the bot's PAT |
@@ -51,9 +51,33 @@ model starts, or the PR opens malformed, without them:
   worker prompt cites them.
 - A GitHub.com repository: the lane locates its own code through `job.workflow_repository` and
   `job.workflow_sha`, which GitHub Enterprise Server does not provide.
-- A reviewer for HIGH/CRITICAL lane PRs: the `operator` input, else the repository owner. An
-  org-owned repo should set `operator`; with neither a person nor a reviewer the PR still opens,
-  held by `waiting-human-review` and `risk-tier`, with no reviewer requested.
+- A fallback reviewer for HIGH/CRITICAL lane PRs: the `operator` input, else the repository
+  owner. An org-owned repo should set `operator`. With neither a person nor a reviewer, the PR
+  still opens, held by `waiting-human-review` and `risk-tier`, with no reviewer requested.
+
+## Who receives escalations
+
+A lane run belongs to the person who applied `agent:dispatch` to its issue (#2051). That person
+gets the HIGH/CRITICAL review request and the @-mention on every escalation:
+
+| Surface | How the lane finds the labeller |
+|---|---|
+| Review request (`publish`) and no-PR escalation (`escalate`) in `lane.yml` | the `issues: labeled` event's sender (`github.event.sender.login`, kept on a re-run) |
+| Red-check escalation (`lane-watch.yml`) | the `actor` of the run named in the PR's `claude/issue-<N>-<run_id>` branch (not `triggering_actor`, which is whoever re-ran it) |
+
+The labeller is unresolved, and the lane falls back to the `operator` input, when it:
+
+- is the lane bot;
+- is an app (`name[bot]`, or a run actor whose type is not `User`);
+- is not a login; or
+- cannot be read.
+
+The escalation comment then says it was sent to the operator. When neither resolves, the label
+and comment still land without a mention, and the step fails so that someone sees it.
+
+Applying a label takes triage access or more, so a resolved labeller can always be asked to
+review. Releasing a HIGH/CRITICAL `risk-tier` hold still takes an admin's approval of the head
+SHA, so a non-admin labeller's review alone does not release it.
 
 ## Enablement order (D16)
 
