@@ -188,9 +188,10 @@ it is a different workflow.
 
 In jarvis itself the pin must be a commit already on `main` (an earlier merge commit):
 `tests/ci/test_lane_distribution_guard.py` goes red on a pin that is not an ancestor of
-`origin/main`, so a fork-only commit cannot be pinned (#2087). When a later `main` commit touches
-the pinned code, the advisory `lane-pin-drift.yml` run emits a warning naming the pin and the
-commits it is missing; it is not a required check and never fails.
+`origin/main`, so a fork-only commit cannot be pinned (#2087). On every `main` push that touches
+the pinned code or moves the pin, the advisory `lane-pin-drift.yml` run reports the pin as
+current or stale; when stale it emits a warning naming the pin and the commits it is missing. It
+is not a required check and never fails: a pin it cannot resolve is a warning as well.
 
 Changing the `model` input or the action version resets the N-run gate count (D13). A lane fix
 does not.
@@ -207,3 +208,8 @@ whatever its tier (`.github/scripts/risk_tier.md`, residual risk 2). That defenc
 `risk_tier.py` always passes judges itself. The independent control is human review of
 `.github/workflows/**` changes (CODEOWNERS or a ruleset on that path), plus the lane PAT having no
 `workflow` scope, so the lane cannot push such a change itself.
+
+In jarvis the pin-on-main guard (`tests/ci/test_lane_distribution_guard.py`) is in-tree too: the
+PR it judges can turn it off by editing the test or the pytest command in `pytest.yml`. Such a
+PR touches `.github/**` and is HIGH, but the HIGH hold is skipped for an admin author, so for
+those PRs human review (`waiting-human-review`) and code-gate are the only backstop.

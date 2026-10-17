@@ -165,7 +165,8 @@ jobs:
   # PR cannot shorten it. The classifier comes from the jarvis commit pinned below, and the
   # pin is chosen by the PR's own copy of this file: a PR that edits the pin runs the new pin
   # on itself. What constrains the pin is the guard in tests/ci/test_lane_distribution_guard.py
-  # (one 40-hex SHA, an ancestor of origin/main) plus the HIGH floor on `.github/**`; see
+  # (one 40-hex SHA, an ancestor of origin/main) plus the HIGH floor on `.github/**`, which
+  # does not hold an admin author's PR (risk-tier skips the HIGH hold for admins); see
   # docs/reference/lane-host-setup.md -> *Residual*. The PR is read through the API as data.
   # Not pull_request_target (D11/D11b).
   risk-tier:
