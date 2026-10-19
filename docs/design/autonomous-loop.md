@@ -1,5 +1,12 @@
 # Autonomous Work Loop — Architecture
 
+> **Superseded — historical reference only (#1959).** The Supabase `events` queue, the
+> `autonomous-loop` orchestrator skill and the event-driven GitHub Actions producers described
+> here were retired with the reactive core (#1802, #1803) and the memory stack (#1801). The
+> unattended implementation path today is lane intake (`lane.yml`, #1960); see
+> [`docs/reference/afk-delegation.md`](../reference/afk-delegation.md). Kept as a design record
+> only; do not treat any table, skill or schedule below as live.
+
 > Source of truth for the Jarvis Autonomous Work Loop pillar.
 > Created: 2026-04-08. **Status (2026-05-17):** Phase 1 (time-based perception + daily orchestrator) and Phase 2 (event-driven GitHub Actions → Supabase events) SHIPPED — see §Evolution at the bottom. Skill/task tables below describe the originally-planned layout; several perception skills have been absorbed or renamed (`/intel` and `/nightly-research` → `/research`; `/morning-brief` and `/risk-radar` → `/status` family — `/status` itself was orphaned, replaced by Type 1 `status-record` cron task; old `/reflect` weekly outcome review was repurposed into the cross-session comms audit in #510). Treat the schedule and Files tables as PRD baseline; canonical list of currently-registered scheduled tasks is the `~/.claude/scheduled-tasks/` directory contents.
 

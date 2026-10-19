@@ -12,8 +12,8 @@ minutes. Supersedes the old `SETUP.md` / `config/SETUP.md` / `docs/telegram-setu
 - [Claude Code](https://claude.ai/code) installed and authenticated (`claude --version`)
 - [GitHub CLI](https://cli.github.com) installed and authenticated (`gh auth status`)
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/) (`pip install uv`)
-- [Supabase](https://supabase.com) account (free tier is enough) — powers jarvis's reactive
-  core (task queue, event stream, sandcastle provenance); memory itself is native, file-based
+- [Supabase](https://supabase.com) account (free tier is enough) — backs the tables still in use
+  (goals, comm_patterns, credential_registry, audit_log, review_debt); memory itself is native, file-based
   (`~/.claude/projects/<project>/memory/`), not Supabase-backed
 - Node.js 18+ (some MCP servers run via `npx`)
 - Windows 11 (primary), Linux/macOS also supported
@@ -71,7 +71,7 @@ SUPABASE_KEY=your-anon-key-here
 > API → Project URL + anon public key.
 
 Apply the migrations under `supabase/migrations/` (in filename order) to your project via the
-Supabase SQL Editor or CLI to create the reactive-core tables (task queue, events, sandcastle).
+Supabase SQL Editor or CLI to create those tables. (The reactive-core tables the early migrations also create are retired; see `supabase/schema.sql`'s header.)
 `supabase/schema.sql` is the declarative target shape those migrations converge on, not a
 from-scratch bootstrap script — see [MCP & environment](reference/mcp-and-environment.md).
 
