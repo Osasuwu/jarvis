@@ -1,5 +1,12 @@
 # Sandcastle integration — design
 
+> **Retired — historical reference only (#1959).** The Sandcastle subsystem (Docker AFK loop,
+> watchdog, `sandcastle` label, the `.sandcastle/` tree and its RLS-gated `events_canonical`
+> path) was demolished with the reactive core (#1802, #1803). Nothing described below is
+> operational. The unattended implementation path today is lane intake (`lane.yml`, #1960);
+> see [`docs/reference/afk-delegation.md`](../reference/afk-delegation.md). Kept so the
+> rationale survives.
+
 **Purpose.** This document is the queryable architectural narrative for the Sandcastle subsystem. It points at the load-bearing decisions; rationale lives in the `decision_made` episodes referenced by UUID. When a future session asks "why does sandcastle work this way?" — `memory_get` the cited episode.
 
 **Scope.** Docker-isolated AFK coding-agent loop that picks `sandcastle`-labelled issues, works one at a time on local Ollama inside a sterile container, and opens PRs without ever merging. Production target is the Workshop PC (always-on physical host; AFK loop runs inside safe-hours window — no persistent software daemon).

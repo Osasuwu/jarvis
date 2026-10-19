@@ -12,7 +12,7 @@ pillar (narrative only) → goal (Type A) → milestone (capability + PRD) → s
 2. **Milestone closes on capability shipping.** All slices merged → close. State=open with 0 open issues is a bug.
 3. **PRD lives in milestone description.** No separate epic-issue layer. `/to-spec` writes to milestone description.
 4. **Single slice = no milestone.** Drive-by fixes, isolated improvements: just an issue + PR, no milestone ceremony.
-5. **No numerical WIP limit on active milestones.** Self-throttle by owner-attention (HITL/grill/review) load. AFK milestones (delegated to subagents/sandcastle) cost ~0 attention.
+5. **No numerical WIP limit on active milestones.** Self-throttle by owner-attention (HITL/grill/review) load. AFK milestones (delegated to the AFK lane) cost ~0 attention.
 6. **Architecture sweep triggered on milestone close** when ≥3 closed slices. SessionStart surfaces "Milestone N closed — architecture sweep recommended" if no sweep ran since closed_at. (Automatic trigger not yet implemented — see *Architecture sweep at milestone close* below.)
 
 ## Mechanics not covered by the rules above

@@ -34,7 +34,8 @@ Group by family, not by ad-hoc naming. jarvis's current families:
   unattended edit at all. (`class:2`/`class:3`/`tier:1-auto`/`tier:2-review`/`tier:3-human`/
   `unsafe-for-afk` are retired names from an earlier scheme — don't copy them into a new
   repo's label set even if you still see them on older issues here.)
-- **`sandcastle`** — AFK queue: issue is safe for an unattended agent to pick up
+- **`agent:dispatch`** — the AFK lane's trigger: `/dispatch` applies it, `agent-dispatch.yml` picks the issue up
+  (the `sandcastle` label it replaced is retired; it survives only as a marker on old issues)
 - **`draft`** — rough idea, not ready for triage
 - **`decision-made`** — research done, decision documented in the issue
 - Dependabot auto-labels (don't hand-create, they appear on first Dependabot PR):
