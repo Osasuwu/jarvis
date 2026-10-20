@@ -1,9 +1,10 @@
 version: 2
 updates:
   # Python dependencies (root pyproject.toml + uv.lock) (#1313)
-  # Dependabot updates the ranges in pyproject.toml; uv.lock is regenerated
-  # automatically by dependabot-lockfile.yml on each dependabot push. CI
-  # verifies parity with `uv lock --check` in the lockfile-check job.
+  # Dependabot updates the ranges in pyproject.toml but does not regenerate
+  # uv.lock (the workflow that did was deleted in #1835). CI verifies parity
+  # with `uv lock --check` in the lockfile-check job, which goes red on a
+  # Dependabot PR until a maintainer runs `uv lock` and pushes the lockfile.
   #
   # Monthly + grouped (#1964): a Dependabot PR is untrusted for the code-gate
   # (its review is a maintainer `workflow_dispatch`, see

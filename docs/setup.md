@@ -263,8 +263,7 @@ Required secrets in GitHub repo settings (Settings → Secrets and variables →
 |--------|---------|---------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | `code-review.yml` | `anthropics/claude-code-action` for PR review |
 
-`GITHUB_TOKEN` is auto-provisioned by GitHub Actions — no setup needed. `PROJECT_SYNC` is
-optional — falls back to `github.token` if not set.
+`GITHUB_TOKEN` is auto-provisioned by GitHub Actions — no setup needed.
 
 ## 9. Cloud scheduled tasks
 
@@ -288,9 +287,9 @@ locally and do load your plugin, so they pick up each pushed skill change on its
 ## 10. Lockfile regeneration
 
 CI installs from `uv.lock` to guarantee reproducible dependency resolution.
-`.github/workflows/dependabot-lockfile.yml` regenerates it automatically when Dependabot
-bumps a range in `pyproject.toml`. For manual regeneration (e.g. adding a dependency
-locally):
+Nothing regenerates it automatically: when Dependabot bumps a range in `pyproject.toml`,
+`lockfile-check` (`uv lock --check`) goes red until a maintainer regenerates it. To
+regenerate (after a Dependabot bump, or when adding a dependency locally):
 
 ```bash
 uv lock --project .
