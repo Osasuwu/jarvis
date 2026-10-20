@@ -9,7 +9,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
-DOC = Path(__file__).resolve().parents[1] / "docs" / "reference" / "failure-class-coverage.md"
+ROOT = Path(__file__).resolve().parents[1]
+DOC = ROOT / "docs" / "reference" / "failure-class-coverage.md"
 CLASSES = {
     "absence-read-as-success": 12,
     "claims-from-plausibility": 16,
@@ -41,13 +42,25 @@ def test_matrix_has_one_row_per_pinned_protection():
     assert len({(r[1], r[2]) for r in rows}) == 60
 
 
+def _names_a_gate(gate):
+    """A covered row must name the gate: a path in this repo, or one in a named sibling repo."""
+    if "jarvis-private" in gate or "jarvis-oss" in gate:
+        return True
+    return any((ROOT / span.split()[0]).is_file() for span in re.findall(r"`([^`]+)`", gate))
+
+
 def test_every_row_has_a_status_and_the_evidence_it_needs():
-    for num, _cls, _prot, gate, status, issue in _rows(DOC.read_text(encoding="utf-8")):
-        assert status in STATUSES, (num, status)
-        if status == "covered":
-            assert re.search(r"`[^`]+`", gate), (num, "covered row names no gate path")
-        else:
-            assert _ISSUE.search(issue), (num, "partial/absent row has no issue link")
+    rows = _rows(DOC.read_text(encoding="utf-8"))
+    assert rows
+    bad = []
+    for num, _cls, _prot, gate, status, issue in rows:
+        if status not in STATUSES:
+            bad.append((num, f"status {status!r}"))
+        elif status == "covered" and not _names_a_gate(gate):
+            bad.append((num, "covered row names no existing gate file"))
+        elif status != "covered" and not _ISSUE.search(issue):
+            bad.append((num, "partial/absent row has no issue link"))
+    assert not bad
 
 
 def test_summary_counts_equal_the_table():

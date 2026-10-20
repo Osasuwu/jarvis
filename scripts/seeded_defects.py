@@ -17,14 +17,20 @@ reports ``no-verdict`` until a person marks the PR ready. The harness never does
 never merges, closes, re-runs or dispatches anything: every command it runs passes
 ``check_command``, an allowlist, first.
 
-``collect`` classifies from the review evidence artifact only (``flagged`` = a reviewed,
-blocking verdict on the head SHA; ``missed`` = reviewed, not blocking), never from the
-``code-gate`` check colour, which is also red for a draft or a pending review.
+``collect`` classifies from the review evidence artifact only, never from the
+``code-gate`` check colour, which is also red for a draft or a pending review. Evidence
+must pass code-gate's own ``validate_findings`` and be for the head SHA against main;
+then ``flagged`` = blocking with a finding whose class is one the fixture planted *and*
+whose file is a fixture target, ``flagged-other`` = blocking on anything else (not a
+detection), ``missed`` = reviewed, not blocking. Every run needs a new ``--tag``: a
+class whose branch already exists is skipped, with or without an open PR.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
+import importlib.util
 import io
 import json
 import os
@@ -70,7 +76,7 @@ class Fixture(NamedTuple):
 
 
 class Classification(NamedTuple):
-    kind: str  # flagged | missed | no-verdict
+    kind: str  # flagged | flagged-other | missed | no-verdict
     reason: str
     findings: tuple  # ((finding class, file), ...)
     gate: str | None  # the code-gate check conclusion, recorded, never decisive
@@ -146,8 +152,23 @@ def _no_verdict(reason, gate):
     return Classification("no-verdict", reason, (), gate)
 
 
-def classify(evidence, head_sha, gate):
-    """Classify one PR from its review evidence. ``gate`` is only recorded."""
+@functools.cache
+def _code_gate():
+    """code-gate's own module, loaded by path: the evidence rules are read, not copied."""
+    path = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "code_gate_verdict.py"
+    spec = importlib.util.spec_from_file_location("_seeded_code_gate_verdict", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def classify(evidence, head_sha, gate, fx):
+    """Classify one PR from its review evidence against fixture ``fx``.
+
+    ``gate`` is only recorded. A blocking verdict counts as ``flagged`` only when a
+    finding has a class the fixture planted and names one of its target files.
+    """
     if evidence is None:
         return _no_verdict("no review evidence", gate)
     if not isinstance(evidence, dict) or evidence.get("schema") != 1:
@@ -160,24 +181,51 @@ def classify(evidence, head_sha, gate):
         return _no_verdict(f"review skipped: {evidence.get('reason')}", gate)
     if evidence.get("status") != "reviewed":
         return _no_verdict(f"evidence unreadable: status {evidence.get('status')!r}", gate)
-    blocking, findings = evidence.get("blocking"), evidence.get("findings")
-    if not isinstance(blocking, bool) or not isinstance(findings, list):
-        return _no_verdict("evidence unreadable: blocking/findings", gate)
-    pairs = tuple(
-        (str(f.get("class")), str(f.get("file"))) for f in findings if isinstance(f, dict)
+    if evidence.get("base_ref") != BASE:
+        return _no_verdict(
+            f"evidence is against base {evidence.get('base_ref')!r}, not {BASE}", gate
+        )
+    errors = _code_gate().validate_findings(evidence)
+    if errors:
+        return _no_verdict("evidence invalid: " + "; ".join(errors), gate)
+    pairs = tuple((f["class"], f["file"]) for f in evidence["findings"])
+    if not evidence["blocking"]:
+        return Classification("missed", "reviewed, not blocking", pairs, gate)
+    if any(c in fx.expected_finding_classes and f in fx.files for c, f in pairs):
+        return Classification(
+            "flagged", "reviewed, blocking on a planted class in a target file", pairs, gate
+        )
+    return Classification(
+        "flagged-other",
+        "reviewed, blocking, but no finding names a planted class in a target file",
+        pairs,
+        gate,
     )
-    if blocking:
-        return Classification("flagged", "reviewed, blocking", pairs, gate)
-    return Classification("missed", "reviewed, not blocking", pairs, gate)
 
 
-def select_run(runs, pr_number, head_sha):
-    """The latest Code Review run whose title names this PR at this head."""
+# A run that ended like this produced no review: the `edited` trigger's skipped job, a
+# cancelled or never-started run. A failed run stays a candidate: blocking can fail it.
+_NO_REVIEW_CONCLUSIONS = frozenset(
+    {"skipped", "cancelled", "timed_out", "startup_failure", "stale", "neutral"}
+)
+
+
+def matching_runs(runs, pr_number, head_sha):
+    """Code Review runs whose title names this PR at this head, newest first."""
     title = f"Code review PR #{pr_number} @ {head_sha}"
     matching = [
         r for r in runs if r.get("display_title") == title and r.get("head_sha") == head_sha
     ]
-    return max(matching, key=lambda r: r.get("created_at") or "", default=None)
+    return sorted(matching, key=lambda r: r.get("created_at") or "", reverse=True)
+
+
+def candidate_runs(runs, pr_number, head_sha):
+    """The matching runs that completed and may hold a review, newest first."""
+    return [
+        r
+        for r in matching_runs(runs, pr_number, head_sha)
+        if r.get("status") == "completed" and r.get("conclusion") not in _NO_REVIEW_CONCLUSIONS
+    ]
 
 
 def select_artifact(artifacts):
@@ -217,49 +265,73 @@ def render_row(fx, number, sha, result, run_url):
 
 # --- commands -------------------------------------------------------------------
 
-_GIT_LOCAL = frozenset({"rev-parse", "read-tree", "hash-object", "update-index", "write-tree",
-                        "commit-tree", "ls-tree"})  # fmt: skip
-_GH_API_WRITE_FLAGS = frozenset({"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"})
+_GIT_LOCAL = frozenset({"rev-parse", "hash-object", "commit-tree", "ls-tree"})
+# These read or write the index, so they run only on a temporary one (GIT_INDEX_FILE):
+# on the default index they would rewrite the caller's staging area.
+_GIT_INDEX = frozenset({"read-tree", "update-index", "write-tree"})
+_BRANCH = re.compile(rf"^{re.escape(BRANCH_PREFIX)}[a-z0-9-]+-{_TAG.pattern[1:-1]}$")
+_SHA_ = r"[0-9a-f]{40}"
+# Every path the harness reads with `gh api`; each is a GET, since no field flag is allowed.
+_API_PATH = re.compile(
+    rf"^repos/{re.escape(REPO)}/("
+    rf"actions/workflows/{re.escape(REVIEW_WORKFLOW)}/runs\?head_sha={_SHA_}&per_page=100"
+    rf"|actions/runs/[0-9]+/artifacts"
+    rf"|actions/artifacts/[0-9]+/zip"
+    rf"|commits/{_SHA_}/check-runs\?check_name=code-gate"
+    rf")$"
+)
 
 
-def _value(cmd, flag):
-    return cmd[cmd.index(flag) + 1] if flag in cmd[:-1] else None
+def _is_branch(value):
+    return bool(_BRANCH.match(value))
 
 
-def check_command(cmd):
-    """Raise ``UnsafeCommand`` unless ``cmd`` is one of the shapes the harness needs.
+def check_command(cmd, env=None):
+    """Raise ``UnsafeCommand`` unless ``cmd`` is exactly one of the shapes the harness builds.
 
-    An allowlist: local git plumbing, ``git fetch origin main``, a push of one commit
-    to a new ``refs/heads/seeded-defect/*`` ref, ``gh pr list``, a draft ``gh pr
-    create`` into main from a seeded-defect branch, and read-only ``gh api``.
+    Each shape is matched token for token, so an extra, repeated or attached flag
+    (``-B dev``, ``-XPOST``, ``--method=PUT``) never passes: local git plumbing (the
+    index-touching part only with a temporary ``GIT_INDEX_FILE`` in ``env``), ``git fetch
+    origin main``, ``git ls-remote`` of one seeded-defect ref, a push of one commit to a
+    ``refs/heads/seeded-defect/*`` ref, the harness's ``gh pr list`` and draft ``gh pr
+    create``, and ``gh api <path>`` (a GET) for the four paths ``collect`` reads.
     """
     cmd = list(cmd)
-    head = cmd[:2]
-    if head == ["git", "fetch"] and cmd[2:] == ["origin", BASE]:
+    if cmd == fetch_cmd():
         return
-    if head[:1] == ["git"] and len(cmd) > 1 and cmd[1] in _GIT_LOCAL:
+    if cmd[:1] == ["git"] and len(cmd) > 1 and cmd[1] in _GIT_LOCAL:
         return
-    if head == ["git", "push"] and len(cmd) == 4 and cmd[2] == "origin":
+    if cmd[:1] == ["git"] and len(cmd) > 1 and cmd[1] in _GIT_INDEX:
+        if env and env.get("GIT_INDEX_FILE"):
+            return
+        raise UnsafeCommand(f"index plumbing needs a temporary GIT_INDEX_FILE: {cmd}")
+    if cmd[:4] == ["git", "ls-remote", "--heads", "origin"] and len(cmd) == 5:
+        if cmd[4].startswith("refs/heads/") and _is_branch(cmd[4][len("refs/heads/") :]):
+            return
+    if cmd[:3] == ["git", "push", "origin"] and len(cmd) == 4:
         src, _, dst = cmd[3].partition(":")
-        if _SHA.match(src) and dst.startswith("refs/heads/" + BRANCH_PREFIX):
+        if _SHA.match(src) and dst.startswith("refs/heads/") and _is_branch(dst[11:]):
             return
-    if cmd[:3] == ["gh", "pr", "list"]:
+    if len(cmd) > 6 and _is_branch(cmd[6]) and cmd == pr_list_cmd(cmd[6]):
         return
-    if cmd[:3] == ["gh", "pr", "create"]:
-        if (
-            "--draft" in cmd
-            and _value(cmd, "--base") == BASE
-            and (_value(cmd, "--head") or "").startswith(BRANCH_PREFIX)
-        ):
-            return
-    if head == ["gh", "api"] and not _GH_API_WRITE_FLAGS & set(cmd):
+    if (
+        len(cmd) == 16
+        and cmd[:9] == ["gh", "pr", "create", "--repo", REPO, "--draft", "--base", BASE, "--head"]
+        and _is_branch(cmd[9])
+        and cmd[10] == "--title"
+        and cmd[11].startswith(TITLE_PREFIX)
+        and cmd[12] == "--body-file"
+        and cmd[14:] == ["--label", HOLD_LABEL]
+    ):
+        return
+    if len(cmd) == 3 and cmd[:2] == ["gh", "api"] and _API_PATH.match(cmd[2]):
         return
     raise UnsafeCommand(f"not in the harness allowlist: {cmd}")
 
 
 def run(cmd, *, env=None, capture=True, binary=False):
     """Run an allowlisted command; stdout is returned, a non-zero exit raises."""
-    check_command(cmd)
+    check_command(cmd, env)
     proc = subprocess.run(
         cmd, cwd=ROOT, env=env, check=True, capture_output=capture, text=not binary
     )
@@ -268,6 +340,10 @@ def run(cmd, *, env=None, capture=True, binary=False):
 
 def fetch_cmd():
     return ["git", "fetch", "origin", BASE]
+
+
+def ls_remote_cmd(branch):
+    return ["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}"]
 
 
 def push_cmd(commit, branch):
@@ -286,6 +362,14 @@ def pr_create_cmd(fx, branch, body_file):
 
 def api_get_cmd(path):
     return ["gh", "api", path]
+
+
+def runs_path(sha):
+    return f"repos/{REPO}/actions/workflows/{REVIEW_WORKFLOW}/runs?head_sha={sha}&per_page=100"
+
+
+def checks_path(sha):
+    return f"repos/{REPO}/commits/{sha}/check-runs?check_name=code-gate"
 
 
 # --- subcommands ----------------------------------------------------------------
@@ -325,6 +409,10 @@ def cmd_open(args):
         if existing:
             print(f"{fx.cls}: open PR #{existing['number']} already has head {branch}; skipped")
             continue
+        if run(ls_remote_cmd(branch)).strip():
+            # A push whose PR create failed: re-pushing would fail non-fast-forward.
+            print(f"{fx.cls}: {branch} exists on origin with no open PR; use a new --tag")
+            continue
         base = run(["git", "rev-parse", f"origin/{BASE}"]).strip()
         commit = build_commit(fx, base)
         run(push_cmd(commit, branch))
@@ -336,29 +424,29 @@ def cmd_open(args):
     return 0
 
 
-def _evidence_for(number, sha):
-    runs = json.loads(
-        run(
-            api_get_cmd(
-                f"repos/{REPO}/actions/workflows/{REVIEW_WORKFLOW}/runs?head_sha={sha}&per_page=100"
-            )
-        )
-    ).get("workflow_runs", [])
-    review = select_run(runs, number, sha)
-    if review is None or review.get("status") != "completed":
-        return None, review
-    arts = json.loads(run(api_get_cmd(f"repos/{REPO}/actions/runs/{review['id']}/artifacts")))
-    art = select_artifact(arts.get("artifacts", []))
-    if art is None:
-        return None, review
-    blob = run(api_get_cmd(f"repos/{REPO}/actions/artifacts/{art['id']}/zip"), binary=True)
-    return read_evidence_zip(blob), review
+def collect_one(number, sha, fx):
+    """``(Classification, run url)`` for one seeded PR at head ``sha``.
+
+    A review still running is ``review pending``. Otherwise the evidence comes from the
+    newest completed run that holds a live evidence artifact, so a later run that ended
+    without a review (the ``edited`` trigger's skipped job, a cancel) does not hide it.
+    """
+    runs = json.loads(run(api_get_cmd(runs_path(sha)))).get("workflow_runs", [])
+    gate = _gate_conclusion(sha)
+    matching = matching_runs(runs, number, sha)
+    if any(r.get("status") != "completed" for r in matching):
+        return _no_verdict("review pending", gate), None
+    for review in candidate_runs(runs, number, sha):
+        arts = json.loads(run(api_get_cmd(f"repos/{REPO}/actions/runs/{review['id']}/artifacts")))
+        art = select_artifact(arts.get("artifacts", []))
+        if art is not None:
+            blob = run(api_get_cmd(f"repos/{REPO}/actions/artifacts/{art['id']}/zip"), binary=True)
+            return classify(read_evidence_zip(blob), sha, gate, fx), review.get("html_url")
+    return classify(None, sha, gate, fx), (matching[0].get("html_url") if matching else None)
 
 
 def _gate_conclusion(sha):
-    checks = json.loads(
-        run(api_get_cmd(f"repos/{REPO}/commits/{sha}/check-runs?check_name=code-gate"))
-    )
+    checks = json.loads(run(api_get_cmd(checks_path(sha))))
     runs = checks.get("check_runs", [])
     if not runs:
         return None
@@ -375,9 +463,8 @@ def cmd_collect(args):
             print(f"| {fx.cls} | none (no open PR from `{branch}`) | | | | | |")
             continue
         sha = pr["headRefOid"]
-        evidence, review = _evidence_for(pr["number"], sha)
-        result = classify(evidence, sha, _gate_conclusion(sha))
-        print(render_row(fx, pr["number"], sha, result, (review or {}).get("html_url")))
+        result, run_url = collect_one(pr["number"], sha, fx)
+        print(render_row(fx, pr["number"], sha, result, run_url))
     return 0
 
 
