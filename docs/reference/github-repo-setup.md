@@ -74,11 +74,10 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line for every author, and on a HIGH/CRITICAL PR by a non-admin author (the lane's bot, Dependabot, a write collaborator) until an admin human's APPROVED review sits on the current head SHA. An admin-authored HIGH/CRITICAL PR is green, with its tier in the summary (#2088). Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
 
 These six required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
-`waiting-human-review`, `risk-tier`) are the target set on jarvis's `main`. The first five have
-been enforced since #1893 (read back from the live branch-protection settings, 2026-09-24);
-`risk-tier` (#2004) is added by the operator once the check is live, which is why the binding
-block below names it before the live setting does. Before that, #1796/#1835 had cut it down
-to the first four, deleting the former `owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the
+`waiting-human-review`, `risk-tier`) are the set enforced on jarvis's `main` (read back from the
+live branch-protection settings, 2026-10-20). The first five have been enforced since #1893;
+`risk-tier` (#2004) joined them once the check was live, and the binding block below carries
+all six. Before that, #1796/#1835 had cut it down to the first four, deleting the former `owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the
 review retry wrapper and the advisory `issue-checks.yml`; don't copy any of those from older
 docs. Repo-custom gates layer on top of this floor as needed; they don't need to match another
 repo's set.
@@ -238,7 +237,7 @@ dispatches the review (`workflow_dispatch` with `pr_number` + `head_sha`, run in
 gate machinery (`code-review.yml`, `code-gate-verdict.yml`, `code_gate_verdict.py`,
 `github_client.py`, local actions, `agents/path_policy.py`, `config/protected-paths.json`),
 which merge only through the review-blind admin-merge carve-out in
-`~/.claude/reference/merge-gates.md`, backed by a fresh-session `/code-review` posted against
+`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`, backed by a fresh-session `/code-review` posted against
 the final SHA.
 
 A review dispatched at a PR that does not exist, is closed or merged, or whose head has moved fails the
@@ -395,7 +394,7 @@ was the evidence every weak test arrived with. A repo that copies this template 
 `test-quality.md` alongside it, or drops the lines that cite it.
 
 The Risk Assessment tiers cross-reference the #1512 risk-assessment carve-out named in
-`~/.claude/reference/merge-gates.md` — keep the tier names (LOW/MEDIUM/HIGH/CRITICAL)
+`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md` — keep the tier names (LOW/MEDIUM/HIGH/CRITICAL)
 in sync with that doc if either changes.
 
 ## 7. Issue templates

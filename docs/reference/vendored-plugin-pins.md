@@ -3,8 +3,8 @@
 `.claude/marketplace/.claude-plugin/marketplace.json` vendors exactly one plugin via a
 `git-subdir` source: **`code-review`** (`Osasuwu/claude-plugins-official`, fork of the
 upstream Anthropic plugin), pinned to an immutable **git tag** rather than `ref: main` —
-it gates every PR's `review` required check, so a change there must be a deliberate,
-reviewed bump, not something that silently rides in on the next merge to the fork's
+it produces the review evidence behind every PR's `code-gate` required check, so a change
+there must be a deliberate, reviewed bump, not something that silently rides in on the next merge to the fork's
 `main` (#1209). It stays a fork because it carries a jarvis-specific fix: a binding
 "SYNCHRONOUS EXECUTION" directive (no backgrounded sub-reviewers, all results in hand
 before turn end) that upstream's version lacks — without it, a backgrounded reviewer's
@@ -21,8 +21,8 @@ every PR in the repo until fixed (#1520 — regression from the first attempt at
 `hookify`, `claude-md-management`, `mcp-server-dev` — are no longer vendored** (#1797).
 They were unmodified upstream Anthropic plugins with no jarvis-specific behavior riding
 on them, so mirroring them locally added maintenance surface (this doc, the manifest
-entry, `scripts/setup-device.py`'s `CLAUDE_PLUGINS`) with no corresponding benefit. They
-now install directly from the official `claude-plugins-official` marketplace (registered
+entry, `scripts/setup-device.py`'s `CLAUDE_PLUGINS`, since deleted with the installer in #1800)
+with no corresponding benefit. They now install directly from the official `claude-plugins-official` marketplace (registered
 once via `claude plugins marketplace add claude-plugins-official`); see
 [`docs/setup.md`](../setup.md) for the install checklist.
 
