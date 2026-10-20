@@ -29,8 +29,7 @@ Group by family, not by ad-hoc naming. jarvis's current families:
 - **`needs-*`** — pipeline-stage gates: `needs-triage`, `needs-research`, `needs-prd`,
   `needs-grill`, `needs-plan`, `needs-rebase`
 - **`afk:2-plan`** — plan-review: shared-surface/high-churn change requiring a locked
-  `## Plan` section before an unattended agent may edit (pairs with `plan:locked` once
-  the plan is hashed and locked). `afk:3-human` is the harder tier: true HITL, no
+  `## Plan` section before an unattended agent may edit. `afk:3-human` is the harder tier: true HITL, no
   unattended edit at all. (`class:2`/`class:3`/`tier:1-auto`/`tier:2-review`/`tier:3-human`/
   `unsafe-for-afk` are retired names from an earlier scheme — don't copy them into a new
   repo's label set even if you still see them on older issues here.)
