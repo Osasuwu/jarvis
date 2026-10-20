@@ -163,6 +163,7 @@ def test_main_reads_the_default_branch_with_the_job_token_and_exits_on_drift(
         "DEFAULT_BRANCH": "main",
         "GH_TOKEN": "t0ken",
         "BINDING_DOC": str(doc),
+        "DOC_ROOT": str(tmp_path / "no-docs"),
     }.items():
         monkeypatch.setenv(key, value)
     assert drift.main(make_client=lambda token: tokens.append(token) or api) == 1
@@ -187,3 +188,177 @@ def test_the_probe_job_runs_the_script_with_a_read_only_token():
     (step,) = [s for s in job["steps"] if "run" in s]
     assert step["run"] == "python3 .github/scripts/branch_protection_drift.py"
     assert step["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
+
+# --- Doc claims: prose that names a required check (#1894) -----------------------------------
+# A doc that calls `X` a required check is a claim about live protection. When `X` is not
+# required live, a reader trusts a gate that is not there; the probe reports it.
+
+
+def _names(text, path="doc.md"):
+    return [name for _, _, name in drift.claimed_required_checks(path, text)]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Here `alpha` is a required check.",
+        "Here `alpha` is a **required** check.",
+        "It gates the `alpha` required check.",
+        "The required check `alpha` turns red.",
+        "The host must make `alpha` a required check first.",
+        "Add `alpha` to the required status checks of the default branch.",
+    ],
+)
+def test_each_sentence_form_extracts_the_claimed_name(text):
+    assert _names(text) == ["alpha"]
+
+
+def test_a_sentence_wrapped_across_lines_extracts_on_the_line_of_the_name():
+    text = "intro line\nbecause\n`alpha` is a **required**\ncheck, and more.\n"
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", 3, "alpha")]
+
+
+def test_an_enumeration_after_required_checks_extracts_each_listed_name():
+    text = "Gated by three required checks: `alpha`, `beta`, and `gamma`.\n"
+    assert _names(text) == ["alpha", "beta", "gamma"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The `alpha` run is not a required check and never fails.",
+        "These are not required checks: `alpha`, `beta`.",
+        "The required check `alpha` is no longer required.",
+        "It runs as the `alpha/beta.yml` required check.",
+        "It runs as the `alpha.yml` required check.",
+        "These required checks on `main` are listed below.",
+        "Here `alpha` is a check that is required somewhere.",
+    ],
+)
+def test_negated_path_branch_and_loose_sentences_extract_nothing(text):
+    assert _names(text) == []
+
+
+def test_the_agents_md_merge_rule_sentence_extracts_exactly_the_six_checks():
+    # Verbatim from AGENTS.md "Merge rules" (the glosses carry `Risk:`, which is no check).
+    text = (
+        "Merging is gated by six required CI checks on the default branch: `code-gate` (the code-review\n"
+        "verdict), `require-linked-issue`, `pytest`, `gitleaks`, `waiting-human-review`, and `risk-tier`\n"
+        "(the PR's `Risk:` line and diff; a non-admin author's HIGH+ stays red until an admin human approves the head SHA) —\n"
+        "branch-protection enforced, no cooperation needed from you.\n"
+    )
+    assert _names(text) == [
+        "code-gate",
+        "require-linked-issue",
+        "pytest",
+        "gitleaks",
+        "waiting-human-review",
+        "risk-tier",
+    ]
+
+
+def test_a_token_in_running_prose_after_the_list_is_not_an_item():
+    text = "Two required checks (`alpha`, `beta`) are the target set; see `gamma` for more.\n"
+    assert _names(text) == ["alpha", "beta"]
+
+
+def test_fenced_code_is_not_scanned():
+    text = "```\n`alpha` is a required check.\n```\n"
+    assert _names(text) == []
+
+
+REAL_CLAIMS = drift.scan_docs(_root)
+
+
+def test_the_real_docs_claim_exactly_these_required_checks():
+    assert sorted({(path, name) for path, _, name in REAL_CLAIMS}) == [
+        (".github/scripts/risk_tier.md", "risk-tier"),
+        ("AGENTS.md", "code-gate"),
+        ("AGENTS.md", "gitleaks"),
+        ("AGENTS.md", "pytest"),
+        ("AGENTS.md", "require-linked-issue"),
+        ("AGENTS.md", "risk-tier"),
+        ("AGENTS.md", "waiting-human-review"),
+        ("docs/reference/ci-guard-meta-tests.md", "Detect secrets with gitleaks"),
+        ("docs/reference/ci-guard-meta-tests.md", "pytest"),
+        ("docs/reference/github-repo-setup.md", "code-gate"),
+        ("docs/reference/github-repo-setup.md", "gitleaks"),
+        ("docs/reference/github-repo-setup.md", "pytest"),
+        ("docs/reference/github-repo-setup.md", "require-linked-issue"),
+        ("docs/reference/github-repo-setup.md", "risk-tier"),
+        ("docs/reference/github-repo-setup.md", "waiting-human-review"),
+        ("docs/reference/lane-host-setup.md", "risk-tier"),
+        ("docs/reference/vendored-plugin-pins.md", "review"),
+    ]
+
+
+def test_every_claimed_name_not_tracked_as_stale_is_in_the_documented_binding():
+    # So a PR that drops a check from the binding while prose still names it fails `pytest`.
+    binding = drift.parse_documented_binding(DOC)
+    known = {(path, name) for path, name, _ in drift.KNOWN_STALE}
+    untracked = [c for c in REAL_CLAIMS if (c[0], c[2]) not in known and c[2] not in binding]
+    assert untracked == []
+
+
+def test_every_known_stale_entry_still_matches_a_claim_in_the_real_docs():
+    assert drift.unmatched_known_stale(REAL_CLAIMS) == []
+
+
+def test_a_known_stale_entry_whose_claim_is_gone_is_reported():
+    entry = ("docs/x.md", "alpha", 1)
+    assert drift.unmatched_known_stale([("docs/x.md", 4, "beta")], known=(entry,)) == [entry]
+
+
+def test_run_fails_on_a_claimed_check_that_is_not_required_live(capsys):
+    live = _live(**{"code-gate": 3969106})
+    doc = '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n'
+    claims = [("docs/a.md", 7, "code-gate"), ("docs/b.md", 12, "ghost")]
+    assert drift.run(doc, lambda: live, claims) == 1
+    out = capsys.readouterr().out
+    assert "docs/b.md:12: `ghost` is named as a required check, not required live" in out
+    assert "docs/a.md" not in out
+
+
+def test_run_warns_on_a_tracked_stale_claim_and_exits_zero(capsys):
+    live = _live(**{"code-gate": 3969106})
+    doc = '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n'
+    (path, name, issue) = drift.KNOWN_STALE[0]
+    assert drift.run(doc, lambda: live, [(path, 3, name)]) == 0
+    assert (
+        f"{path}:3: `{name}` is named as a required check, not required live (tracked #{issue})"
+        in (capsys.readouterr().out)
+    )
+
+
+def test_main_fails_on_a_doc_claim_under_doc_root_that_is_not_required_live(
+    monkeypatch, tmp_path, capsys
+):
+    doc = tmp_path / "binding.md"
+    doc.write_text(
+        '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "root").mkdir()
+    (tmp_path / "root" / "AGENTS.md").write_text(
+        "Here `ghost` is a required check.\n", encoding="utf-8"
+    )
+    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": 3969106})})
+    for key, value in {
+        "GITHUB_REPOSITORY": "owner/repo",
+        "DEFAULT_BRANCH": "main",
+        "GH_TOKEN": "t0ken",
+        "BINDING_DOC": str(doc),
+        "DOC_ROOT": str(tmp_path / "root"),
+    }.items():
+        monkeypatch.setenv(key, value)
+    assert drift.main(make_client=lambda token: api) == 1
+    assert "AGENTS.md:1: `ghost` is named as a required check" in capsys.readouterr().out
+
+
+def test_the_workflow_sparse_checkout_covers_every_scanned_root():
+    (checkout,) = [s for s in WORKFLOW["jobs"]["drift"]["steps"] if "uses" in s]
+    entries = checkout["with"]["sparse-checkout"].split()
+    for root in drift.SCANNED_ROOTS:
+        assert any(root == e or root.startswith(e + "/") for e in entries), root
+    assert len(drift.SCANNED_ROOTS) >= 7
