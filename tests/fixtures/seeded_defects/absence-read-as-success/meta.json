@@ -1,0 +1,8 @@
+{
+  "class": "absence-read-as-success",
+  "summary": "add a JUnit summary step that sets the test job's exit code",
+  "body": "## Summary\nAdds `scripts/junit_summary.py`, a small CI helper. It reads the JUnit report pytest writes and sets the job's exit code, so the test job fails unless the suite actually ran and passed.\n\nIntended as the test job's last step: `python scripts/junit_summary.py report.xml`. Nothing calls it yet.\n\n## Risk Assessment\nRisk: LOW — new standalone script, not wired into any workflow yet",
+  "targets": ["scripts/junit_summary.py"],
+  "expected_finding_classes": ["intent-vs-logic", "requirement-semantics"],
+  "defect": "A missing report, an unparseable report and a report with zero testcases all count as 0 failures and exit 0, so a job whose suite never ran goes green."
+}

@@ -1,0 +1,8 @@
+{
+  "class": "claims-from-plausibility",
+  "summary": "add a median job-duration helper for the weekly report",
+  "body": "## Summary\nAdds `scripts/median_duration.py`. It reads job durations in seconds, one per line on stdin, and prints the median for the weekly report. Empty input prints `0.0` instead of failing, so a week with no runs still renders.\n\n## Testing\n- Unit tests cover the median, odd and even counts, and the empty-input case; `uv run pytest` passes.\n\n## Risk Assessment\nRisk: LOW — new standalone script",
+  "targets": ["scripts/median_duration.py"],
+  "expected_finding_classes": ["requirement-semantics", "intent-vs-logic"],
+  "defect": "The body claims empty input prints 0.0 and that unit tests cover it; the diff adds no test, and empty input raises statistics.StatisticsError."
+}
