@@ -37,8 +37,15 @@ def _load_by_path(name, path):
 
 
 def _seed_module(fixture_class, target):
+    # Compile and exec the source directly: a SourceFileLoader would cache bytecode in a
+    # __pycache__ beside the seed, inside the fixture tree that load_fixtures walks strictly.
     path = FIXTURES / fixture_class / "files" / (target + ".seed")
-    return _load_by_path(f"_seed_{fixture_class.replace('-', '_')}", path)
+    name = f"_seed_{fixture_class.replace('-', '_')}"
+    module = type(sys)(name)
+    module.__file__ = str(path)
+    sys.modules[name] = module
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
+    return module
 
 
 # --- fixtures ----------------------------------------------------------------
@@ -105,6 +112,22 @@ def test_load_fixtures_rejects_a_body_that_names_the_experiment_issue(tmp_path):
     (dst / "files" / "scripts" / "junit_summary.py.seed").write_bytes(seed.read_bytes())
     with pytest.raises(sd.FixtureError, match="2131"):
         sd.load_fixtures(tmp_path)
+
+
+def test_loading_a_seed_module_writes_nothing_into_the_fixture_tree(monkeypatch):
+    # CI writes bytecode; a SourceFileLoader drops __pycache__/*.pyc beside the seed, and
+    # load_fixtures then rejects the tree for every test that runs after it (jarvis#2150).
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    before = sorted(p for p in FIXTURES.rglob("*"))
+    for fx in sd.load_fixtures(FIXTURES):
+        for target in fx.files:
+            _seed_module(fx.cls, target)
+    assert sorted(p for p in FIXTURES.rglob("*")) == before
+    assert [fx.cls for fx in sd.load_fixtures(FIXTURES)] == [
+        "absence-read-as-success",
+        "claims-from-plausibility",
+        "pattern-matched-boundaries",
+    ]
 
 
 def test_absence_fixture_still_passes_a_suite_that_never_ran(tmp_path, capsys):
