@@ -47,9 +47,8 @@ PLAN_CLASS = "afk:2-plan"
 HUMAN_ONLY = "afk:3-human"
 NEEDS_HUMAN = "needs-human"
 NEEDS_PREFIX = "needs-"
-# Copied from scripts/delegate_predispatch_gate.py::_AC_HEADING_RE: the intake job's sparse
-# checkout has only `.github/scripts` and `agents`, so it cannot import `scripts/`, and that
-# module is orphaned — this is the one live matcher.
+# The intake job's sparse checkout has only `.github/scripts` and `agents`, so it cannot import
+# `scripts/`; this is the one live matcher for the Acceptance-criteria heading.
 AC_HEADING_RE = re.compile(r"(?m)^##\s+acceptance\s+criteria\b", re.IGNORECASE)
 IN_FLIGHT = (IN_PROGRESS, "status:review", "status:rework-in-progress")
 
