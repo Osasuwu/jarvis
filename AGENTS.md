@@ -40,7 +40,7 @@ hold: red while a human look is owed (a pending review request, or the label app
 the solo-developer path), and being a required check it blocks merge outright, including via
 auto-merge. The `status:owner-queue` label it replaced is retired — the label no longer exists
 in the repo; draft remains the manual hold for a PR not yet ready for gates to evaluate at all.
-`~/.claude/reference/merge-gates.md`'s admin-merge carve-outs (review-blind PRs, a sanctioned
+`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`'s admin-merge carve-outs (review-blind PRs, a sanctioned
 stop-gap merge for a false-failing gate) are the only sanctioned ways around a stuck gate; never
 normalize a bypass for a gate that's merely inconvenient.
 
