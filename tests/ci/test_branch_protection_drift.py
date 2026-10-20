@@ -227,6 +227,22 @@ def test_an_enumeration_after_required_checks_extracts_each_listed_name():
 @pytest.mark.parametrize(
     "text",
     [
+        "Required checks: `alpha`, `beta`.",
+        "The six required checks are `alpha`, `beta`.",
+        "REQUIRED CHECKS: `alpha` and `beta`.",
+    ],
+)
+def test_an_enumeration_opened_by_are_or_in_any_case_extracts_each_listed_name(text):
+    assert _names(text) == ["alpha", "beta"]
+
+
+def test_a_sentence_form_matches_in_any_case_and_keeps_the_name_as_written():
+    assert _names("The Required Check `Alpha` turns red.") == ["Alpha"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "The `alpha` run is not a required check and never fails.",
         "These are not required checks: `alpha`, `beta`.",
         "The required check `alpha` is no longer required.",
@@ -339,9 +355,62 @@ def test_main_fails_on_a_doc_claim_under_doc_root_that_is_not_required_live(
         '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
         encoding="utf-8",
     )
-    (tmp_path / "root").mkdir()
-    (tmp_path / "root" / "AGENTS.md").write_text(
-        "Here `ghost` is a required check.\n", encoding="utf-8"
+    root = _doc_root(tmp_path / "root")
+    (root / "AGENTS.md").write_text("Here `ghost` is a required check.\n", encoding="utf-8")
+    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": 3969106})})
+    for key, value in {
+        "GITHUB_REPOSITORY": "owner/repo",
+        "DEFAULT_BRANCH": "main",
+        "GH_TOKEN": "t0ken",
+        "BINDING_DOC": str(doc),
+        "DOC_ROOT": str(root),
+    }.items():
+        monkeypatch.setenv(key, value)
+    assert drift.main(make_client=lambda token: api) == 1
+    assert "AGENTS.md:1: `ghost` is named as a required check" in capsys.readouterr().out
+
+
+def _doc_root(root):
+    """A doc root holding every scanned file and directory, all empty of claims."""
+    for name in drift.SCANNED_FILES:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text("No claims here.\n", encoding="utf-8")
+    for name in drift.SCANNED_DIRS:
+        (root / name).mkdir(parents=True, exist_ok=True)
+    return root
+
+
+# A scan that sees nothing must not read as "no claims" (#2138 review): a sparse checkout that
+# drops a root, or a wrong DOC_ROOT / cwd, would otherwise print "No drift" having checked no doc.
+
+
+@pytest.mark.parametrize("gone", ["AGENTS.md", "docs/reference"])
+def test_a_missing_scan_root_is_an_error_naming_it(tmp_path, gone):
+    root = _doc_root(tmp_path / "root")
+    target = root / gone
+    if target.is_dir():
+        target.rmdir()
+    else:
+        target.unlink()
+    with pytest.raises(drift.DocScanError, match=gone):
+        drift.scan_docs(root)
+
+
+def test_a_scan_that_finds_no_file_is_an_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(drift, "SCANNED_FILES", ())
+    monkeypatch.setattr(drift, "SCANNED_DIRS", ("docs",))
+    (tmp_path / "docs").mkdir()
+    with pytest.raises(drift.DocScanError, match="no docs to scan"):
+        drift.scan_docs(tmp_path)
+
+
+def test_main_fails_closed_when_doc_root_is_missing_even_with_protection_in_step(
+    monkeypatch, tmp_path, capsys
+):
+    doc = tmp_path / "binding.md"
+    doc.write_text(
+        '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
+        encoding="utf-8",
     )
     api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": 3969106})})
     for key, value in {
@@ -349,11 +418,15 @@ def test_main_fails_on_a_doc_claim_under_doc_root_that_is_not_required_live(
         "DEFAULT_BRANCH": "main",
         "GH_TOKEN": "t0ken",
         "BINDING_DOC": str(doc),
-        "DOC_ROOT": str(tmp_path / "root"),
+        "DOC_ROOT": str(tmp_path / "no-docs"),
     }.items():
         monkeypatch.setenv(key, value)
     assert drift.main(make_client=lambda token: api) == 1
-    assert "AGENTS.md:1: `ghost` is named as a required check" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Doc scan failed: scan roots missing" in out
+    assert "AGENTS.md" in out
+    assert "No drift" not in out
+    assert api.calls == [("GET", "repos/owner/repo/branches/main", None)]
 
 
 def test_the_workflow_sparse_checkout_covers_every_scanned_root():

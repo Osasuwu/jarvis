@@ -60,8 +60,8 @@ check and fails when the name is not required live. Two hits were already stale;
   YAML is not scanned. #2123.
 - docs/reference/github-repo-setup.md:79-80 — `risk-tier` "is added by the operator once the check
   is live", although it is live and required: a stale status, not a missing name. #2123.
-- CONTEXT.md:93, 119, 137 — `review` as a required check in present tense, phrased outside the
-  scanner's grammar. #2123.
+- CONTEXT.md:93, 119, 137 — checked, not stale: 93 and 137 say `code-gate` replaces `review`, and
+  119 describes a past incident (#1109). No present-tense claim that `review` is required.
 - docs/security/threat-model.md:30 — "required `pytest` check": the "required `X` check" form is
   not in the grammar (the name is live, so nothing is stale today). #2123 extends the grammar.
 
@@ -71,8 +71,9 @@ Markdown only, under AGENTS.md, README.md, CONTEXT.md, SECURITY.md, docs/referen
 and .github. Dated records (docs/decisions, docs/research, docs/incidents) and workflow YAML are
 not scanned. Only these sentence forms are recognised: "`X` is a required check", "make `X` a
 required check", "`X` required check", "required check `X`", "add `X` to the required status
-checks", and an enumeration after "required … checks:" / "(". A required-check name in any other
-phrasing goes uncaught until the grammar is extended.
+checks", and an enumeration after "required … checks:" / "(" / "are" (all case-insensitive). A
+required-check name in any other phrasing goes uncaught until the grammar is extended. A missing
+scan root, or a scan that finds no file, fails the run rather than reading as "no claims".
 
 ## Public repo
 

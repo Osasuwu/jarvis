@@ -115,17 +115,19 @@ KNOWN_STALE = (
 
 _TOKEN = r"\**`(?P<name>[^`\n]+)`\**"
 _REQ = r"\**required\**"
+# Case-insensitive: "Required checks: …" at a sentence start is the same claim. Names keep
+# their case — only the surrounding words are folded.
 _FORMS = [
     re.compile(
-        _TOKEN + r"\s+(?:is|are)\s+an?\s+" + _REQ + r"\s+checks?\b"
+        _TOKEN + r"\s+(?:is|are)\s+an?\s+" + _REQ + r"\s+checks?\b", re.I
     ),  # `X` is a required check
-    re.compile(_TOKEN + r"\s+an?\s+" + _REQ + r"\s+checks?\b"),  # make `X` a required check
-    re.compile(_TOKEN + r"\s+" + _REQ + r"\s+checks?\b"),  # the `X` required check
-    re.compile(_REQ + r"\s+checks?\s+" + _TOKEN),  # the required check `X`
+    re.compile(_TOKEN + r"\s+an?\s+" + _REQ + r"\s+checks?\b", re.I),  # make `X` a required check
+    re.compile(_TOKEN + r"\s+" + _REQ + r"\s+checks?\b", re.I),  # the `X` required check
+    re.compile(_REQ + r"\s+checks?\s+" + _TOKEN, re.I),  # the required check `X`
     re.compile(r"\badd\s+" + _TOKEN + r"\s+to\s+the\s+" + _REQ + r"\s+status\s+checks\b", re.I),
 ]
-# "required [CI|status] checks" + plain words, then the list opens with ":" or "(".
-_ENUM = re.compile(_REQ + r"(?:\s+[\w-]+)?\s+checks\b[^`.:()]{0,60}?[:(]")
+# "required [CI|status] checks" + plain words, then the list opens with ":", "(" or "are".
+_ENUM = re.compile(_REQ + r"(?:\s+[\w-]+)?\s+checks\b[^`.:()]{0,60}?(?:[:(]|\bare\b)", re.I)
 _ITEM = re.compile(r"\s*" + _TOKEN)
 _SEP = re.compile(r"\s*(?:,\s*and\b|,|and\b)")
 _NEGATED = re.compile(r"\b(?:not|no longer|never)\s+(?:an?\s+|the\s+)?\**required\b", re.I)
@@ -214,17 +216,34 @@ def claimed_required_checks(path, text):
     return sorted(found, key=found.get)
 
 
+class DocScanError(Exception):
+    """The doc scan could not see what it is configured to scan."""
+
+
 def _scanned_files(root):
+    """The files to scan under root; raises DocScanError when a root is missing or none exist.
+
+    A scan that sees nothing must not read as "no claims": a narrowed sparse checkout, a wrong
+    DOC_ROOT or cwd would otherwise turn the probe green while checking no doc at all.
+    """
     root = Path(root)
-    paths = [root / name for name in SCANNED_FILES if (root / name).is_file()]
+    missing = [name for name in SCANNED_FILES if not (root / name).is_file()]
+    missing += [name for name in SCANNED_DIRS if not (root / name).is_dir()]
+    if missing:
+        raise DocScanError(f"scan roots missing under {root}: {', '.join(missing)}")
+    paths = [root / name for name in SCANNED_FILES]
     for directory in SCANNED_DIRS:
-        if (root / directory).is_dir():
-            paths += sorted((root / directory).rglob("*.md"))
+        paths += sorted((root / directory).rglob("*.md"))
+    if not paths:
+        raise DocScanError(f"no docs to scan under {root}")
     return paths
 
 
 def scan_docs(root):
-    """Every claim in the scanned docs under root, paths relative to root."""
+    """Every claim in the scanned docs under root, paths relative to root.
+
+    Raises DocScanError when a configured root is missing or no file was scanned.
+    """
     root = Path(root)
     claims = []
     for path in _scanned_files(root):
@@ -239,8 +258,12 @@ def unmatched_known_stale(claims, known=KNOWN_STALE):
     return [entry for entry in known if (entry[0], entry[1]) not in present]
 
 
-def run(doc_text, fetch_branch, claims=()):
-    """Compare; print the verdict; return the process exit code."""
+def run(doc_text, fetch_branch, claims=(), scan_error=None):
+    """Compare; print the verdict; return the process exit code.
+
+    scan_error is the DocScanError of a doc scan that could not run: the binding comparison
+    still runs and reports, but the verdict is a failure, never "No drift".
+    """
     documented = parse_documented_binding(doc_text)
     branch = fetch_branch()
     problems = find_drift(documented, branch)
@@ -268,7 +291,9 @@ def run(doc_text, fetch_branch, claims=()):
         print("Docs name required checks that live protection does not require:")
         for message in stale:
             print(f"  - {message}")
-    if problems or stale:
+    if scan_error:
+        print(f"Doc scan failed: {scan_error}")
+    if problems or stale or scan_error:
         return 1
     print(f"No drift: {len(documented)} required checks match the documented binding.")
     return 0
@@ -282,9 +307,17 @@ def main(make_client=None):
     repo = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ["DEFAULT_BRANCH"]
     client = (make_client or _make_client)(os.environ["GH_TOKEN"])
-    claims = scan_docs(os.environ.get("DOC_ROOT", "."))
+    try:
+        claims, scan_error = scan_docs(os.environ.get("DOC_ROOT", ".")), None
+    except DocScanError as error:
+        claims, scan_error = [], error
     with open(os.environ.get("BINDING_DOC", DEFAULT_DOC), encoding="utf-8") as doc:
-        return run(doc.read(), lambda: client("GET", f"repos/{repo}/branches/{branch}"), claims)
+        return run(
+            doc.read(),
+            lambda: client("GET", f"repos/{repo}/branches/{branch}"),
+            claims,
+            scan_error,
+        )
 
 
 if __name__ == "__main__":
