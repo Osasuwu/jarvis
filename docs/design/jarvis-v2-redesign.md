@@ -137,7 +137,7 @@ Jarvis is built and operated under the AI Hero / Pocock stance: AI raised the st
 - **Don't bite off more than you can chew.** Decompose into independently-grabbable issues. Planning depth beats task ambition.
 - **Treat agents like humans with no memory.** Strict, repo-level processes (skills, playbooks, glossaries) compensate. Vibes don't.
 
-Canonical statements live in `.claude-userlevel/reference/engineering-principles.md` (operational rules; installed to `~/.claude/reference/`) and `docs/research-aihero-principles.md` (full research, sources, 3-layer mapping). `CONTEXT.md` carries domain glossary + invariants for in-session loading. This section is the L0 cross-link, not the source of truth — keep it short and let the canonical files drift independently.
+Canonical statements live in `~/.claude/plugins/marketplaces/jarvis-private/reference/engineering-principles.md` (operational rules; the in-repo `.claude-userlevel/` mirror was retired in #1800) and `docs/research-aihero-principles.md` (full research, sources, 3-layer mapping). `CONTEXT.md` carries domain glossary + invariants for in-session loading. This section is the L0 cross-link, not the source of truth — keep it short and let the canonical files drift independently.
 
 ---
 

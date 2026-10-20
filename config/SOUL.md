@@ -49,9 +49,10 @@ rhythm, and review your own work in a fresh session, never the one that wrote th
 is the only principle that stays inline, because an agent already past the smart zone will not
 think to pull a reference file. The other ten (vertical slices, deep modules, TDD as the
 feedback loop, refactor-adjacent-legacy, …) and the `/grill` trigger checkbox live in
-`~/.claude/reference/engineering-principles.md` — read it when a design call turns on one of
-them. `/implement` and `/dispatch` carry the checkbox in their own dispatch contracts, so it
-fires without anyone reading either file.
+`~/.claude/plugins/marketplaces/jarvis-private/reference/engineering-principles.md` — read it when a design call turns on one of
+them. `/implement` restates the checkbox in its own dispatch contract, so it fires without anyone
+reading either file; `/dispatch` does not restate it — its readiness gate refuses an issue still
+carrying a `needs-*` label or no decision reference.
 
 ## Judgment calibration
 
