@@ -12,7 +12,7 @@
 
 ## What it was
 
-`scripts/ralph-loop.ps1` ran a task through repeated, genuinely fresh `claude -p`
+`scripts/ralph-loop.ps1` (deleted) ran a task through repeated, genuinely fresh `claude -p`
 invocations instead of one long session — no `--continue`/`--resume`/`--session-id`, so
 there was nothing for any single iteration to compact. Progress persisted externally in
 jarvis `working_state` (Supabase memory via `mcp__memory` tools), not in any LLM's

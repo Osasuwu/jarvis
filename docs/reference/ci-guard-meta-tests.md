@@ -102,10 +102,10 @@ Tests: `test_gate_machinery_with_clean_evidence_is_red` (red despite clean evide
 `test_a_list_that_cannot_name_the_gate_set_raises`, all in `tests/ci/test_code_gate_verdict.py`.
 
 Such a PR is review-blind. The way to merge it is the review-blind admin-merge carve-out in
-`~/.claude/reference/merge-gates.md`.
+`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`.
 
 ## Related
 
 The same rename-in-lockstep hazard applies to a guard's **check name**: branch protection
 references the job name, so renaming the job without updating the protection rule makes the
-gate silently disappear. See `~/.claude/reference/merge-gates.md` → *Required files per repo*.
+gate silently disappear. See `~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md` → *Required files per repo*.

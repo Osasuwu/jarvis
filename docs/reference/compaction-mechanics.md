@@ -87,7 +87,7 @@ Rules that need to survive compaction belong in `AGENTS.md` (or another bare-`@i
 
 ## Context layering is one-directional
 
-A repo file may cite user-level (`~/.claude/CLAUDE.md`, a `~/.claude/reference/*` doc); user-level
+A repo file may cite user-level (`~/.claude/CLAUDE.md`, a doc under `~/.claude/plugins/marketplaces/jarvis-private/reference/`); user-level
 must never point back at a repo's own `CONTEXT.md` or other repo-local file. User-level content
 loads in every repo a session touches, so a pointer into one repo's `CONTEXT.md` doesn't just
 dangle when that repo isn't the current one — it misdirects the session into the wrong repo's
