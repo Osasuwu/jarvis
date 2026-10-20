@@ -47,12 +47,12 @@ platform concept, not a headcount.
 ### Found by the scanner
 
 `.github/scripts/branch_protection_drift.py` now scans the docs for prose that names a required
-check and fails when the name is not required live. Two hits were already stale; both are
-`KNOWN_STALE` entries (reported as warnings) tracked by #2123:
+check and fails when the name is not required live. Two hits were stale when the scanner landed:
 
-- docs/reference/vendored-plugin-pins.md:6 — `review` (replaced by `code-gate`, #1816).
+- docs/reference/vendored-plugin-pins.md:6 — `review` (replaced by `code-gate`, #1816). Fixed by
+  #2139, which now names `code-gate`; no longer a `KNOWN_STALE` entry.
 - docs/reference/ci-guard-meta-tests.md:30 — `Detect secrets with gitleaks` (the live context is
-  `gitleaks`).
+  `gitleaks`). A `KNOWN_STALE` entry (reported as a warning) tracked by #2123.
 
 ### Found by the manual sweep (outside the scanner's reach)
 

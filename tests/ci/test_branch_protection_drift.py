@@ -305,7 +305,7 @@ def test_the_real_docs_claim_exactly_these_required_checks():
         ("docs/reference/github-repo-setup.md", "risk-tier"),
         ("docs/reference/github-repo-setup.md", "waiting-human-review"),
         ("docs/reference/lane-host-setup.md", "risk-tier"),
-        ("docs/reference/vendored-plugin-pins.md", "review"),
+        ("docs/reference/vendored-plugin-pins.md", "code-gate"),
     ]
 
 

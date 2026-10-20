@@ -108,10 +108,7 @@ SCANNED_ROOTS = SCANNED_FILES + SCANNED_DIRS
 # (path, name, follow-up issue): claims known to be stale, tracked by the issue. Reported as a
 # warning. An entry that matches no current claim fails tests/ci (unmatched_known_stale), so
 # the entry has to leave in the PR that fixes its line.
-KNOWN_STALE = (
-    ("docs/reference/vendored-plugin-pins.md", "review", 2123),
-    ("docs/reference/ci-guard-meta-tests.md", "Detect secrets with gitleaks", 2123),
-)
+KNOWN_STALE = (("docs/reference/ci-guard-meta-tests.md", "Detect secrets with gitleaks", 2123),)
 
 _TOKEN = r"\**`(?P<name>[^`\n]+)`\**"
 _REQ = r"\**required\**"
