@@ -72,3 +72,28 @@ def test_summary_counts_equal_the_table():
         assert summary[cls] == (got["covered"], got["partial"], got["absent"], total), cls
     got = Counter(r[4] for r in rows)
     assert summary["**total**"] == (got["covered"], got["partial"], got["absent"], 60)
+
+
+_SEEDED_ROW = re.compile(
+    r"^\| ([a-z-]+) \| \[#(\d+)\]\(https://github\.com/Osasuwu/jarvis/pull/\d+\) \| `([0-9a-f]{7})` "
+    r"\| (flagged-other|flagged|missed|no-verdict[^|]*?) \| (.*?) "
+    r"\| \[run\]\(https://github\.com/Osasuwu/jarvis/actions/runs/\d+\) \| (\w+) \|$"
+)
+
+
+def test_seeded_defect_table_has_a_collected_verdict_per_top_class():
+    """The seeded-defect section (#2131 AC3) records a verdict and run link for each top-3 class.
+
+    A `no-verdict` row means the draft was never reviewed, so it records nothing: AC3 fails.
+    """
+    text = DOC.read_text(encoding="utf-8")
+    rows = [m.groups() for line in text.splitlines() if (m := _SEEDED_ROW.match(line))]
+    assert {r[0] for r in rows} == {
+        "absence-read-as-success",
+        "claims-from-plausibility",
+        "pattern-matched-boundaries",
+    }
+    assert len(rows) == 3
+    assert all(not r[3].startswith("no-verdict") for r in rows)
+    # A flag must name the finding it rests on.
+    assert all(r[4] != "none" for r in rows if r[3] == "flagged")

@@ -106,21 +106,26 @@ most: jarvis neither configures nor reads them back.
 ## Seeded defects through code-gate
 
 One defect per top-3 class (absence, claims, pattern), opened as a draft PR titled
-`[seeded-defect] …` from `tests/fixtures/seeded_defects/`, never merged. Collected 2026-10-20
-15:50 UTC:
+`[seeded-defect] …` from `tests/fixtures/seeded_defects/`, never merged. Collected 2026-10-20,
+after a person marked #2147, #2148 and #2149 ready at about 16:35Z; the three evidence runs are
+`pull_request` runs created 16:35:48-53Z at each head SHA. The PRs were then closed unmerged and
+their branches kept.
 
 | Class | PR | Head | Result | Findings | Evidence | code-gate |
 |---|---|---|---|---|---|---|
-| absence-read-as-success | [#2147](https://github.com/Osasuwu/jarvis/pull/2147) | `70fe7f9` | no-verdict (review skipped: draft) | none | [run](https://github.com/Osasuwu/jarvis/actions/runs/39451796445) | failure |
-| claims-from-plausibility | [#2148](https://github.com/Osasuwu/jarvis/pull/2148) | `eec174c` | no-verdict (review skipped: draft) | none | [run](https://github.com/Osasuwu/jarvis/actions/runs/39451818373) | failure |
-| pattern-matched-boundaries | [#2149](https://github.com/Osasuwu/jarvis/pull/2149) | `611a56a` | no-verdict (review skipped: draft) | none | [run](https://github.com/Osasuwu/jarvis/actions/runs/39451843965) | failure |
+| absence-read-as-success | [#2147](https://github.com/Osasuwu/jarvis/pull/2147) | `70fe7f9` | flagged | intent-vs-logic `scripts/junit_summary.py`; exception-handling `scripts/junit_summary.py` | [run](https://github.com/Osasuwu/jarvis/actions/runs/39458833397) | failure |
+| claims-from-plausibility | [#2148](https://github.com/Osasuwu/jarvis/pull/2148) | `eec174c` | flagged | intent-vs-logic `scripts/median_duration.py` | [run](https://github.com/Osasuwu/jarvis/actions/runs/39458841451) | failure |
+| pattern-matched-boundaries | [#2149](https://github.com/Osasuwu/jarvis/pull/2149) | `611a56a` | flagged | intent-vs-logic `scripts/push_guard.py` | [run](https://github.com/Osasuwu/jarvis/actions/runs/39458845337) | failure |
 
-**Finding: code-gate gives drafts no verdict.** `.github/scripts/code_gate_verdict.py` skips a draft
-before reading any evidence, and `.github/workflows/code-review.yml` runs again on
-`ready_for_review`. So the seeded drafts measure nothing yet: the red `code-gate` above is the
-draft skip, not a flag. To get a verdict, a human marks each draft ready (`gh pr ready <N>`); the
-review then runs on the same head, and `collect` fills the Result column. Until then, no class has
-evidence that code-gate catches it.
+All three rows are `flagged`, but read them as n=1 and possibly contaminated, not as a detection
+rate (see *Limits of the experiment*: the contamination limit applied here).
+
+**History: the first collection measured nothing.** The first `collect` (2026-10-20 15:50 UTC)
+reported all three drafts as `no-verdict (review skipped: draft)`. `.github/scripts/code_gate_verdict.py`
+skips a draft before reading any evidence, and `.github/workflows/code-review.yml` runs again on
+`ready_for_review`, so the red `code-gate` on a draft is the draft skip, not a flag. A verdict
+needs a person to mark the draft ready (`gh pr ready <N>`); the review then runs on the same head.
+That is what produced the table above.
 
 **Reading the Result column.** `collect` validates the evidence with code-gate's own
 `validate_findings` and requires its SHA to be the head and its base to be `main`; anything else is
@@ -135,8 +140,9 @@ evidence that code-gate catches it.
 **Limits of the experiment.**
 
 - The title prefix tells the reviewer the PR is seeded, which can raise its suspicion.
-- After this file merges, the fixtures (whose `meta.json` names the defect) are on main and
-  greppable by a reviewer with a base checkout.
+- Once #2150 merged (16:31:58Z), the fixtures (whose `meta.json` names the defect) were on main
+  and greppable by a reviewer with a base checkout. This applied: the three reviews above ran
+  after that merge (16:35Z), so a flag may reflect a read of the fixture, not a detection.
 - One defect per class (n=1): a flag or a miss is an anecdote, not a rate.
 
 ## Re-running
