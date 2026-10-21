@@ -276,6 +276,19 @@ def test_a_negation_in_a_contrasting_clause_does_not_drop_the_claim_before_it(te
     assert _names(text) == ["a"]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The required check `b` is no longer required, but `a` is a required check.",
+        "The required check `b` is no longer required while `a` is a required check.",
+        "The required check `b` is no longer required — `a` is a required check.",
+    ],
+)
+def test_a_negation_in_a_contrasting_clause_does_not_drop_the_claim_after_it(text):
+    # The clause of `a` starts at the joiner, so the negation of `b` before it stays out.
+    assert _names(text) == ["a"]
+
+
 @pytest.mark.parametrize("name", ["code-review/verdict", "ci / pytest", "pytest-3.12"])
 def test_a_check_name_with_a_slash_or_a_dot_is_still_a_claim(name):
     # #2123: a status context or matrix job name is no file path.
@@ -326,10 +339,15 @@ def test_fenced_code_is_not_scanned():
         "~~~\n`alpha` is a required check.\n~~~\n",
         "````\n```\n`alpha` is a required check.\n```\n````\n",
         "~~~~\n~~~\n`alpha` is a required check.\n~~~~\n",
+        # A fence closes only on its own character, and only when nothing follows it.
+        "```\n~~~\n`alpha` is a required check.\n```\n",
+        "~~~\n```\n`alpha` is a required check.\n~~~\n",
+        "```\n``` not a closing fence\n`alpha` is a required check.\n```\n",
     ],
 )
 def test_a_tilde_or_longer_fence_is_not_scanned_until_its_own_closing_fence(text):
-    assert _names(text) == []
+    # The claim after the closing fence is the evidence the fence closed where it should.
+    assert _names(text + "\n`beta` is a required check.\n") == ["beta"]
 
 
 @pytest.mark.parametrize(
@@ -355,12 +373,43 @@ def test_a_backticked_comment_opener_does_not_hide_the_claims_after_it():
 
 
 @pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("Write <!-- to open an HTML comment.\n\nLater: `alpha` is a required check.\n", 3),
+        ("<!-- note\n\nSome text.\n\n`alpha` is a required check.\n", 5),
+        ("<!-- a -->\n\nWrite <!-- here.\n\n`alpha` is a required check.\n", 5),
+    ],
+)
+def test_a_comment_opener_with_no_closer_after_it_hides_nothing(text, line):
+    # #2123 review: an unclosed `<!--` must not switch the scan off for the rest of the file.
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", line, "alpha")]
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("<!-- x --> `alpha` is a required check.\n", 1),
+        ("Intro.\n\n<!-- x --> `alpha` is a required check.\n", 3),
+        ("<!--x-->`alpha` is a required check.\n", 1),
+        ("<!--\nnote\n--> `alpha` is a required check.\n", 3),
+        ("Intro.\n\n    <!-- x --> `alpha` is a required check.\n", 3),
+    ],
+)
+def test_prose_after_a_comment_on_the_same_line_is_scanned(text, line):
+    # #2123 review: a blanked comment is no indentation, and a line that held a comment is
+    # never taken for indented code (fail closed: a claim there is reported).
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", line, "alpha")]
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "Intro.\n\n    `alpha` is a required check.\n",
         "Intro.\n\n\t`alpha` is a required check.\n",
         "    `alpha` is a required check.\n",
         "Intro.\n\n    code\n\n    `alpha` is a required check.\n",
+        # The paragraph before is plain text: its blanked comment is no indentation.
+        "<!-- x --> Intro.\n\n    `alpha` is a required check.\n",
     ],
 )
 def test_an_indented_code_block_is_not_scanned(text):
@@ -374,6 +423,8 @@ def test_an_indented_code_block_is_not_scanned(text):
         ("- item one\n\n    `alpha` is a required check.\n", 3),
         ("- item one\n    `alpha` is a required check.\n", 2),
         ("1. item one\n\n    para\n\n    `alpha` is a required check.\n", 5),
+        ("- item one\n  wrapped tail\n\n    `alpha` is a required check.\n", 4),
+        ("* item one\n  wrapped tail\n\n    `alpha` is a required check.\n", 4),
     ],
 )
 def test_a_list_item_or_list_continuation_is_still_scanned(text, line):
@@ -384,7 +435,10 @@ REAL_CLAIMS = drift.scan_docs(_root)
 
 
 def test_the_real_docs_claim_exactly_these_required_checks():
-    assert sorted({(path, name) for path, _, name in REAL_CLAIMS}) == [
+    # A multiset, one entry per claim: a claim line lost to a skip rule changes the count even
+    # when the same name is claimed elsewhere in the file. Line numbers stay out, so an edit
+    # above a claim does not break the pin.
+    assert sorted((path, name) for path, _, name in REAL_CLAIMS) == [
         (".github/scripts/risk_tier.md", "risk-tier"),
         ("AGENTS.md", "code-gate"),
         ("AGENTS.md", "gitleaks"),
@@ -402,6 +456,8 @@ def test_the_real_docs_claim_exactly_these_required_checks():
         ("docs/reference/github-repo-setup.md", "require-linked-issue"),
         ("docs/reference/github-repo-setup.md", "risk-tier"),
         ("docs/reference/github-repo-setup.md", "waiting-human-review"),
+        ("docs/reference/lane-host-setup.md", "risk-tier"),
+        ("docs/reference/lane-host-setup.md", "risk-tier"),
         ("docs/reference/lane-host-setup.md", "risk-tier"),
         ("docs/reference/vendored-plugin-pins.md", "code-gate"),
         ("docs/security/threat-model.md", "pytest"),

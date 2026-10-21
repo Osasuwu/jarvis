@@ -96,8 +96,10 @@ def find_drift(documented, branch):
 # --- Doc claims (#1894) ------------------------------------------------------------------------
 # Prose that calls a backticked name a required check is a claim about live protection. A name
 # that is not required live is a gate a reader trusts and the branch does not have. The grammar
-# is deliberately narrow (the forms below); a claim in any other phrasing — "being a required
-# check, `X` …", workflow YAML comments — goes uncaught.
+# is deliberately narrow (the forms below). Goes uncaught: a claim in any other phrasing ("being
+# a required check, `X` …"), workflow YAML comments, and by design (#2123) fenced code, closed
+# HTML comments and indented code blocks (see _prose_blocks). Claims in HOST_SCOPED_FILES are
+# printed as info and never fail the job.
 
 # Files whose prose describes current state. Dated records (docs/decisions, docs/research,
 # docs/incidents) describe the past and are not scanned.
@@ -196,11 +198,12 @@ def _clause(text, offset):
     return text[begin:sentence_end]
 
 
-def _strip_comments(line, in_comment):
+def _strip_comments(line, in_comment, last_close):
     """(line with HTML comment text blanked to spaces, still inside a comment at its end).
 
     Blanking keeps every offset and line number. Inline code spans are skipped, so a
-    backticked `<!--` opens no comment.
+    backticked `<!--` opens no comment. last_close is the offset of the text's last `-->`,
+    relative to this line: a `<!--` with no `-->` after it is text and hides nothing (#2123).
     """
     chars, i = list(line), 0
     while i < len(line):
@@ -215,7 +218,7 @@ def _strip_comments(line, in_comment):
                 j += 1
             close = re.compile(r"(?<!`)" + "`" * (j - i) + r"(?!`)").search(line, j)
             i = close.end() if close else j
-        elif line.startswith(_COMMENT_OPEN, i):
+        elif line.startswith(_COMMENT_OPEN, i) and i + len(_COMMENT_OPEN) <= last_close:
             chars[i : i + len(_COMMENT_OPEN)] = " " * len(_COMMENT_OPEN)
             i, in_comment = i + len(_COMMENT_OPEN), True
         else:
@@ -227,26 +230,30 @@ def _prose_blocks(text):
     """[[(line number, line)]]: the prose of a Markdown text in blank-line separated blocks.
 
     Left out (#2123): fenced code (``` or ~~~, closed only by a fence of the same character
-    at least as long), HTML comments, and indented code — a block whose every line is
-    indented 4 spaces or a tab, unless it continues a list item or an indented paragraph.
+    at least as long), closed HTML comments, and indented code — a block whose every line is
+    indented 4 spaces or a tab and holds no comment, unless it continues a list or an indented
+    paragraph. Indentation is read on the raw line, not the comment-blanked one.
     """
     blocks, block, fence, in_comment = [], [], None, False
-    before = None  # kind of the last prose line before the block: None, list, indented, text
+    before = None  # kind of the last prose block: None, list, indented, text
+    indented, commented = set(), set()  # line numbers: raw line indented; held a comment
+    last_close, line_start = text.rfind(_COMMENT_CLOSE), 0
 
     def close_block():
         nonlocal block, before
         if block:
-            code = all(_INDENTED.match(line) for _, line in block) and before in (None, "text")
+            code = all(n in indented and n not in commented for n, _ in block)
+            code = code and before in (None, "text")
             if not code:  # after a code block `before` stands, so its next block is code too
                 blocks.append(block)
-                last = block[-1][1]
-                if _LIST_ITEM.match(last):
-                    before = "list"
+                if any(_LIST_ITEM.match(line) for _, line in block):
+                    before = "list"  # a wrapped item's tail is no list marker (#2123 review)
                 else:
-                    before = "indented" if _INDENTED.match(last) else "text"
+                    before = "indented" if block[-1][0] in indented else "text"
         block = []
 
     for number, raw in enumerate(text.split("\n"), 1):
+        start, line_start = line_start, line_start + len(raw) + 1
         if fence:
             m = _FENCE.match(raw)
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1]:
@@ -260,8 +267,12 @@ def _prose_blocks(text):
                 fence = (m.group(1)[0], len(m.group(1)))
                 before = "indented" if raw[:1].isspace() else None
                 continue
-        line, in_comment = _strip_comments(raw, in_comment)
+        line, in_comment = _strip_comments(raw, in_comment, last_close - start)
         if line.strip():
+            if _INDENTED.match(raw):
+                indented.add(number)
+            if line != raw:
+                commented.add(number)
             block.append((number, line))
         else:
             close_block()
