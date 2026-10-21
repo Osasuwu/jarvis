@@ -122,7 +122,7 @@ def _block_reason(file_path: str, classification: str) -> str:
     return (
         f"BLOCKED: '{file_path}' is a protected canonical source (project-level "
         "hook, no principal bypass). Edits to enforcement/secret-scanning "
-        "infrastructure must go through a PR + review, even for the live owner. "
+        "infrastructure must go through a PR + review, even for the live principal. "
         "See docs/security/agent-boundaries.md for the full matrix."
     )
 
