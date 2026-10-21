@@ -25,7 +25,7 @@ The earlier "default-safe to autonomous" design (#426) was reverted in #429 beca
 
 ### Permission matrix (action × principal)
 
-Action tier model is shared with `agents/safety.py` (T0 = AUTO, T1 = OWNER_QUEUE, T2 = BLOCKED).
+Action tier model: T0 = auto, T1 = owner queue, T2 = blocked. It was shared with `agents/safety.py` (`AUTO` / `OWNER_QUEUE` / `BLOCKED`), which was demolished with reactive-core in #1802; the tiers stay as the intent of the matrix below, not as code.
 
 | Action ↓ × Principal → | **live** | **autonomous** | **subagent** | **supervised** |
 |---|---|---|---|---|

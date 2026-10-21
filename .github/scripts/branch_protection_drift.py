@@ -96,8 +96,10 @@ def find_drift(documented, branch):
 # --- Doc claims (#1894) ------------------------------------------------------------------------
 # Prose that calls a backticked name a required check is a claim about live protection. A name
 # that is not required live is a gate a reader trusts and the branch does not have. The grammar
-# is deliberately narrow (the forms below); a claim in any other phrasing — "the required `X`
-# check", "being a required check, `X` …", workflow YAML comments — goes uncaught.
+# is deliberately narrow (the forms below). Goes uncaught: a claim in any other phrasing ("being
+# a required check, `X` …"), workflow YAML comments, and by design (#2123) fenced code, closed
+# HTML comments and indented code blocks (see _prose_blocks). Claims in HOST_SCOPED_FILES are
+# printed as info and never fail the job.
 
 # Files whose prose describes current state. Dated records (docs/decisions, docs/research,
 # docs/incidents) describe the past and are not scanned.
@@ -105,10 +107,16 @@ SCANNED_FILES = ("AGENTS.md", "README.md", "CONTEXT.md", "SECURITY.md")
 SCANNED_DIRS = ("docs/reference", "docs/security", ".github")
 SCANNED_ROOTS = SCANNED_FILES + SCANNED_DIRS
 
-# (path, name, follow-up issue): claims known to be stale, tracked by the issue. Reported as a
-# warning. An entry that matches no current claim fails tests/ci (unmatched_known_stale), so
-# the entry has to leave in the PR that fixes its line.
-KNOWN_STALE = (("docs/reference/ci-guard-meta-tests.md", "Detect secrets with gitleaks", 2123),)
+# (path, line, name, follow-up issue): claims known to be stale, tracked by the issue. Reported
+# as a warning. Keyed on the line, so a new claim of the same name elsewhere in the same file is
+# not covered by an old entry (#2123). An entry that matches no current claim fails tests/ci
+# (unmatched_known_stale), so the entry has to leave in the PR that fixes or moves its line.
+KNOWN_STALE = ()
+
+# Scanned files whose claims describe what a host repo of the AFK lane should require, not what
+# jarvis requires (#2123). Their claims are listed as info and never compared to jarvis's live set
+# or the documented binding.
+HOST_SCOPED_FILES = ("docs/reference/lane-host-setup.md",)
 
 _TOKEN = r"\**`(?P<name>[^`\n]+)`\**"
 _REQ = r"\**required\**"
@@ -121,6 +129,7 @@ _FORMS = [
     re.compile(_TOKEN + r"\s+an?\s+" + _REQ + r"\s+checks?\b", re.I),  # make `X` a required check
     re.compile(_TOKEN + r"\s+" + _REQ + r"\s+checks?\b", re.I),  # the `X` required check
     re.compile(_REQ + r"\s+checks?\s+" + _TOKEN, re.I),  # the required check `X`
+    re.compile(_REQ + r"\s+" + _TOKEN + r"\s+checks?\b", re.I),  # the required `X` check (#2123)
     re.compile(r"\badd\s+" + _TOKEN + r"\s+to\s+the\s+" + _REQ + r"\s+status\s+checks\b", re.I),
 ]
 # "required [CI|status] checks" + plain words, then the list opens with ":", "(" or "are".
@@ -129,8 +138,16 @@ _ITEM = re.compile(r"\s*" + _TOKEN)
 _SEP = re.compile(r"\s*(?:,\s*and\b|,|and\b)")
 _NEGATED = re.compile(r"\b(?:not|no longer|never)\s+(?:an?\s+|the\s+)?\**required\b", re.I)
 _SENTENCE_END = re.compile(r"[.;!?](?=\s|$)")
-_PATHLIKE = re.compile(r"/|\.[A-Za-z0-9]{1,5}$")
+_JOINER = re.compile(r",\s*but\b|\b(?:while|whereas|although|though|yet)\b|[—–]", re.I)
+# A file or directory path, not a check: a known file extension, a trailing "/", or a leading
+# "." (a dot-directory such as .github/…). `code-review/verdict`, `ci / pytest` and
+# `pytest-3.12` are check names and stay claims (#2123).
+_PATHLIKE = re.compile(r"\.(?:ya?ml|py|md|json|toml|sh|txt|js|ts|cfg|ini)$|/$|^\.", re.I)
 _BRANCHES = {"main", "master"}
+_FENCE = re.compile(r"\s*(`{3,}|~{3,})")
+_INDENTED = re.compile(r" {0,3}\t| {4}")
+_LIST_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])(?:\s|$)")
+_COMMENT_OPEN, _COMMENT_CLOSE = "<!--", "-->"
 
 
 def _skip_gloss(text, pos):
@@ -166,20 +183,108 @@ def _enumeration(text, start):
         pos = sep.end()
 
 
-def _sentence(text, offset):
-    starts = [m.end() for m in _SENTENCE_END.finditer(text, 0, offset)]
-    begin = starts[-1] if starts else 0
+def _clause(text, offset):
+    """The part of the sentence at offset between contrastive joiners (", but", "while", em
+    dash …), so a negation of one name does not drop a claim on another (#2123)."""
+    sentence_start = ([m.end() for m in _SENTENCE_END.finditer(text, 0, offset)] or [0])[-1]
     end = _SENTENCE_END.search(text, offset)
-    return text[begin : end.start() if end else len(text)]
+    sentence_end = end.start() if end else len(text)
+    begin = sentence_start
+    for m in _JOINER.finditer(text, sentence_start, sentence_end):
+        if m.end() <= offset:
+            begin = m.end()
+        else:
+            return text[begin : m.start()]
+    return text[begin:sentence_end]
+
+
+def _strip_comments(line, in_comment, last_close):
+    """(line with HTML comment text blanked to spaces, still inside a comment at its end).
+
+    Blanking keeps every offset and line number. Inline code spans are skipped, so a
+    backticked `<!--` opens no comment. last_close is the offset of the text's last `-->`,
+    relative to this line: a `<!--` with no `-->` after it is text and hides nothing (#2123).
+    """
+    chars, i = list(line), 0
+    while i < len(line):
+        if in_comment:
+            end = line.find(_COMMENT_CLOSE, i)
+            stop = len(line) if end < 0 else end + len(_COMMENT_CLOSE)
+            chars[i:stop] = " " * (stop - i)
+            i, in_comment = stop, end < 0
+        elif line[i] == "`":
+            j = i
+            while j < len(line) and line[j] == "`":
+                j += 1
+            close = re.compile(r"(?<!`)" + "`" * (j - i) + r"(?!`)").search(line, j)
+            i = close.end() if close else j
+        elif line.startswith(_COMMENT_OPEN, i) and i + len(_COMMENT_OPEN) <= last_close:
+            chars[i : i + len(_COMMENT_OPEN)] = " " * len(_COMMENT_OPEN)
+            i, in_comment = i + len(_COMMENT_OPEN), True
+        else:
+            i += 1
+    return "".join(chars), in_comment
+
+
+def _prose_blocks(text):
+    """[[(line number, line)]]: the prose of a Markdown text in blank-line separated blocks.
+
+    Left out (#2123): fenced code (``` or ~~~, closed only by a fence of the same character
+    at least as long), closed HTML comments, and indented code — a block whose every line is
+    indented 4 spaces or a tab and holds no comment, unless it continues a list or an indented
+    paragraph. Indentation is read on the raw line, not the comment-blanked one.
+    """
+    blocks, block, fence, in_comment = [], [], None, False
+    before = None  # kind of the last prose block: None, list, indented, text
+    indented, commented = set(), set()  # line numbers: raw line indented; held a comment
+    last_close, line_start = text.rfind(_COMMENT_CLOSE), 0
+
+    def close_block():
+        nonlocal block, before
+        if block:
+            code = all(n in indented and n not in commented for n, _ in block)
+            code = code and before in (None, "text")
+            if not code:  # after a code block `before` stands, so its next block is code too
+                blocks.append(block)
+                if any(_LIST_ITEM.match(line) for _, line in block):
+                    before = "list"  # a wrapped item's tail is no list marker (#2123 review)
+                else:
+                    before = "indented" if block[-1][0] in indented else "text"
+        block = []
+
+    for number, raw in enumerate(text.split("\n"), 1):
+        start, line_start = line_start, line_start + len(raw) + 1
+        if fence:
+            m = _FENCE.match(raw)
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1]:
+                if not raw[m.end() :].strip():
+                    fence = None
+            continue
+        if not in_comment:
+            m = _FENCE.match(raw)
+            if m:
+                close_block()
+                fence = (m.group(1)[0], len(m.group(1)))
+                before = "indented" if raw[:1].isspace() else None
+                continue
+        line, in_comment = _strip_comments(raw, in_comment, last_close - start)
+        if line.strip():
+            if _INDENTED.match(raw):
+                indented.add(number)
+            if line != raw:
+                commented.add(number)
+            block.append((number, line))
+        else:
+            close_block()
+    close_block()
+    return blocks
 
 
 def claimed_required_checks(path, text):
     """[(path, line, name)] for each backticked name the prose calls a required check."""
     found = {}
-    lines = text.split("\n")
-    in_fence, block_lines = False, []
 
-    def flush():
+    def flush(block_lines):
         flat, owner = "", []
         for number, line in block_lines:
             owner.extend([number] * (len(line) + 1))
@@ -192,24 +297,12 @@ def claimed_required_checks(path, text):
         for offset, name in hits:
             if _PATHLIKE.search(name) or name in _BRANCHES:
                 continue
-            if _NEGATED.search(_sentence(flat, offset)):
+            if _NEGATED.search(_clause(flat, offset)):
                 continue
             found.setdefault((path, owner[offset], name), (owner[offset], offset))
 
-    for number, line in enumerate(lines, 1):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-            flush()
-            block_lines = []
-            continue
-        if in_fence:
-            continue
-        if not line.strip():
-            flush()
-            block_lines = []
-        else:
-            block_lines.append((number, line))
-    flush()
+    for block in _prose_blocks(text):
+        flush(block)
     return sorted(found, key=found.get)
 
 
@@ -251,28 +344,34 @@ def scan_docs(root):
 
 def unmatched_known_stale(claims, known=KNOWN_STALE):
     """The entries of known that match no claim: the stale line was fixed, the entry stayed."""
-    present = {(path, name) for path, _, name in claims}
-    return [entry for entry in known if (entry[0], entry[1]) not in present]
+    present = set(claims)
+    return [entry for entry in known if tuple(entry[:3]) not in present]
 
 
-def run(doc_text, fetch_branch, claims=(), scan_error=None):
+def run(doc_text, fetch_branch, claims=(), scan_error=None, known=KNOWN_STALE):
     """Compare; print the verdict; return the process exit code.
 
     scan_error is the DocScanError of a doc scan that could not run: the binding comparison
-    still runs and reports, but the verdict is a failure, never "No drift".
+    still runs and reports, but the verdict is a failure, never "No drift". known is the
+    tracked-stale list (KNOWN_STALE by default).
     """
     documented = parse_documented_binding(doc_text)
     branch = fetch_branch()
     problems = find_drift(documented, branch)
     live = live_binding(branch)
-    tracked = {(path, name): issue for path, name, issue in KNOWN_STALE}
+    tracked = {(path, line, name): issue for path, line, name, issue in known}
     stale, warnings = [], []
     for path, line, name in claims:
+        if path in HOST_SCOPED_FILES:
+            print(
+                f"info: {path}:{line}: `{name}` host-scoped, not checked against jarvis's live set"
+            )
+            continue
         if name in live:
             continue
         message = f"{path}:{line}: `{name}` is named as a required check, not required live"
-        if (path, name) in tracked:
-            warnings.append(f"{message} (tracked #{tracked[(path, name)]})")
+        if (path, line, name) in tracked:
+            warnings.append(f"{message} (tracked #{tracked[(path, line, name)]})")
         else:
             stale.append(message)
     for warning in warnings:
