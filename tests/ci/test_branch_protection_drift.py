@@ -208,6 +208,8 @@ def _names(text, path="doc.md"):
         "The required check `alpha` turns red.",
         "The host must make `alpha` a required check first.",
         "Add `alpha` to the required status checks of the default branch.",
+        "Then the required `alpha` check greens.",  # #2123: was outside the grammar
+        "Both required `alpha` checks ran.",
     ],
 )
 def test_each_sentence_form_extracts_the_claimed_name(text):
@@ -256,6 +258,51 @@ def test_negated_path_branch_and_loose_sentences_extract_nothing(text):
     assert _names(text) == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "`a` is a required check, but `b` is not required",  # #2123, verbatim
+        "`a` is a required check, but the required check `b` is no longer required.",
+        "`a` is a required check while the required check `b` is no longer required.",
+        "`a` is a required check, whereas the required check `b` is no longer required.",
+        "`a` is a required check, though the required check `b` is no longer required.",
+        "`a` is a required check, although the required check `b` is no longer required.",
+        "`a` is a required check, yet the required check `b` is no longer required.",
+        "`a` is a required check — the required check `b` is no longer required.",
+        "`a` is a required check – the required check `b` is no longer required.",
+    ],
+)
+def test_a_negation_in_a_contrasting_clause_does_not_drop_the_claim_before_it(text):
+    assert _names(text) == ["a"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The required check `b` is no longer required, but `a` is a required check.",
+        "The required check `b` is no longer required while `a` is a required check.",
+        "The required check `b` is no longer required — `a` is a required check.",
+    ],
+)
+def test_a_negation_in_a_contrasting_clause_does_not_drop_the_claim_after_it(text):
+    # The clause of `a` starts at the joiner, so the negation of `b` before it stays out.
+    assert _names(text) == ["a"]
+
+
+@pytest.mark.parametrize("name", ["code-review/verdict", "ci / pytest", "pytest-3.12"])
+def test_a_check_name_with_a_slash_or_a_dot_is_still_a_claim(name):
+    # #2123: a status context or matrix job name is no file path.
+    assert _names(f"Here `{name}` is a required check.") == [name]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["alpha.yml", "alpha/beta.yml", ".github/actions/risk-tier/", ".github/actions/risk-tier"],
+)
+def test_a_file_or_directory_path_is_not_a_claim(name):
+    assert _names(f"Here `{name}` is a required check.") == []
+
+
 def test_the_agents_md_merge_rule_sentence_extracts_exactly_the_six_checks():
     # Verbatim from AGENTS.md "Merge rules" (the glosses carry `Risk:`, which is no check).
     text = (
@@ -284,11 +331,114 @@ def test_fenced_code_is_not_scanned():
     assert _names(text) == []
 
 
+# #2123: prose only. A claim in a tilde fence, an HTML comment or an indented code block is no
+# claim, while list items and list continuations stay prose.
+@pytest.mark.parametrize(
+    "text",
+    [
+        "~~~\n`alpha` is a required check.\n~~~\n",
+        "````\n```\n`alpha` is a required check.\n```\n````\n",
+        "~~~~\n~~~\n`alpha` is a required check.\n~~~~\n",
+        # A fence closes only on its own character, and only when nothing follows it.
+        "```\n~~~\n`alpha` is a required check.\n```\n",
+        "~~~\n```\n`alpha` is a required check.\n~~~\n",
+        "```\n``` not a closing fence\n`alpha` is a required check.\n```\n",
+    ],
+)
+def test_a_tilde_or_longer_fence_is_not_scanned_until_its_own_closing_fence(text):
+    # The claim after the closing fence is the evidence the fence closed where it should.
+    assert _names(text + "\n`beta` is a required check.\n") == ["beta"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Intro.\n<!-- `alpha` is a required check. -->\n",
+        "Intro.\n<!--\n`alpha` is a required check.\n-->\n",
+        "Intro.\n<!-- note:\nthe required check `alpha` turns red. -->\nOutro.\n",
+    ],
+)
+def test_an_html_comment_is_not_scanned(text):
+    assert _names(text) == []
+
+
+def test_a_claim_after_a_multi_line_comment_keeps_its_line_number():
+    text = "<!--\nhidden\n-->\n`alpha` is a required check.\n"
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", 4, "alpha")]
+
+
+def test_a_backticked_comment_opener_does_not_hide_the_claims_after_it():
+    text = "Write `<!--` to open a comment.\n\n`alpha` is a required check.\n"
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", 3, "alpha")]
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("Write <!-- to open an HTML comment.\n\nLater: `alpha` is a required check.\n", 3),
+        ("<!-- note\n\nSome text.\n\n`alpha` is a required check.\n", 5),
+        ("<!-- a -->\n\nWrite <!-- here.\n\n`alpha` is a required check.\n", 5),
+    ],
+)
+def test_a_comment_opener_with_no_closer_after_it_hides_nothing(text, line):
+    # #2123 review: an unclosed `<!--` must not switch the scan off for the rest of the file.
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", line, "alpha")]
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("<!-- x --> `alpha` is a required check.\n", 1),
+        ("Intro.\n\n<!-- x --> `alpha` is a required check.\n", 3),
+        ("<!--x-->`alpha` is a required check.\n", 1),
+        ("<!--\nnote\n--> `alpha` is a required check.\n", 3),
+        ("Intro.\n\n    <!-- x --> `alpha` is a required check.\n", 3),
+    ],
+)
+def test_prose_after_a_comment_on_the_same_line_is_scanned(text, line):
+    # #2123 review: a blanked comment is no indentation, and a line that held a comment is
+    # never taken for indented code (fail closed: a claim there is reported).
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", line, "alpha")]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Intro.\n\n    `alpha` is a required check.\n",
+        "Intro.\n\n\t`alpha` is a required check.\n",
+        "    `alpha` is a required check.\n",
+        "Intro.\n\n    code\n\n    `alpha` is a required check.\n",
+        # The paragraph before is plain text: its blanked comment is no indentation.
+        "<!-- x --> Intro.\n\n    `alpha` is a required check.\n",
+    ],
+)
+def test_an_indented_code_block_is_not_scanned(text):
+    assert _names(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        ("Intro.\n\n   - `alpha` is a required check.\n", 3),
+        ("- item one\n\n    `alpha` is a required check.\n", 3),
+        ("- item one\n    `alpha` is a required check.\n", 2),
+        ("1. item one\n\n    para\n\n    `alpha` is a required check.\n", 5),
+        ("- item one\n  wrapped tail\n\n    `alpha` is a required check.\n", 4),
+        ("* item one\n  wrapped tail\n\n    `alpha` is a required check.\n", 4),
+    ],
+)
+def test_a_list_item_or_list_continuation_is_still_scanned(text, line):
+    assert drift.claimed_required_checks("d.md", text) == [("d.md", line, "alpha")]
+
+
 REAL_CLAIMS = drift.scan_docs(_root)
 
 
 def test_the_real_docs_claim_exactly_these_required_checks():
-    assert sorted({(path, name) for path, _, name in REAL_CLAIMS}) == [
+    # A multiset, one entry per claim: a claim line lost to a skip rule changes the count even
+    # when the same name is claimed elsewhere in the file. Line numbers stay out, so an edit
+    # above a claim does not break the pin.
+    assert sorted((path, name) for path, _, name in REAL_CLAIMS) == [
         (".github/scripts/risk_tier.md", "risk-tier"),
         ("AGENTS.md", "code-gate"),
         ("AGENTS.md", "gitleaks"),
@@ -296,8 +446,10 @@ def test_the_real_docs_claim_exactly_these_required_checks():
         ("AGENTS.md", "require-linked-issue"),
         ("AGENTS.md", "risk-tier"),
         ("AGENTS.md", "waiting-human-review"),
-        ("docs/reference/ci-guard-meta-tests.md", "Detect secrets with gitleaks"),
+        ("CONTEXT.md", "risk-tier"),
+        ("docs/reference/ci-guard-meta-tests.md", "gitleaks"),
         ("docs/reference/ci-guard-meta-tests.md", "pytest"),
+        ("docs/reference/failure-class-coverage.md", "pytest"),
         ("docs/reference/github-repo-setup.md", "code-gate"),
         ("docs/reference/github-repo-setup.md", "gitleaks"),
         ("docs/reference/github-repo-setup.md", "pytest"),
@@ -305,15 +457,21 @@ def test_the_real_docs_claim_exactly_these_required_checks():
         ("docs/reference/github-repo-setup.md", "risk-tier"),
         ("docs/reference/github-repo-setup.md", "waiting-human-review"),
         ("docs/reference/lane-host-setup.md", "risk-tier"),
+        ("docs/reference/lane-host-setup.md", "risk-tier"),
+        ("docs/reference/lane-host-setup.md", "risk-tier"),
         ("docs/reference/vendored-plugin-pins.md", "code-gate"),
+        ("docs/security/threat-model.md", "pytest"),
     ]
 
 
 def test_every_claimed_name_not_tracked_as_stale_is_in_the_documented_binding():
     # So a PR that drops a check from the binding while prose still names it fails `pytest`.
     binding = drift.parse_documented_binding(DOC)
-    known = {(path, name) for path, name, _ in drift.KNOWN_STALE}
-    untracked = [c for c in REAL_CLAIMS if (c[0], c[2]) not in known and c[2] not in binding]
+    known = {(path, line, name) for path, line, name, _ in drift.KNOWN_STALE}
+    host = set(drift.HOST_SCOPED_FILES)
+    untracked = [
+        c for c in REAL_CLAIMS if c not in known and c[0] not in host and c[2] not in binding
+    ]
     assert untracked == []
 
 
@@ -322,8 +480,23 @@ def test_every_known_stale_entry_still_matches_a_claim_in_the_real_docs():
 
 
 def test_a_known_stale_entry_whose_claim_is_gone_is_reported():
-    entry = ("docs/x.md", "alpha", 1)
-    assert drift.unmatched_known_stale([("docs/x.md", 4, "beta")], known=(entry,)) == [entry]
+    entry = ("docs/x.md", 4, "alpha", 1)
+    assert drift.unmatched_known_stale([("docs/x.md", 4, "alpha")], known=(entry,)) == []
+    # The same name on another line of the same file is a different claim (#2123).
+    assert drift.unmatched_known_stale([("docs/x.md", 9, "alpha")], known=(entry,)) == [entry]
+
+
+def test_run_fails_on_a_same_name_claim_on_a_line_the_known_entry_does_not_name(capsys):
+    live = _live(**{"code-gate": 3969106})
+    doc = '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n'
+    entry = ("docs/x.md", 3, "ghost", 77)
+    claims = [("docs/x.md", 3, "ghost"), ("docs/x.md", 9, "ghost")]
+    assert drift.run(doc, lambda: live, claims, known=(entry,)) == 1
+    out = capsys.readouterr().out
+    assert "  - docs/x.md:9: `ghost` is named as a required check, not required live\n" in out
+    assert (
+        "docs/x.md:3: `ghost` is named as a required check, not required live (tracked #77)" in out
+    )
 
 
 def test_run_fails_on_a_claimed_check_that_is_not_required_live(capsys):
@@ -336,11 +509,32 @@ def test_run_fails_on_a_claimed_check_that_is_not_required_live(capsys):
     assert "docs/a.md" not in out
 
 
+def test_run_lists_a_host_scoped_claim_as_info_and_does_not_fail_on_it(capsys):
+    # #2123: lane-host-setup.md says what a host repo should require, not what jarvis requires.
+    live = _live(**{"code-gate": 3969106})
+    doc = '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n'
+    host = "docs/reference/lane-host-setup.md"
+    assert drift.run(doc, lambda: live, [(host, 9, "ghost")]) == 0
+    out = capsys.readouterr().out
+    assert f"info: {host}:9: `ghost` host-scoped, not checked against jarvis's live set" in out
+    assert "not required live" not in out
+
+
+def test_every_host_scoped_file_is_a_scanned_file_that_carries_a_claim():
+    assert drift.HOST_SCOPED_FILES
+    for path in drift.HOST_SCOPED_FILES:
+        assert (_root / path).is_file(), path
+        assert path in drift.SCANNED_FILES or path.startswith(
+            tuple(d + "/" for d in drift.SCANNED_DIRS)
+        ), path
+        assert any(claim[0] == path for claim in REAL_CLAIMS), path
+
+
 def test_run_warns_on_a_tracked_stale_claim_and_exits_zero(capsys):
     live = _live(**{"code-gate": 3969106})
     doc = '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n'
-    (path, name, issue) = drift.KNOWN_STALE[0]
-    assert drift.run(doc, lambda: live, [(path, 3, name)]) == 0
+    (path, _, name, issue) = entry = ("docs/x.md", 3, "ghost", 77)
+    assert drift.run(doc, lambda: live, [(path, 3, name)], known=(entry,)) == 0
     assert (
         f"{path}:3: `{name}` is named as a required check, not required live (tracked #{issue})"
         in (capsys.readouterr().out)

@@ -49,7 +49,7 @@ record cited at the end of this section.
 | Concept | Where it lives | Values | Purpose |
 |---------|---------------|--------|---------|
 | **Source tier** | Perception modules + GitHub issue labels (`source:1-auto`, `source:2-review`, `source:3-human`) | 1, 2, 3 | Classifies an *incoming signal*: how autonomous can dispatch be? |
-| **`safety.Tier`** | `agents/safety.py` (IntEnum: `AUTO`, `OWNER_QUEUE`, `BLOCKED`) | 0, 1, 2 | Classifies an *outgoing action* in `gate(tool_name, action, target, area)`. |
+| **`safety.Tier`** | `agents/safety.py` (IntEnum: `AUTO`, `OWNER_QUEUE`, `BLOCKED`; demolished with reactive-core in #1802) | 0, 1, 2 | Classified an *outgoing action* in `gate(tool_name, action, target, area)`. |
 | **`task_queue.auto_dispatch`** | DB column (boolean) | true / false | Filters what dispatcher's `poll_queue_node` picks up. |
 | **Plan-review class** (`agents/plan_classifier.py`, #1685/#1707) | GitHub issue labels (`afk:2-plan`, `afk:3-human`) | 1, 2, 3 | Classifies a *change-set's complexity*: does it need a locked plan / owner review before merge? Unrelated to perception's ingest-trust question. |
 
@@ -276,7 +276,7 @@ What this means concretely for Sprint 4 implementation:
 
 - **#388 (GitHub ingest)**: no gate changes. `source:1-auto` rows go through the existing gate. The label is the human nod; the gate is the technical guardrail.
 - **#389 (self-perception)**: every row is source:3 → `auto_dispatch=false` → never reaches dispatch path → gate not invoked. Principal triggers the actual fix manually.
-- **Future sources**: extend the `_TIER0_*` / `_TIER2_*` constants in `agents/safety.py` with source-aware classifications (or add a new `_TIER0_PERCEPTION_*` set). Don't touch the `gate()` signature.
+- **Future sources**: the plan was to extend the `_TIER0_*` / `_TIER2_*` constants in `agents/safety.py` with source-aware classifications (or add a new `_TIER0_PERCEPTION_*` set) without touching the `gate()` signature; that module was demolished with reactive-core in #1802, so there is no gate to extend today.
 
 ### Why source tier ≠ skip-gate
 

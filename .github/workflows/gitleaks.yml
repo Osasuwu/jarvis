@@ -1,6 +1,6 @@
 name: Gitleaks Secret Scanning
 
-# NOTE: `Detect secrets with gitleaks` is a REQUIRED status check. A required
+# NOTE: `gitleaks` is a REQUIRED status check. A required
 # check MUST NOT be path-filtered on `pull_request`: when paths-ignore skips
 # the run (e.g. a docs-only or empty-diff PR), GitHub holds the required
 # context at "Expected — waiting for status" and the PR is permanently BLOCKED
