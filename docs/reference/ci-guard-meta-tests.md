@@ -27,7 +27,7 @@ run — not a check that reads green because it never ran.
 `gitleaks.yml` is the live example of the split, and it is inverted from what you'd guess. Its
 `push` trigger is filtered on purpose (a secret scan on every doc commit to `main` is wasted
 minutes) while its `pull_request` trigger is deliberately unconditional — because
-`Detect secrets with gitleaks` is a **required** check, and a required check that gets skipped
+`gitleaks` is a **required** check, and a required check that gets skipped
 does not report "skipped". GitHub parks the context at *"Expected — waiting for status"* and the
 PR is blocked forever with every other gate green. That stalled PR #894; decision `da8b97e4`.
 Both halves are pinned by `TestGitleaksPrTrigger` in the convention guard.
