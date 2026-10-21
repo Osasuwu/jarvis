@@ -5,7 +5,7 @@ hook: as a subprocess with the PreToolUse JSON payload on stdin.
 Unlike the user-level hook, the standalone project hook has no
 principal-based bypass: canonical AND mirror paths both block unconditionally
 (see the module docstring in .claude/hooks/protected-files.py for the
-accepted trade-off this implies for the live owner's local edits).
+accepted trade-off this implies for the live principal's local edits).
 """
 
 import json
