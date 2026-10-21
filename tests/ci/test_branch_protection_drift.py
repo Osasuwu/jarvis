@@ -306,10 +306,10 @@ def test_a_file_or_directory_path_is_not_a_claim(name):
 def test_the_agents_md_merge_rule_sentence_extracts_exactly_the_six_checks():
     # Verbatim from AGENTS.md "Merge rules" (the glosses carry `Risk:`, which is no check).
     text = (
-        "Merging is gated by six required CI checks on the default branch: `code-gate` (the code-review\n"
-        "verdict), `require-linked-issue`, `pytest`, `gitleaks`, `waiting-human-review`, and `risk-tier`\n"
-        "(the PR's `Risk:` line and diff; a non-admin author's HIGH+ stays red until an admin human approves the head SHA) —\n"
-        "branch-protection enforced, no cooperation needed from you.\n"
+        "Merging is gated by six required CI checks on the default branch: `code-gate` (the code-review verdict),\n"
+        "`require-linked-issue`, `pytest`, `gitleaks`, `waiting-human-review`, and `risk-tier` (the PR's `Risk:`\n"
+        "line and diff; a non-admin author's HIGH+ stays red until a holder of the releasing role (admin) approves\n"
+        "the head SHA) — branch-protection enforced, no cooperation needed from you.\n"
     )
     assert _names(text) == [
         "code-gate",
