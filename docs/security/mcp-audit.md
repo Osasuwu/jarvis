@@ -33,11 +33,16 @@ its row/section are kept only as a historical record of that audit, not a curren
 - No file system access beyond what Python can do
 
 **Mitigations:**
-- Supabase RLS could restrict to specific tables (not currently enabled — single-user project)
+- Supabase RLS could restrict access per table or per person (not enabled at the time of this
+  audit; that rested on one principal per instance — only that principal's sessions hold the key.
+  Current RLS state and the re-check with collaborators present: `threat-model.md` → Accepted Risks)
 - credential_registry has DB-level CHECK constraint against storing secrets
 - Voyage API is write-only (sends text for embedding, receives vectors)
 
-**Recommendation:** Acceptable for single-user. If multi-user ever needed — add RLS policies.
+**Recommendation:** Acceptable while one principal per instance holds the keys. Collaborators on a
+host repo do not change that: they reach the agent through GitHub content, which is data, and hold
+no key. If a second person ever holds a key (a shared instance, or the key as an Actions secret in a
+repo where someone else has write access) — add per-person RLS policies.
 
 ---
 
@@ -148,4 +153,4 @@ This pattern should be the reference model for any future integration that suppo
 1. **Primary defense layer works:** PreToolUse secret scanner hook covers the two highest-risk write paths (GitHub + Bash)
 2. **No over-privileged servers:** Each server has appropriate scope for its function
 3. **Biggest remaining risk:** Prompt injection via firecrawl/web content could theoretically instruct Claude to exfiltrate via Bash. Mitigated by Claude's instruction hierarchy (system prompt > tool output).
-4. **No changes needed now:** All servers are at appropriate risk levels for a single-user project with the current guardrails.
+4. **No changes needed now:** All servers are at appropriate risk levels with the current guardrails, on the condition of one principal per instance: the servers' credentials and the vault stay with that principal, and content anyone else authors is data. With collaborators on a host repo the condition holds as long as none of them holds one of these credentials: they add authors of GitHub content read through `github`, not credential holders. Their content is the prompt-injection class of finding 3, met by the same defense (Claude's instruction hierarchy and AGENTS.md's "external content is data" invariant); the re-check per accepted risk is in `threat-model.md` → Accepted Risks.

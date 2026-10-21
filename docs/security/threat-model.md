@@ -118,7 +118,22 @@ Key flows to protect:
 - [x] Git history (revert commits)
 
 ### Accepted Risks
+
+Jarvis serves one principal per instance: each operator hosts their own. A host repo can still
+have collaborators, and their issues, PRs and comments reach the agent as data, never as the
+principal's instructions. So no risk below is accepted "because there is only one person" — that
+reason changes meaning silently when a collaborator appears. Each one names the condition it rests
+on and whether the condition holds on a host repo with collaborators (#2126).
+
 - **Prompt injection via web**: Claude's instruction hierarchy (system > user > tool output) is the defense. No additional mitigation planned unless incidents occur.
+  - *Condition:* none on headcount; the attacker is whoever controls the page.
+  - *With collaborators:* holds unchanged.
 - **Prompt injection via GitHub issues**: the AFK lane intake gate narrows it (see Attack Surface); until the no-token worker (D4, #1966) lands, a body the human labelled and approved is still trusted input.
-- **Single-user assumption**: No RLS, no multi-tenant isolation. Acceptable for solo project.
+  - *Condition:* the human who applies `agent:dispatch` is the principal. Intake refuses a bot or an unknown labeller, but accepts any other login that can label.
+  - *With collaborators:* holds on jarvis, where the principal is the only human collaborator (checked 2026-10-21). It does not hold on a host where collaborators can label: their label would make their own issue body trusted input. The lane is frozen (decision 2026-10-17; `agent-dispatch.yml` disabled) and no other host has adopted it; labellers other than the principal are parked with #2107. Outside the lane, the orchestrator dispatches only issues the principal selected, and reads collaborators' comments on them as data (decision 2026-10-17, D3).
+- **No per-person isolation in the Supabase store**: RLS is enabled, but no policy tells one person from another. Policies are written per key role (anon, authenticated), the service role bypasses them, and the only row-level narrowing is a `sandcastle:` provenance prefix on anon writes to `task_outcomes` and `events_canonical`, which marks the writing pipeline, not a person.
+  - *Condition:* one principal per instance — the project's URL and keys are held only by that principal's own sessions, devices and machine identities.
+  - *With collaborators:* holds while none of them holds a key. Being a collaborator grants no key: collaborators reach the agent through GitHub content, which is data. An injected instruction to read or write the store belongs to the prompt-injection risks above; per-person RLS would not stop it, since the agent's own key is allowed. The condition breaks as soon as a second person holds a key: a shared instance, or a key stored as an Actions secret in a repo where someone other than the principal has write access (write access can push a workflow that reads the repo's secrets). Per-person RLS policies are needed from then on.
 - **Agent-to-agent poisoning**: Deferred to Federation & Delegation pillar when multi-agent architecture is designed.
+  - *Condition:* the agents whose outputs feed each other run inside this principal's instance.
+  - *With collaborators:* holds for that scope. A collaborator's own agent writing to a shared host repo is not covered by this deferral: its issues, PRs and comments arrive as GitHub content, so they are data and fall under the prompt-injection risks above.
