@@ -32,17 +32,17 @@ hardcoded on a shared code path.
 
 ## Merge rules
 
-Merging is gated by six required CI checks on the default branch: `code-gate` (the code-review
-verdict), `require-linked-issue`, `pytest`, `gitleaks`, `waiting-human-review`, and `risk-tier`
-(the PR's `Risk:` line and diff; a non-admin author's HIGH+ stays red until an admin human approves the head SHA) —
-branch-protection enforced, no cooperation needed from you. `waiting-human-review` is the merge
-hold: red while a human look is owed (a pending review request, or the label applied directly on
-the solo-developer path), and being a required check it blocks merge outright, including via
-auto-merge. The `status:owner-queue` label it replaced is retired — the label no longer exists
-in the repo; draft remains the manual hold for a PR not yet ready for gates to evaluate at all.
-`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`'s admin-merge carve-outs (review-blind PRs, a sanctioned
-stop-gap merge for a false-failing gate) are the only sanctioned ways around a stuck gate; never
-normalize a bypass for a gate that's merely inconvenient.
+Merging is gated by six required CI checks on the default branch: `code-gate` (the code-review verdict),
+`require-linked-issue`, `pytest`, `gitleaks`, `waiting-human-review`, and `risk-tier` (the PR's `Risk:`
+line and diff; a non-admin author's HIGH+ stays red until a holder of the releasing role (admin) approves
+the head SHA) — branch-protection enforced, no cooperation needed from you. `waiting-human-review` is the
+merge hold: red while a human look is owed (a pending review request, or the label applied directly when
+no one but the author holds the reviewing role), and being a required check it blocks merge outright,
+including via auto-merge. The `status:owner-queue` label it replaced is retired — the label no longer
+exists in the repo; draft remains the manual hold for a PR not yet ready for gates to evaluate at all.
+`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`'s admin-merge carve-outs
+(review-blind PRs, a sanctioned stop-gap merge for a false-failing gate) are the only sanctioned ways
+around a stuck gate; never normalize a bypass for a gate that's merely inconvenient.
 
 ## Substrate rule
 
@@ -90,8 +90,8 @@ it documents what's left rather than reporting "done".
 
 ## Related projects
 
-`SergazyNarynov/redrobot` — industrial robot control, has a second reader and a potential
-contributor. Treat it as a shared codebase: decisions legible from the repo alone, no personal
+`SergazyNarynov/redrobot` — industrial robot control, has collaborators who read and may
+contribute. Treat it as a shared codebase: decisions legible from the repo alone, no personal
 literals.
 
 ## Key files

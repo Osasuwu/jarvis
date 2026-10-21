@@ -5,9 +5,9 @@ carries zero imports from ``scripts/lib``, ``hook-resolver``, or
 ``principal`` so it runs unmodified as a project-scoped hook in CI/Actions,
 where none of those repo-internal seams exist. Consequently it is NOT
 principal-aware — unlike the user-level hook, it always blocks both
-canonical and mirror protected files, with no "live owner" bypass. This is
+canonical and mirror protected files, with no "live principal" bypass. This is
 an intentional fail-closed trade-off for the CI surface; see the PR
-description for the accepted consequence (it also blocks the live owner's
+description for the accepted consequence (it also blocks the live principal's
 local interactive edits to canonical files via this project hook, even
 though the still-unchanged user-level hook alone would allow them).
 
@@ -122,7 +122,7 @@ def _block_reason(file_path: str, classification: str) -> str:
     return (
         f"BLOCKED: '{file_path}' is a protected canonical source (project-level "
         "hook, no principal bypass). Edits to enforcement/secret-scanning "
-        "infrastructure must go through a PR + review, even for the live owner. "
+        "infrastructure must go through a PR + review, even for the live principal. "
         "See docs/security/agent-boundaries.md for the full matrix."
     )
 
