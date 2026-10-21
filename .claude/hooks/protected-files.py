@@ -5,9 +5,9 @@ carries zero imports from ``scripts/lib``, ``hook-resolver``, or
 ``principal`` so it runs unmodified as a project-scoped hook in CI/Actions,
 where none of those repo-internal seams exist. Consequently it is NOT
 principal-aware — unlike the user-level hook, it always blocks both
-canonical and mirror protected files, with no "live owner" bypass. This is
+canonical and mirror protected files, with no "live principal" bypass. This is
 an intentional fail-closed trade-off for the CI surface; see the PR
-description for the accepted consequence (it also blocks the live owner's
+description for the accepted consequence (it also blocks the live principal's
 local interactive edits to canonical files via this project hook, even
 though the still-unchanged user-level hook alone would allow them).
 
