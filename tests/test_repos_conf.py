@@ -77,6 +77,16 @@ def test_parse_repos_conf_entries_bad_project_value_raises():
         parse_repos_conf_entries("Osasuwu/jarvis project=notanumber\n")
 
 
+def test_parse_repos_conf_entries_class_special_parsed():
+    entries = parse_repos_conf_entries("SergazyNarynov/redrobot class=special\n")
+    assert entries[0].tokens == {"class": "special"}
+
+
+def test_parse_repos_conf_entries_bad_class_value_raises():
+    with pytest.raises(ValueError, match="class"):
+        parse_repos_conf_entries("SergazyNarynov/redrobot class=owned\n")
+
+
 def test_parse_repos_conf_entries_lang_requires_nonempty_tokens():
     with pytest.raises(ValueError, match="lang"):
         parse_repos_conf_entries("Osasuwu/jarvis lang=ru,,en\n")
