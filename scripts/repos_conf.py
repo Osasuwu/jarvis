@@ -37,6 +37,7 @@ _KNOWN_KEYS = {
     "project": str.isdigit,
     "releases": lambda v: v in {"weekly"},
     "lang": _valid_lang,
+    "class": lambda v: v in {"special"},
 }
 
 
