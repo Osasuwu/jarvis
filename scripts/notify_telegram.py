@@ -5,9 +5,13 @@ Step 5 (#1761).
 Why it loads ``.env`` itself: a scheduled-task (routine) session is a bare
 ``claude`` process — nothing sources the repo's ``.env`` for it, so
 ``TELEGRAM_BOT_TOKEN`` was never in the environment and every routine
-notification silently no-opped (#1761). This module walks up from its own
-location to the first ``.env`` (in a worktree that is the main checkout's
-``.env``) and fills only keys the process environment doesn't already set.
+notification silently no-opped (#1761). This module walks up from the repo
+root (the parent of ``scripts/``) to the first ``.env`` (in a worktree that is
+the main checkout's ``.env``) and fills only keys the process environment
+doesn't already set. It starts at the root, not at ``scripts/``: the main
+checkout carries an unrelated, gitignored ``scripts/.env`` that would
+otherwise shadow the repo's ``.env``, so every routine run from the main
+checkout failed with "credentials not set" (2026-10-10 to 2026-10-24).
 
 Fails loud: missing credentials or a non-OK API reply exit non-zero with the
 missing key *names* on stderr — never values, and the bot token is scrubbed
@@ -66,6 +70,11 @@ def find_env_file(start: Path) -> Path | None:
     return None
 
 
+def repo_env_file(script: Path = Path(__file__)) -> Path | None:
+    """The repo's ``.env``: searched from the repo root, so ``scripts/.env`` never shadows it."""
+    return find_env_file(script.resolve().parents[1])
+
+
 def resolve_env(environ: Mapping[str, str], env_file: Path | None) -> dict[str, str]:
     """Process environment wins; ``.env`` only fills keys that are unset."""
     merged = parse_env_file(env_file.read_text(encoding="utf-8")) if env_file else {}
@@ -111,7 +120,7 @@ def main(argv: list[str]) -> int:
     if not argv or len(argv) > 2:
         print('usage: python -m scripts.notify_telegram "<subject>" ["<body>"]', file=sys.stderr)
         return 2
-    env = resolve_env(os.environ, find_env_file(Path(__file__).resolve().parent))
+    env = resolve_env(os.environ, repo_env_file())
     try:
         send(argv[0], argv[1] if len(argv) > 1 else "", env)
     except NotifyError as exc:
