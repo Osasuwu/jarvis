@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from scripts.notify_telegram import NotifyError, find_env_file, resolve_env, send
+from scripts.notify_telegram import NotifyError, find_env_file, repo_env_file, resolve_env, send
 
 
 def test_env_file_fills_credentials_missing_from_process_env(tmp_path):
@@ -22,6 +22,16 @@ def test_env_file_fills_credentials_missing_from_process_env(tmp_path):
     env = resolve_env({"TELEGRAM_ALLOW_USER_ID": "7"}, find_env_file(nested))
     assert env["TELEGRAM_BOT_TOKEN"] == "tok-from-file"
     assert env["TELEGRAM_ALLOW_USER_ID"] == "7"  # process env wins
+
+
+def test_scripts_dir_env_does_not_shadow_the_repo_env(tmp_path):
+    # The main checkout has a gitignored scripts/.env of unrelated keys; the
+    # weekly-release routine runs there and failed "credentials not set" 3 weeks running.
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=tok-root\n", encoding="utf-8")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / ".env").write_text("TELEGRAM_API_ID=123\n", encoding="utf-8")
+    assert repo_env_file(scripts / "notify_telegram.py") == tmp_path / ".env"
 
 
 def test_send_posts_subject_and_body_to_the_owner_chat():
