@@ -35,7 +35,7 @@ is always red: its
 own review cannot be trusted, since it is the thing under change. The set is the
 `gate` bucket of the base repo's entry in `config/protected-paths.json`, matched by
 `agents/path_policy.py` (#2067); both are read from this script's own checkout. The sanctioned unblock is a human review-blind
-admin-merge (`~/.claude/reference/merge-gates.md`) backed by a fresh-session
+admin-merge (`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`) backed by a fresh-session
 `/code-review` posted with the final SHA.
 
 Every decision below is a pure function over plain dicts and lists; the API
