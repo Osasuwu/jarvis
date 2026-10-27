@@ -13,7 +13,7 @@ fact-checked.
 | # | Claim class | Independent source | Scope |
 |---|---|---|---|
 | 1 | Dead user-level paths: `~/.claude/reference/` and `~/.claude/hooks` no longer exist on the operator's devices. The reference files ship with the jarvis-private plugin at `~/.claude/plugins/marketplaces/jarvis-private/reference/`; `docs/reference/test-quality.md` is the repo-local copy of one of them. | text match | `AGENTS.md`, `CONTEXT.md`, `config/SOUL.md`, `docs/reference/*.md`, `docs/architecture.md`, `docs/design/*.md`, `docs/security/*.md`, `.github/scripts/`, `scripts/` |
-| 2 | Required merge gates: every check branch protection reports is named in `AGENTS.md` and `docs/reference/github-repo-setup.md`; no in-scope line gives a different count; `risk-tier` is not described as not yet required. | `gh api repos/Osasuwu/jarvis/branches/main/protection/required_status_checks` | same files |
+| 2 | Required merge gates: every check branch protection reports is named in `AGENTS.md` and `docs/reference/github-repo-setup.md`; no in-scope line gives a different count; `risk-tier` is not described as still pending. | `gh api repos/Osasuwu/jarvis/branches/main/protection/required_status_checks` | same files |
 | 3 | Backticked repo-relative paths that do not exist at the head. A hit is explained when its paragraph says the file is gone (retired, deleted, removed, no longer, historical, ...), or the token is a placeholder, a convention directory (`.claude/rules/`, `.claude/skills/`), or its line names another repo (`jarvis-oss`, `jarvis-private`). | filesystem | `AGENTS.md`, `CONTEXT.md`, `config/SOUL.md`, `docs/reference/*.md` |
 
 Not covered, by design: `docs/research/**` and `docs/decisions/**` (dated records of the state
@@ -70,10 +70,7 @@ CODE = [f for f in tracked(".github/scripts", "scripts") if f.endswith((".py", "
 
 # Known hits that are deliberately left in place: (file, line) -> why. Keep this empty
 # unless a hit cannot be fixed in the same change; every entry needs a reason.
-EXPLAINED = {
-    (".github/scripts/code_gate_verdict.py", 38): "docstring in gate machinery; editing it makes "
-    "the PR review-blind (docs/reference/ci-guard-meta-tests.md), so it waits for a gate PR",
-}
+EXPLAINED = {}
 hits = []
 checked = defaultdict(Counter)  # file -> {claim class: number of claims inspected}
 SELF = "docs/reference/stale-fact-sweep.md"  # describes the dead paths, so class 1 skips it
