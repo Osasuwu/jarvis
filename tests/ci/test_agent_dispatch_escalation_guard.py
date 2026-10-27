@@ -163,6 +163,7 @@ class TestRedCheckWatcher:
         owners = {
             "pytest": "pytest.yml",
             "gitleaks": "gitleaks.yml",
+            "ruff": "ruff.yml",
             "require-linked-issue": "pr-body-check.yml",
             "code-gate": "code-gate-verdict.yml",
         }
