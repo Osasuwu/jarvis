@@ -303,11 +303,11 @@ def test_a_file_or_directory_path_is_not_a_claim(name):
     assert _names(f"Here `{name}` is a required check.") == []
 
 
-def test_the_agents_md_merge_rule_sentence_extracts_exactly_the_six_checks():
+def test_the_agents_md_merge_rule_sentence_extracts_exactly_the_seven_checks():
     # Verbatim from AGENTS.md "Merge rules" (the glosses carry `Risk:`, which is no check).
     text = (
-        "Merging is gated by six required CI checks on the default branch: `code-gate` (the code-review verdict),\n"
-        "`require-linked-issue`, `pytest`, `gitleaks`, `waiting-human-review`, and `risk-tier` (the PR's `Risk:`\n"
+        "Merging is gated by seven required CI checks on the default branch: `code-gate` (the code-review verdict),\n"
+        "`require-linked-issue`, `pytest`, `gitleaks`, `ruff`, `waiting-human-review`, and `risk-tier` (the PR's `Risk:`\n"
         "line and diff; a non-admin author's HIGH+ stays red until a holder of the releasing role (admin) approves\n"
         "the head SHA) — branch-protection enforced, no cooperation needed from you.\n"
     )
@@ -316,6 +316,7 @@ def test_the_agents_md_merge_rule_sentence_extracts_exactly_the_six_checks():
         "require-linked-issue",
         "pytest",
         "gitleaks",
+        "ruff",
         "waiting-human-review",
         "risk-tier",
     ]
@@ -445,6 +446,7 @@ def test_the_real_docs_claim_exactly_these_required_checks():
         ("AGENTS.md", "pytest"),
         ("AGENTS.md", "require-linked-issue"),
         ("AGENTS.md", "risk-tier"),
+        ("AGENTS.md", "ruff"),
         ("AGENTS.md", "waiting-human-review"),
         ("CONTEXT.md", "risk-tier"),
         ("docs/reference/ci-guard-meta-tests.md", "gitleaks"),
@@ -455,6 +457,7 @@ def test_the_real_docs_claim_exactly_these_required_checks():
         ("docs/reference/github-repo-setup.md", "pytest"),
         ("docs/reference/github-repo-setup.md", "require-linked-issue"),
         ("docs/reference/github-repo-setup.md", "risk-tier"),
+        ("docs/reference/github-repo-setup.md", "ruff"),
         ("docs/reference/github-repo-setup.md", "waiting-human-review"),
         ("docs/reference/lane-host-setup.md", "risk-tier"),
         ("docs/reference/lane-host-setup.md", "risk-tier"),

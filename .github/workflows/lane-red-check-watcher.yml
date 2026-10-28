@@ -6,9 +6,10 @@ name: Lane Red Check Watcher
 #
 # The workflows listed are the ones that own the checks named in
 # `watched-checks` below: `pytest` (Tests), `gitleaks` (Gitleaks Secret
-# Scanning), `require-linked-issue` (PR Body Check) and `code-gate` (Code Gate
-# Verdict). A guard test pins both lists to the workflow `name:`s and to the
-# required-checks block in docs/reference/github-repo-setup.md.
+# Scanning), `ruff` (Ruff), `require-linked-issue` (PR Body Check) and
+# `code-gate` (Code Gate Verdict). A guard test pins both lists to the
+# workflow `name:`s and to the required-checks block in
+# docs/reference/github-repo-setup.md.
 #
 # `workflow_run` always runs the default branch's copy of this file, never the
 # PR's, which is what makes it safe to hold the bot PAT here. Code Review ->
@@ -22,6 +23,7 @@ on:
     workflows:
       - Tests
       - Gitleaks Secret Scanning
+      - Ruff
       - PR Body Check
       - Code Gate Verdict
     types: [completed]
@@ -38,6 +40,6 @@ jobs:
       # a HIGH/CRITICAL PR waits for a human, which is the hold working and not
       # a failure. `risk-tier` is left out for the same reason (it holds a PR
       # until an admin human approves the head SHA).
-      watched-checks: require-linked-issue,pytest,code-gate,gitleaks
+      watched-checks: require-linked-issue,pytest,code-gate,gitleaks,ruff
     secrets:
       AGENT_DISPATCH_PAT: ${{ secrets.AGENT_DISPATCH_PAT }}

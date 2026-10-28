@@ -24,8 +24,9 @@ name: Ruff
 #
 # The PR trigger is intentionally unfiltered (no `paths:`): a path-filtered
 # job that skips on a PR leaves any required-check context at "Expected" and
-# deadlocks the merge (see gitleaks.yml). Whether this check is *required* is
-# a branch-protection setting, not decided here — see the PR for #1911.
+# deadlocks the merge (see gitleaks.yml). That matters because `ruff` is a
+# required check on `main` (#2017), bound in the required-checks block of
+# docs/reference/github-repo-setup.md.
 
 on:
   pull_request:

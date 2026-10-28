@@ -70,14 +70,15 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `require-linked-issue` | `pr-body-check.yml` | PR body has no closing keyword or `Refs` reference to an existing issue (`#N`, `owner/repo#N` or issue URL), no `[no-issue]` line (or title-final marker), no `refactor:` prefix, no `priority:critical` hotfix bypass; each bypass leaves a notice on the run. `osasuwu-bot` PRs get no `[no-issue]` / `refactor:` bypass (D14, #2055). `priority:critical` counts only when the most recent `labeled` event for it names a human other than the PR author — a bot account (actor type `Bot`, or `osasuwu-bot`), the author, or an unreadable event list gets no bypass, only a warning (#2082) |
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
+| `ruff` | `ruff.yml` | A `ruff check .` violation (rule groups pinned in `pyproject.toml` `[tool.ruff.lint].select`) or `ruff format --check .` drift, repo-wide |
 | `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
 | `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line for every author, and on a HIGH/CRITICAL PR by a non-admin author (the lane's bot, Dependabot, a write collaborator) until an admin human's APPROVED review sits on the current head SHA. An admin-authored HIGH/CRITICAL PR is green, with its tier in the summary (#2088). Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
 
-These six required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
-`waiting-human-review`, `risk-tier`) are the set enforced on jarvis's `main` (read back from the
-live branch-protection settings, 2026-10-20). The first five have been enforced since #1893;
-`risk-tier` (#2004) joined them once the check was live, and the binding block below carries
-all six. Before that, #1796/#1835 had cut it down to the first four, deleting the former `owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the
+These seven required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
+`waiting-human-review`, `risk-tier`, `ruff`) are the set enforced on jarvis's `main` (read back
+from the live branch-protection settings, 2026-10-28). The first five have been enforced since
+#1893; `risk-tier` (#2004) joined them once the check was live, `ruff` (#1911) joined via
+#2017, and the binding block below carries all seven. Before that, #1796/#1835 had cut it down to the first four, deleting the former `owner-queue-guard`, `meta-tests`/`ci-meta.yml`, the
 review retry wrapper and the advisory `issue-checks.yml`; don't copy any of those from older
 docs. Repo-custom gates layer on top of this floor as needed; they don't need to match another
 repo's set.
@@ -148,6 +149,7 @@ fail-open gate. Change the block and the live setting together
   "pytest": 15368,
   "code-gate": 3969106,
   "gitleaks": 15368,
+  "ruff": 15368,
   "waiting-human-review": 15368,
   "risk-tier": 15368
 }
