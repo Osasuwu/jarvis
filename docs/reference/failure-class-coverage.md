@@ -109,9 +109,9 @@ One defect per top-3 class (absence, claims, pattern), opened as a draft PR titl
 `[seeded-defect] …` from `tests/fixtures/seeded_defects/`, never merged. Collected 2026-10-20,
 after a person marked #2147, #2148 and #2149 ready at about 16:35Z; the three evidence runs are
 `pull_request` runs created 16:35:48-53Z at each head SHA. The PRs were then closed unmerged and
-their branches kept.
+their branches kept, so each Findings file is at its row's Head commit, not on `main`.
 
-| Class | PR | Head | Result | Findings (historical: each file exists only on its closed PR's branch) | Evidence | code-gate |
+| Class | PR | Head | Result | Findings | Evidence | code-gate |
 |---|---|---|---|---|---|---|
 | absence-read-as-success | [#2147](https://github.com/Osasuwu/jarvis/pull/2147) | `70fe7f9` | flagged | intent-vs-logic `scripts/junit_summary.py`; exception-handling `scripts/junit_summary.py` | [run](https://github.com/Osasuwu/jarvis/actions/runs/39458833397) | failure |
 | claims-from-plausibility | [#2148](https://github.com/Osasuwu/jarvis/pull/2148) | `eec174c` | flagged | intent-vs-logic `scripts/median_duration.py` | [run](https://github.com/Osasuwu/jarvis/actions/runs/39458841451) | failure |

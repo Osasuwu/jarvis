@@ -9,6 +9,8 @@ import re
 from collections import Counter
 from pathlib import Path
 
+from scripts import seeded_defects as sd
+
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "docs" / "reference" / "failure-class-coverage.md"
 CLASSES = {
@@ -97,3 +99,13 @@ def test_seeded_defect_table_has_a_collected_verdict_per_top_class():
     assert all(not r[3].startswith("no-verdict") for r in rows)
     # A flag must name the finding it rests on.
     assert all(r[4] != "none" for r in rows if r[3] == "flagged")
+
+
+def test_seeded_defect_table_header_is_the_one_the_script_prints():
+    """A pasted `seeded_defects.py collect` run keeps the doc's header (#2167).
+
+    A doc-only header carried a waiver the script's header lacks, so regenerating dropped it.
+    """
+    lines = DOC.read_text(encoding="utf-8").splitlines()
+    first = next(i for i, line in enumerate(lines) if _SEEDED_ROW.match(line))
+    assert "\n".join(lines[first - 2 : first]) == sd.ROW_HEADER
