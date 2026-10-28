@@ -14,7 +14,7 @@ fact-checked.
 |---|---|---|---|
 | 1 | Dead user-level paths: `~/.claude/reference/` and `~/.claude/hooks` no longer exist on the operator's devices. The reference files ship with the jarvis-private plugin at `~/.claude/plugins/marketplaces/jarvis-private/reference/`; `docs/reference/test-quality.md` is the repo-local copy of one of them. | text match | `AGENTS.md`, `CONTEXT.md`, `config/SOUL.md`, `docs/reference/*.md`, `docs/architecture.md`, `docs/design/*.md`, `docs/security/*.md`, `.github/scripts/`, `scripts/` |
 | 2 | Required merge gates: every check branch protection reports is named in `AGENTS.md` and `docs/reference/github-repo-setup.md`; no in-scope line gives a different count; `risk-tier` is not described as still pending. | `gh api repos/Osasuwu/jarvis/branches/main/protection/required_status_checks` | same files |
-| 3 | Backticked repo-relative paths that do not exist at the head. A hit is explained when its paragraph says the file is gone (retired, deleted, removed, no longer, historical, ...), or the token is a placeholder, a convention directory (`.claude/rules/`, `.claude/skills/`), or its line names another repo (`jarvis-oss`, `jarvis-private`). | filesystem | `AGENTS.md`, `CONTEXT.md`, `config/SOUL.md`, `docs/reference/*.md` |
+| 3 | Backticked repo-relative paths that do not exist at the head. A hit is explained when its paragraph says the file is gone (retired, deleted, removed, no longer, historical, ...), or the token is a placeholder, a convention directory (`.claude/rules/`, `.claude/skills/`), or its line names another repo (`jarvis-oss`, `jarvis-private`), or its line names a commit (a backticked SHA, as in a seeded-defect row's Head) whose tree holds the path. That last one is per line and per path: a path the named commit lacks is still a hit, and so is one whose commit is missing from the local clone (fetch its branch). | filesystem, `git cat-file` | `AGENTS.md`, `CONTEXT.md`, `config/SOUL.md`, `docs/reference/*.md` |
 
 Not covered, by design: `docs/research/**` and `docs/decisions/**` (dated records of the state
 on their date), and `/dispatch` references (the skill still exists, #2009 is deferred).
@@ -126,6 +126,15 @@ GONE = re.compile(r"retire|delet|remov|no longer|historical|orphan|\bgone\b|obso
 OTHER_REPO = re.compile(r"jarvis-oss|jarvis-private")
 PLACEHOLDER = re.compile(r"(^|/)(X|NAME)[-_.]|X-guard|test_X_")
 SUFFIX = re.compile(r"\.(py|md|yml|yaml|json|ps1|toml|sh|txt|jsonl|csv)$|/$")
+COMMIT = re.compile(r"`([0-9a-f]{7,40})`")
+
+
+def at_named_commit(path, line):
+    """The line names a commit (a backticked SHA) whose tree holds the path (#2167)."""
+    return any(subprocess.run(["git", "cat-file", "-e", f"{sha}:{path}"], cwd=ROOT,
+                              capture_output=True).returncode == 0 for sha in COMMIT.findall(line))
+
+
 for rel in DOCS:
     paras, cur = [], []
     for n, line in enumerate(read(rel), 1):
@@ -151,6 +160,8 @@ for rel in DOCS:
                 if path in CONVENTION_DIRS or (ROOT / path).exists():
                     continue
                 if PLACEHOLDER.search(path) or OTHER_REPO.search(line) or GONE.search(ptext):
+                    continue
+                if at_named_commit(path, line):
                     continue
                 hit("nonexistent-path", rel, n, f"`{tok}`")
 
