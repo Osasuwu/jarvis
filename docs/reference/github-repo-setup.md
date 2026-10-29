@@ -104,7 +104,8 @@ Two workflows, split so a PR can never change the rule that judges it:
 
 - **`code-review.yml` produces evidence, decides nothing.** The review job checks out the *base*
   SHA only; PR head content is fetched through the API into `.pr-head/`. The reviewer's sole
-  write grant is `Edit(./.review/findings.json)`. Deterministic base steps then validate the
+  write grant is `Edit(/${{ github.workspace }}/.review/findings.json)` — absolute once expanded,
+  so a reviewer that `cd`s still writes the seeded file (#2179). Deterministic base steps then validate the
   findings, enforce `blocking ⇔ findings non-empty`, check the tree is clean, stamp `sha` /
   `base_ref`, and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
   (one per attempt, `overwrite: false`, 90-day retention). A re-run still deletes the earlier
