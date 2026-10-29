@@ -38,7 +38,9 @@ reviewer; they are not a boundary — the harness matches command text, so a
 quoted flag slips past a deny.
 
 #1964 EVIDENCE PRODUCER: the reviewer no longer posts a PR comment; its only
-output is the findings file, written with `Edit(./.review/findings.json)`. That
+output is the findings file, written with
+`Edit(/${{ github.workspace }}/.review/findings.json)` (#2179: absolute, so a
+`cd` cannot move it). That
 is the one path-scoped write grant the harness consults (jarvis#1976: a
 `Write(path)` rule is never matched, so an unscoped `Write` was the only way
 to write anything — and it could write anywhere). `gh pr comment` is denied so
@@ -62,7 +64,7 @@ LIVE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
 # `EXPECTED_ALLOWED` below pins the whole set; this floor names the ones with
 # an incident behind them.
 FINDINGS_PATH = ".review/findings.json"
-FINDINGS_GRANT = f"Edit(./{FINDINGS_PATH})"
+FINDINGS_GRANT = "Edit(/${{ github.workspace }}/" + FINDINGS_PATH + ")"
 
 REQUIRED_TOOLS = (
     # Native file-reading tools — the reviewer prose steers it to Read/Grep/
@@ -319,13 +321,68 @@ def test_prompt_forbids_scratch_file_shapes() -> None:
 def test_only_write_grant_is_the_findings_file(path: Path) -> None:
     """#1964/#1976: an unscoped `Write` or bare `Edit` lets the reviewer — an LLM
     reading attacker-controlled text — write anywhere in the workspace. The one
-    write grant is `Edit(./.review/findings.json)`."""
+    write grant is `Edit(/${{ github.workspace }}/.review/findings.json)`."""
     for block in _allowed_tools_blocks(path):
         entries = block.split(",")
         writers = [e for e in entries if e.split("(")[0] in ("Write", "Edit", "MultiEdit")]
         assert writers == [FINDINGS_GRANT], (
             f"{path.name}: write-capable grants must be exactly [{FINDINGS_GRANT!r}], got {writers}"
         )
+
+
+# #2179: where an `Edit(path)` rule points, transcribed from the "Read and Edit
+# rules" table of code.claude.com/docs/en/permissions.md. A `--allowed-tools` rule
+# is a CLI-flag rule, so `/path` anchors at the primary working directory; `./path`
+# and a bare `path` anchor at the shell's CURRENT directory, which moves with `cd`.
+# `cd` is in Claude Code's built-in read-only set, so the allowlist cannot stop the
+# reviewer from moving: the grant has to name the file wherever the shell is.
+RUNNER_WORKSPACE = "/home/runner/work/jarvis/jarvis"
+# The directories reviewers had `cd`'d into when their findings Edit was denied
+# (like-current-song runs 40812042388, 40811579521, 40817051631), plus the root.
+REVIEWER_CWDS = (
+    RUNNER_WORKSPACE,
+    f"{RUNNER_WORKSPACE}/.pr-head",
+    f"{RUNNER_WORKSPACE}/android/app/src/main/kotlin",
+)
+
+
+def _edit_rule_target(rule: str, *, primary_wd: str, cwd: str) -> str:
+    """The absolute path an `Edit(<pattern>)` CLI-flag rule names (permissions.md)."""
+    m = re.fullmatch(r"Edit\((.+)\)", rule)
+    assert m, f"not an Edit(path) rule: {rule!r}"
+    pattern = m.group(1)
+    if pattern.startswith("//"):
+        return pattern[1:]
+    if pattern.startswith("~/"):
+        raise AssertionError(f"{rule!r} is home-relative; the runner's home is not the workspace")
+    if pattern.startswith("/"):
+        return primary_wd + pattern
+    return f"{cwd}/{pattern.removeprefix('./')}"
+
+
+def _rendered_findings_grant() -> str:
+    """The workflow's findings grant as the runner sees it, with `github.workspace`
+    substituted (the step's `with:` inputs are expanded before the action runs)."""
+    grants = {
+        e
+        for block in _allowed_tools_blocks(LIVE_WORKFLOW)
+        for e in block.split(",")
+        if e.startswith("Edit(")
+    }
+    assert len(grants) == 1, f"expected one findings grant across the review steps, got {grants}"
+    return grants.pop().replace("${{ github.workspace }}", RUNNER_WORKSPACE)
+
+
+@pytest.mark.parametrize("cwd", REVIEWER_CWDS, ids=["root", "pr-head", "subdir"])
+def test_findings_grant_still_names_the_seeded_file_after_a_cd(cwd: str) -> None:
+    """The job seeds $FINDINGS relative to the workspace; the reviewer's grant must
+    point at that file whichever directory its shell has moved to (#2179). A
+    cwd-relative `./` grant pointed at `<cwd>/.review/findings.json` after a `cd`,
+    the Edit was denied, and verify-verdict went red on the placeholder."""
+    # The action launches Claude Code in the workspace; pass a different primary
+    # directory so a grant that leans on it, not on the workspace, also goes red.
+    target = _edit_rule_target(_rendered_findings_grant(), primary_wd="/elsewhere", cwd=cwd)
+    assert target == f"{RUNNER_WORKSPACE}/{FINDINGS_PATH}"
 
 
 def test_findings_path_in_job_env_matches_the_edit_grant() -> None:
