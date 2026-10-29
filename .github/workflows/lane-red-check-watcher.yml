@@ -32,7 +32,7 @@ jobs:
   watch:
     permissions:
       contents: read
-    uses: Osasuwu/jarvis/.github/workflows/lane-watch.yml@2d4b5aeb9b3ff8a0a6c204ccadbec81aea04ad0d
+    uses: Osasuwu/jarvis/.github/workflows/lane-watch.yml@fe4bd2198fd68a76bea3fc0808e89cd8e5de344d
     with:
       bot-login: osasuwu-bot
       operator: ${{ vars.LANE_OPERATOR }}

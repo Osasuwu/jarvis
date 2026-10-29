@@ -23,7 +23,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: read
-    uses: Osasuwu/jarvis/.github/workflows/lane.yml@2d4b5aeb9b3ff8a0a6c204ccadbec81aea04ad0d
+    uses: Osasuwu/jarvis/.github/workflows/lane.yml@fe4bd2198fd68a76bea3fc0808e89cd8e5de344d
     with:
       bot-login: osasuwu-bot
       bot-email: 339131200+osasuwu-bot@users.noreply.github.com
