@@ -101,6 +101,10 @@ class RepoWindowResult:
     # {"original_ref", "revert_ref", "title"} - source data for the
     # "Отозвано" release-notes section (format_retraction_section).
     retractions: list[dict] = field(default_factory=list)
+    # #2184: numbers of merged window PRs flagged `is_experiment` - candidates
+    # for the "Эксперименты недели" section. Empty when the repo has no
+    # `experiments=` token or no such PR merged in the window.
+    experiment_refs: set[str] = field(default_factory=set)
     window_start: str = ""
     window_end: str = ""
     window_truncated: bool = False
@@ -115,6 +119,7 @@ class RepoWindowResult:
             "remaining_issues": self.remaining_issues,
             "remaining_refs": sorted(self.remaining_refs),
             "retractions": self.retractions,
+            "experiment_refs": sorted(self.experiment_refs),
             "window_start": self.window_start,
             "window_end": self.window_end,
             "window_truncated": self.window_truncated,
@@ -213,11 +218,26 @@ def _gather_prior_releases(repo: str, run_gh: RunGhFn, now: float) -> tuple[list
     return releases, prov
 
 
+def _parse_experiment_prefixes(token: str) -> tuple[str, ...]:
+    """repos.conf `experiments=docs/plans/,reports/` -> ("docs/plans/", "reports/").
+    Empty/absent token -> () (the repo has no "Эксперименты недели" section)."""
+    return tuple(p.strip() for p in token.split(",") if p.strip())
+
+
 def _gather_merged_window(
-    repo: str, run_gh: RunGhFn, start_iso: str, end_iso: str
+    repo: str,
+    run_gh: RunGhFn,
+    start_iso: str,
+    end_iso: str,
+    experiment_prefixes: tuple[str, ...] = (),
 ) -> tuple[list[dict], set[str], Provenance]:
     """Merged PRs in [start_iso, end_iso), flagging Dependabot authorship and
     extracting a linked `Closes #NNN` issue number for cross-collection dedup.
+
+    #2184: with `experiment_prefixes` (repos.conf `experiments=` token) each
+    entry also carries `is_experiment` - True when the PR changed a file under
+    one of the prefixes. `files` is requested only then, so a repo without the
+    token issues the same query as before.
 
     ceiling: single un-paginated `gh pr list --limit 100`; a repo merging
     more than 100 PRs in one week would silently truncate. Extend with
@@ -225,18 +245,12 @@ def _gather_merged_window(
     approaches that volume.
     """
     start = time.time()
+    fields = "number,title,mergedAt,author,body"
+    if experiment_prefixes:
+        fields += ",files"
     result = run_gh(
         repo,
-        [
-            "pr",
-            "list",
-            "--state",
-            "merged",
-            "--limit",
-            "100",
-            "--json",
-            "number,title,mergedAt,author,body",
-        ],
+        ["pr", "list", "--state", "merged", "--limit", "100", "--json", fields],
     )
     ok = result["returncode"] == 0
     elapsed = time.time() - start
@@ -266,16 +280,20 @@ def _gather_merged_window(
         reverts = _reverted_pr_number(pr.get("body") or "")
         if reverts:
             refs.add(reverts)
-        entries.append(
-            {
-                "number": pr["number"],
-                "title": pr["title"],
-                "merged_at": merged_at,
-                "is_dependabot": is_dependabot,
-                "closes_issue": closed_issue,
-                "reverts": reverts,
-            }
-        )
+        entry = {
+            "number": pr["number"],
+            "title": pr["title"],
+            "merged_at": merged_at,
+            "is_dependabot": is_dependabot,
+            "closes_issue": closed_issue,
+            "reverts": reverts,
+        }
+        if experiment_prefixes:
+            paths = [f.get("path") or "" for f in pr.get("files") or []]
+            entry["is_experiment"] = any(
+                path.startswith(prefix) for path in paths for prefix in experiment_prefixes
+            )
+        entries.append(entry)
     prov.input_rows = len(entries)
     return entries, refs, prov
 
@@ -500,7 +518,11 @@ def gather(
         window = compute_window(last_release_at, now_iso)
 
         merged, merged_refs, merged_prov = _gather_merged_window(
-            repo, _run_gh, window.start, window.end
+            repo,
+            _run_gh,
+            window.start,
+            window.end,
+            _parse_experiment_prefixes(entry.tokens.get("experiments", "")),
         )
         closed_issues, closed_refs, closed_prov = _gather_closed_issues_window(
             repo,
@@ -531,6 +553,7 @@ def gather(
             remaining_issues=remaining,
             remaining_refs={str(i["number"]) for i in remaining},
             retractions=retractions,
+            experiment_refs={str(e["number"]) for e in merged if e.get("is_experiment")},
             window_start=window.start,
             window_end=window.end,
             window_truncated=window.truncated,
