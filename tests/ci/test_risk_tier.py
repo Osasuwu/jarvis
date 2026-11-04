@@ -553,8 +553,8 @@ def test_nothing_but_an_admin_humans_approval_at_head_releases_a_high_pr(
     ok, messages = high(reviews, permissions)
     assert ok is False
     assert messages[-1] == (
-        "HIGH holds until an admin human (not osasuwu-bot) leaves an APPROVED review on the "
-        "current head aaaaaaa; a new push needs a new approval. See "
+        "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
+        "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
         ".github/scripts/risk_tier.md (residual risks)."
     )
 
@@ -568,8 +568,8 @@ def test_a_reviews_listing_past_its_page_cap_does_not_release(high):
     assert ok is False
     assert messages[1:] == [
         "reviews listing truncated at 10 pages",
-        "HIGH holds until an admin human (not osasuwu-bot) leaves an APPROVED review on the "
-        "current head aaaaaaa; a new push needs a new approval. See "
+        "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
+        "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
         ".github/scripts/risk_tier.md (residual risks).",
     ]
 
@@ -588,7 +588,7 @@ def test_a_declared_critical_line_holds_a_clean_diff(high):
     ok, messages = high([], {}, body="Risk: CRITICAL — data loss", files=[_file("scripts/x.py")])
     assert ok is False
     assert messages[0] == "declared CRITICAL, computed LOW, final CRITICAL"
-    assert messages[-1].startswith("CRITICAL holds until an admin human")
+    assert messages[-1].startswith("CRITICAL holds until a holder of the releasing role (admin,")
 
 
 def test_an_event_for_a_head_that_has_since_moved_is_red_as_superseded(high):
@@ -603,8 +603,8 @@ def test_an_event_for_a_head_that_has_since_moved_is_red_as_superseded(high):
 
 HIGH_SUMMARY = "declared HIGH, computed HIGH, final HIGH\n  - protected path(s): AGENTS.md"
 HIGH_HOLD = (
-    "HIGH holds until an admin human (not osasuwu-bot) leaves an APPROVED review on the "
-    "current head aaaaaaa; a new push needs a new approval. See "
+    "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
+    "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
     ".github/scripts/risk_tier.md (residual risks)."
 )
 
@@ -838,8 +838,8 @@ DEPENDABOT = ("dependabot[bot]", "Bot")
 # computed tier is LOW: only the fixed declared tier holds the PR.
 LOCK_BUMP = [_file("uv.lock")]
 DEPENDABOT_HOLD = (
-    "HIGH holds until an admin human (not osasuwu-bot) leaves an APPROVED review on the "
-    "current head aaaaaaa; a new push needs a new approval. See "
+    "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
+    "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
     ".github/scripts/risk_tier.md (residual risks)."
 )
 DEPENDABOT_SUMMARY = (

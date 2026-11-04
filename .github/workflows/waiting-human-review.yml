@@ -1,7 +1,8 @@
 name: Waiting for human review
 
-# #1892: a merge hold that reads the same at any team size. At N>1 a pending
-# review request carries it; at one developer a review cannot be requested
+# #1892: a merge hold that reads the same at any team size: red while a review
+# is owed. A pending review request to someone with the reviewing role carries
+# it; when no one but the author holds that role, a review cannot be requested
 # from oneself, so the `waiting-human-review` label carries the same hold
 # instead. Required as of #1893, which also retired the `status:owner-queue`
 # label this check replaced.

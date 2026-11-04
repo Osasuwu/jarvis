@@ -18,10 +18,10 @@ Verdict, in order:
    `config/protected-paths.json` entry (HIGH), test weakening (HIGH), and the plan
    classifier's ordinal (3 -> HIGH, 2 -> MEDIUM, 1 -> LOW). Anything unreadable is HIGH;
 3. final tier = max(computed, declared). LOW and MEDIUM pass;
-4. HIGH and CRITICAL pass when the live PR's author is an admin human: `admin` permission,
-   not a `Bot` account, not the lane's bot (#2088). Every other author's HIGH or CRITICAL PR
-   passes only with an APPROVED review on the current head SHA from an admin human who is
-   not the lane's bot.
+4. HIGH and CRITICAL pass when the live PR's author holds the releasing role: `admin`
+   permission, not a `Bot` account, not the lane's bot (#2088). Every other author's HIGH or
+   CRITICAL PR passes only with an APPROVED review on the current head SHA from a holder of
+   the releasing role (`admin` permission) who is not a `Bot` account and not the lane's bot.
 
 Stdlib plus `agents.plan_classifier` / `agents.plan_review_config` (PyYAML) and
 `agents.path_policy` (the protected-list reader and its glob dialect, #2067), all read from
@@ -73,7 +73,8 @@ GRAMMAR = "Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>"
 DOC = ".github/scripts/risk_tier.md"
 HOST_SETUP_DOC = "docs/reference/lane-host-setup.md"
 # A Dependabot PR carries upstream release notes, not a Risk line, so its body is not read and
-# its declared tier is fixed (#2059). HIGH: only an admin's head-SHA approval releases it.
+# its declared tier is fixed (#2059). HIGH: only a releasing-role holder's head-SHA approval
+# releases it.
 DEPENDABOT = "dependabot[bot]"
 DEPENDABOT_TIER = "HIGH"
 # Listing caps (#2068). Files: GitHub serves at most 3000 per PR. A listing that
@@ -269,7 +270,8 @@ def computed_tier(files, changed_files, repo, host_root, code_root=CODE_ROOT):
 
 
 def releasing_reviewer(api, repo, number, head_sha, bot):
-    """The login of an admin human whose latest review is APPROVED at `head_sha`, or None.
+    """The login of a releasing-role holder (`admin`, not a bot) whose latest review is
+    APPROVED at `head_sha`, or None.
 
     A reviews listing past its cap raises `ListingTruncated` to the caller."""
     latest = {}
@@ -299,7 +301,8 @@ def releasing_reviewer(api, repo, number, head_sha, bot):
 
 
 def admin_author(api, repo, pr, bot):
-    """The login of the PR's author when it is an admin human who is not `bot`, or None.
+    """The login of the PR's author when it holds the releasing role (`admin`), is not a
+    `Bot` account and is not `bot`, or None.
 
     An unreadable permission is not an admin."""
     user = pr.get("user") or {}
@@ -372,8 +375,9 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
     return False, [
         summary,
         *unread,
-        f"{final} holds until an admin human (not {bot}) leaves an APPROVED review on the "
-        f"current head {head[:7]}; a new push needs a new approval. See {DOC} (residual risks).",
+        f"{final} holds until a holder of the releasing role (admin, not {bot}) leaves an "
+        f"APPROVED review on the current head {head[:7]}; a new push needs a new approval. "
+        f"See {DOC} (residual risks).",
     ]
 
 
