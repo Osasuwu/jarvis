@@ -1,7 +1,7 @@
 # Agent Sandbox Boundaries
 
 Date: 2026-04-15 (revised 2026-04-23 for Federation & Delegation Phase 0 — #341; revised 2026-04-26 for principal-aware permissions — #426; isatty fallback removed in #429)
-Scope: Permission rules for **all principals** running Claude — interactive principal (`live`), autonomous loop, /delegate subagent, and the future dispatcher.
+Scope: Permission rules for **all principals** running Claude — interactive principal (`live`), autonomous loop, subagent, and a supervised session launched by another.
 
 ## Principal model (#426, #429)
 
@@ -12,7 +12,7 @@ Permissions depend on **who is running Claude**. Four principals — detection f
 | `live` | Default when no `JARVIS_PRINCIPAL` and no headless env | Highest — principal watches, can correct in seconds |
 | `autonomous` | `JARVIS_PRINCIPAL=autonomous` (set by scheduler/cron launchers) **or** `CLAUDE_CODE_NON_INTERACTIVE`/`CLAUDE_CODE_HEADLESS` | Low — corrections take hours |
 | `subagent` | `JARVIS_PRINCIPAL=subagent` (auto-injection in /delegate is future work) | Medium — isolated worktree, parent reviews diff |
-| `supervised` | `JARVIS_PRINCIPAL=supervised` (future dispatcher launcher will set this) | Delegated — permissions ⊆ supervisor's grant |
+| `supervised` | `JARVIS_PRINCIPAL=supervised` (no launcher sets it today; reserved for a session launched under a supervisor's grant) | Delegated — permissions ⊆ supervisor's grant |
 
 Detection chain (#429):
 1. Explicit env `JARVIS_PRINCIPAL` — primary
@@ -30,12 +30,12 @@ Action tier model: T0 = auto, T1 = owner queue, T2 = blocked. It was shared with
 | Action ↓ × Principal → | **live** | **autonomous** | **subagent** | **supervised** |
 |---|---|---|---|---|
 | **T0** narrow GitHub labels (`priority:*`, `area:*`, `needs-*`, `status:ready`); status updates; memory_store with `tag=auto-generated`; comment own PR; close issue with evidence; open jarvis tracking issue | ✅ act | ✅ act | ✅ act | ✅ act |
-| **T1** code edit own repo; open PR; merge LOW-risk own PR per skill policy; `/implement` work; workflow files; drive-by fixes | ✅ act | ⚠️ enqueue `task_queue` *(future, lands with dispatcher)* | ✅ in worktree, no merge | ✅ within dispatcher grant *(future)* |
+| **T1** code edit own repo; open PR; merge LOW-risk own PR per skill policy; `/implement` work; workflow files; drive-by fixes | ✅ act | ⚠️ no autonomous T1 route; work is handed to an `/orchestrate` session *(the AFK lane is frozen)* | ✅ in worktree, no merge | ✅ within the supervisor's grant |
 | **T2-canonical** repo-side sources of truth — see "Repo-level" table below | ⚠️ harness asks (hook exits 0) | ❌ block | ❌ block, escalate to `/implement` | ❌ block |
 | **T2-mirror** `~/.claude/*` files kept in sync by hand from this repo — see "User-level" table below | ❌ block (edit the repo source, then copy by hand) | ❌ block | ❌ block | ❌ block |
 | **T2-secret** `.env*` values; force push to main/master; impersonation; outbound to other humans (PR comments to others, Telegram, email) | ❌ always block | ❌ block | ❌ block | ❌ block |
 
-Currently enforced in code: only **T2** rows, via `.claude/hooks/protected-files.py` — a standalone, non-principal-aware, fail-closed successor to the retired `scripts/protected-files.py` (#1800). T1 routing (autonomous-enqueue, supervised-grant) lands when the dispatcher ships; until then T1 work is principal-driven through `/implement` and `/delegate`.
+Currently enforced in code: only **T2** rows, via `.claude/hooks/protected-files.py` — a standalone, non-principal-aware, fail-closed successor to the retired `scripts/protected-files.py` (#1800). T1 routing is not code: T1 work is principal-driven through `/implement`, and unattended T1 work goes through `/orchestrate`, where an interactive session hands issues to subagent workers that run `/implement`. The AFK lane (`agent-dispatch.yml`) is frozen (`docs/decisions/2026-Q4.md`, 2026-10-17).
 
 ## Protected Files
 
