@@ -34,12 +34,12 @@ hardcoded on a shared code path.
 
 Merging is gated by seven required CI checks on the default branch: `code-gate` (the code-review verdict),
 `require-linked-issue`, `pytest`, `gitleaks`, `ruff`, `waiting-human-review`, and `risk-tier` (the PR's `Risk:`
-line and diff; a non-admin author's HIGH+ stays red until a holder of the releasing role (admin) approves
-the head SHA) — branch-protection enforced, no cooperation needed from you. `waiting-human-review` is the
-merge hold: red while a human look is owed (a pending review request, or the label applied directly when
-no one but the author holds the reviewing role), and being a required check it blocks merge outright,
-including via auto-merge. The `status:owner-queue` label it replaced is retired — the label no longer
-exists in the repo; draft remains the manual hold for a PR not yet ready for gates to evaluate at all.
+line and diff; a HIGH+ PR whose author lacks the releasing role (admin, not a `Bot` account, not the lane's bot login)
+stays red until a holder of that role approves the head SHA) — branch-protection enforced, no cooperation needed from you.
+`waiting-human-review` is the merge hold: red while any review request is pending (whatever the reviewer's role), while
+the label is present (no role is read; it is how a hold is placed when no review can be requested), or after the hold was
+last released by a non-human actor, and being a required check it blocks merge outright, including via auto-merge. The
+retired `status:owner-queue` label no longer exists; draft remains the manual hold: GitHub will not merge a draft.
 `~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`'s admin-merge carve-outs
 (review-blind PRs, a sanctioned stop-gap merge for a false-failing gate) are the only sanctioned ways
 around a stuck gate; never normalize a bypass for a gate that's merely inconvenient.

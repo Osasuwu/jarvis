@@ -308,8 +308,8 @@ def test_the_agents_md_merge_rule_sentence_extracts_exactly_the_seven_checks():
     text = (
         "Merging is gated by seven required CI checks on the default branch: `code-gate` (the code-review verdict),\n"
         "`require-linked-issue`, `pytest`, `gitleaks`, `ruff`, `waiting-human-review`, and `risk-tier` (the PR's `Risk:`\n"
-        "line and diff; a non-admin author's HIGH+ stays red until a holder of the releasing role (admin) approves\n"
-        "the head SHA) — branch-protection enforced, no cooperation needed from you.\n"
+        "line and diff; a HIGH+ PR whose author lacks the releasing role (admin, not a `Bot` account, not the lane's bot login)\n"
+        "stays red until a holder of that role approves the head SHA) — branch-protection enforced, no cooperation needed from you.\n"
     )
     assert _names(text) == [
         "code-gate",

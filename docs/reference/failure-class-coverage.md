@@ -101,7 +101,7 @@ most: jarvis neither configures nor reads them back.
 | 57 | irreversible-effects | Approval: deny the irreversible kinds with a hook at the tool-call boundary | merge-push-guard denies default-branch pushes and admin merges; no destructive-command hook | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
 | 58 | irreversible-effects | Approval: show the plan before the apply, and make a person read it | Plan-review stage (`agents/plan_lock.py`), with no interactive backstop | partial | [#1681](https://github.com/Osasuwu/jarvis/issues/1681) |
 | 59 | irreversible-effects | Approval: require a reviewer on the protected environment that holds the credential | `code-gate-verdict` and `untrusted-review` environments have a branch policy, no required reviewer | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 60 | irreversible-effects | Approval: hold the change behind a required check until a person reads it | `.github/scripts/waiting_human_review.py` (required `waiting-human-review`) and `.github/scripts/risk_tier.py` `evaluate` (HIGH+ red until an admin approves the head SHA) | covered | [#2111](https://github.com/Osasuwu/jarvis/issues/2111) |
+| 60 | irreversible-effects | Approval: hold the change behind a required check until a person reads it | `.github/scripts/waiting_human_review.py` (required `waiting-human-review`) and `.github/scripts/risk_tier.py` `evaluate` (HIGH+ red until an admin who is not a `Bot` account or the lane's bot approves the head SHA) | covered | [#2111](https://github.com/Osasuwu/jarvis/issues/2111) |
 
 ## Seeded defects through code-gate
 
