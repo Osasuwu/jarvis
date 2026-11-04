@@ -31,12 +31,12 @@ base: a mismatch is red.
 
 Gate machinery. A PR touching the review workflow, the verdict workflow, this
 script, its GitHub client, a local action, the protected-path list or its reader
-is always red: its
-own review cannot be trusted, since it is the thing under change. The set is the
-`gate` bucket of the base repo's entry in `config/protected-paths.json`, matched by
-`agents/path_policy.py` (#2067); both are read from this script's own checkout. The sanctioned unblock is a human review-blind
-admin-merge (`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`) backed by a fresh-session
-`/code-review` posted with the final SHA.
+is always red: its own review cannot be trusted, since it is the thing under change. The set
+is the `gate` bucket of the base repo's entry in `config/protected-paths.json`, matched by
+`agents/path_policy.py` (#2067); both are read from this script's own checkout. The sanctioned
+unblock is a review-blind admin-merge by a holder of the admin role, outside any agent session
+(`~/.claude/plugins/marketplaces/jarvis-private/reference/merge-gates.md`), backed by a
+fresh-session `/code-review` posted with the final SHA.
 
 Every decision below is a pure function over plain dicts and lists; the API
 access (`gather_entries`, `post_check`) is a thin wrapper around them, over the
@@ -169,8 +169,8 @@ def changed_paths(files):
 
 def is_gate_machinery(paths, repo):
     """Whether ``paths`` touch the change set the gate itself is made of: the
-    ``gate`` bucket of ``repo``'s protected list. A PR touching any of it is judged
-    by a human, never by its own review.
+    ``gate`` bucket of ``repo``'s protected list. A PR touching any of it merges only
+    through the review-blind admin-merge (module docstring), never on its own review.
 
     The list and its reader come from the checkout this script runs from, loaded by
     file path (no `sys.path` change, no `agents` package import), so `python -I`
