@@ -44,7 +44,7 @@ When working on this repo:
 - Keep `Parent: #NNN` in child issue body only as optional context.
 - Parent epics are not auto-closed.
 - When all children close, workflow posts a verification comment on the parent.
-- Human owner verifies DoD and closes epic manually.
+- The principal verifies DoD and closes epic manually.
 
 ### Linking sub-issues via API
 

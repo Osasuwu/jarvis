@@ -2,14 +2,14 @@
 per #1707).
 
 Single classification artifact: class-2 trigger thresholds, the exempt
-(mechanical, no-owner-review) criteria list, and the class-3 (true-HITL)
+(mechanical, no-human-review) criteria list, and the class-3 (true-HITL)
 criteria list live in one YAML file (``config/plan_review.yaml``), loaded by
 :func:`load_plan_review_config`. No threshold, glob, or criterion is
 hardcoded on any code path that consumes this config — every value comes
 from the file on disk.
 
 Schema v2 (#1707) split what v1 called ``class_3`` into two distinct keys:
-``exempt`` (the old class_3 — mechanical criteria needing no owner review)
+``exempt`` (the old class_3 — mechanical criteria needing no human review)
 and a new ``class_3`` (true HITL: the change cannot close without a human).
 A v1 document is rejected with a rename-explaining error rather than
 silently misread.
@@ -42,7 +42,7 @@ class Class2Thresholds:
 
 @dataclass(frozen=True)
 class ExemptCriteria:
-    """Mechanical criteria exempt from owner review (the old ``class_3``)."""
+    """Mechanical criteria exempt from human review (the old ``class_3``)."""
 
     mechanical_criteria: tuple[str, ...]
 
@@ -102,7 +102,7 @@ def load_plan_review_config(path: str | Path) -> PlanReviewConfig:
         raise ValueError(
             f"plan-review config {path}: schema_version {schema_version!r} is stale "
             f"(expected {_SCHEMA_VERSION!r}) — #1707 renamed the old class_3: "
-            "(mechanical, no-owner-review) key to exempt:, and freed class_3: for "
+            "(mechanical, no-human-review) key to exempt:, and freed class_3: for "
             "the true-HITL criteria; rename class_3: to exempt:, add a new class_3: "
             'section, and set schema_version: "v2"'
         )

@@ -1,4 +1,4 @@
-"""Owner notification via the Telegram Bot API — the replacement transport for
+"""Operator notification via the Telegram Bot API — the replacement transport for
 the demolished ``agents/notify.py`` (#1802/#1868), used by ``/weekly-release``
 Step 5 (#1761).
 

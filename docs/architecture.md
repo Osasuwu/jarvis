@@ -89,7 +89,7 @@ per-machine: nothing syncs it across devices.
 Claude Code is the main agent. Subagents are spawned for isolated tasks.
 
 ```
-Owner
+Principal
   │ CLI / Telegram Channels
   ▼
 Claude Code (Sonnet — default)

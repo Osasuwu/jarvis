@@ -371,7 +371,7 @@ def trust_ramp_state(prior_releases: list[dict]) -> str:
     The `edited_after_publish` guard is honoured here but currently inert:
     the gather adapter always supplies False, since the GitHub releases API
     exposes no post-publish-edit signal. In practice the ramp gates on
-    published status alone — accepted by the owner for #1971.
+    published status alone — accepted by the principal for #1971.
     `prior_releases` is ordered most-recent-first; each entry needs
     `published: bool` and `edited_after_publish: bool`.
     """

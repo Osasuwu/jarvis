@@ -5,7 +5,7 @@ Evicted from the always-loaded invariants file by
 paid in every session on all three devices, and again after every compaction, to serve the rare
 session that actually designs an eval run. Pull this file when planning, scoring, or baselining one.
 
-## Holdout secrecy is unachievable solo
+## Holdout secrecy is unachievable when one person holds every role
 
 One principal wears every hat — author, scorer, and subject — so a holdout set cannot be kept secret
 from the person interpreting it. The defense is not secrecy but **paraphrase regeneration plus paired

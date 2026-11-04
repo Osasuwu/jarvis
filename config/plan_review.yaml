@@ -6,7 +6,7 @@
 # the exempt criteria list, and the class-3 criteria list live together here
 # — they are one classification vocabulary, not two config files.
 #
-# Schema v2 (#1707): v1's class_3 (a mechanical, no-owner-review exemption
+# Schema v2 (#1707): v1's class_3 (a mechanical, no-human-review exemption
 # list) is renamed to exempt:. The freed class_3: key now carries the true
 # HITL criteria (#1573 AC2) — a change matching one of these cannot close
 # without a human, ordinally the highest classification. Precedence inside
@@ -29,7 +29,7 @@
 #   exempt:
 #     mechanical_criteria: list[str]    — named mechanical criteria; a
 #                                          change-set matching any of these is
-#                                          exempt (class 1, no owner review
+#                                          exempt (class 1, no human review
 #                                          required)
 #   class_3:
 #     mechanical_criteria: list[str]    — named true-HITL criteria; a
