@@ -38,7 +38,7 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
    not admin.
 
    Every other author (the lane's bot, Dependabot, a `write` collaborator) → red until **a holder
-   of the releasing role (admin) has an APPROVED review on the current head SHA**: the
+   of the releasing role (admin, not a `Bot` account) has an APPROVED review on the current head SHA**: the
    reviewer's latest non-comment review is APPROVED, its `commit_id` is the live head, the
    reviewer is not a `Bot` account and not `LANE_BOT_LOGIN`, and the same permission lookup
    says `admin`. A new push moves the head, so it re-reds; a dismissed or superseded review
@@ -52,7 +52,7 @@ whose author, read from the live PR object of the API (`GET pulls/{n}`), has log
 `dependabot[bot]` **and** type `Bot`, the check does not read the body at all: the declared tier
 is fixed at **HIGH** and the summary says `declared HIGH (fixed: dependabot[bot] PR, body not
 read)`. Steps 2–4 run unchanged. A `Bot` author never qualifies for step 4's admin-author pass,
-so the PR holds until a holder of the releasing role (admin, not a bot) approves its current
+so the PR holds until a holder of the releasing role (admin, not a `Bot` account) approves its current
 head.
 
 - The match is on the API's author object, never on PR text. The `[bot]` suffix is reserved for
