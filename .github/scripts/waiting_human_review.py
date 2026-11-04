@@ -1,8 +1,9 @@
 """The `waiting-human-review` check: red while a human look is owed, and the bot cannot lift it.
 
 Runs from `.github/workflows/waiting-human-review.yml` on every PR event that can change the
-hold (#1892, #1999 AP5). A hold is a pending review request, or, for the solo developer who
-cannot request a review from themselves, the `waiting-human-review` label.
+hold (#1892, #1999 AP5). A hold is a review owed: a pending review request to someone with the
+reviewing role, or, when no one but the author holds that role (a review cannot be requested
+from oneself), the `waiting-human-review` label.
 
 Since the AFK worker writes as machine user `osasuwu-bot` (D1) with `write` access, it can
 remove the label or a review request. A hold the bot released is therefore not a release:

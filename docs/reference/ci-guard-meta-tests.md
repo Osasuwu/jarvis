@@ -87,8 +87,8 @@ How that comes about, in the current code:
   `github_client.py`, `.github/actions/**`, `agents/path_policy.py` and
   `config/protected-paths.json`, and every one of them gets the same red.
 - The check reads `code-gate: gate-machinery`, with a summary saying the PR changes the gate
-  itself and that a human merges it by review-blind admin-merge, backed by a fresh-session
-  `/code-review` posted with the final SHA.
+  itself and that a holder of the admin role merges it by review-blind admin-merge, outside any
+  agent session, backed by a fresh-session `/code-review` posted with the final SHA.
 - Checks that run earlier can show a different red code on the same PR: `draft`,
   `files-incomplete` or `files-empty` (in `evaluate_pr`), and `shared-head` (in `cmd_verdict`,
   before `evaluate_pr`). A sticky `evidence-blocking` or `evidence-unobserved` red recorded in

@@ -29,19 +29,20 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
    Anything the check cannot read (the protected list, `config/plan_review.yaml`, a files
    listing shorter than the PR's `changed_files`) is HIGH: unreadable never reads as clean.
 3. **Final tier = max(computed, declared).** The declared line can raise the tier, never lower it.
-4. LOW and MEDIUM → green. HIGH and CRITICAL → green when **the PR's author is an admin human**
-   (#2088): the author of the live PR object (`GET pulls/{n}`) is not a `Bot` account, is not
-   `LANE_BOT_LOGIN` (the caller's `bot-login`, compared case-insensitively; empty fails the
-   check), and `GET /repos/{repo}/collaborators/{login}/permission` says `admin`. The summary
-   still names the tier and its reasons, followed by `<TIER> hold skipped: author <login> has
-   admin permission`. An author whose permission cannot be read counts as not admin.
+4. LOW and MEDIUM → green. HIGH and CRITICAL → green when **the PR's author holds the releasing
+   role (admin)** (#2088): the author of the live PR object (`GET pulls/{n}`) is not a `Bot`
+   account, is not `LANE_BOT_LOGIN` (the caller's `bot-login`, compared case-insensitively;
+   empty fails the check), and `GET /repos/{repo}/collaborators/{login}/permission` says
+   `admin`. The summary still names the tier and its reasons, followed by `<TIER> hold skipped:
+   author <login> has admin permission`. An author whose permission cannot be read counts as
+   not admin.
 
-   Every other author (the lane's bot, Dependabot, a `write` collaborator) → red until **an admin
-   human has an APPROVED review on the current head SHA**: the reviewer's latest non-comment
-   review is APPROVED, its `commit_id` is the live head, the reviewer is not a `Bot` account and
-   not `LANE_BOT_LOGIN`, and the same permission lookup says `admin`. A new push moves the head,
-   so it re-reds; a dismissed or superseded review does not count. A bad `Risk:` line (step 1)
-   stays red for every author, an admin included.
+   Every other author (the lane's bot, Dependabot, a `write` collaborator) → red until **a holder
+   of the releasing role (admin) has an APPROVED review on the current head SHA**: the
+   reviewer's latest non-comment review is APPROVED, its `commit_id` is the live head, the
+   reviewer is not a `Bot` account and not `LANE_BOT_LOGIN`, and the same permission lookup
+   says `admin`. A new push moves the head, so it re-reds; a dismissed or superseded review
+   does not count. A bad `Risk:` line (step 1) stays red for every author, an admin included.
 
 ## Dependabot PRs
 
@@ -51,7 +52,8 @@ whose author, read from the live PR object of the API (`GET pulls/{n}`), has log
 `dependabot[bot]` **and** type `Bot`, the check does not read the body at all: the declared tier
 is fixed at **HIGH** and the summary says `declared HIGH (fixed: dependabot[bot] PR, body not
 read)`. Steps 2–4 run unchanged. A `Bot` author never qualifies for step 4's admin-author pass,
-so the PR holds until an admin human approves its current head.
+so the PR holds until a holder of the releasing role (admin, not a bot) approves its current
+head.
 
 - The match is on the API's author object, never on PR text. The `[bot]` suffix is reserved for
   GitHub Apps; a look-alike human login (`dependabot`) or another bot (`renovate[bot]`) gets the

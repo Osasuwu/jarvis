@@ -71,8 +71,8 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 | `pytest` (language-equivalent) | `pytest.yml` / your language's own CI workflow | Tests fail |
 | `gitleaks` | `gitleaks.yml` | Secret committed |
 | `ruff` | `ruff.yml` | A `ruff check .` violation (rule groups pinned in `pyproject.toml` `[tool.ruff.lint].select`) or `ruff format --check .` drift, repo-wide |
-| `waiting-human-review` | `waiting-human-review.yml` | Red while a human look is owed: a pending review request (N>1), or the `waiting-human-review` label with no request pending (solo-developer path) |
-| `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line for every author, and on a HIGH/CRITICAL PR by a non-admin author (the lane's bot, Dependabot, a write collaborator) until an admin human's APPROVED review sits on the current head SHA. An admin-authored HIGH/CRITICAL PR is green, with its tier in the summary (#2088). Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
+| `waiting-human-review` | `waiting-human-review.yml` | Red while a review is owed: a pending review request to someone with the reviewing role, or, when no one but the author holds that role, the `waiting-human-review` label with no request pending |
+| `risk-tier` | `pr-body-check.yml` (job `risk-tier`; the action `.github/actions/risk-tier`, script `.github/scripts/risk_tier.py`). A host repo adds the job per `lane-host-setup.md` | Red on a missing/malformed/duplicate `Risk:` line for every author, and on a HIGH/CRITICAL PR by a non-admin author (the lane's bot, Dependabot, a write collaborator) until an APPROVED review at the current head SHA from a holder of the releasing role (admin, not a bot) sits on it. An admin-authored HIGH/CRITICAL PR is green, with its tier in the summary (#2088). Tier = max(declared line, base-commit protected paths, test weakening, classifier). Grammar and rules: `.github/scripts/risk_tier.md` |
 
 These seven required checks (`code-gate`, `require-linked-issue`, `pytest`, `gitleaks`,
 `waiting-human-review`, `risk-tier`, `ruff`) are the set enforced on jarvis's `main` (read back
@@ -92,11 +92,12 @@ override, same pattern as `require-linked-issue` in `pr-body-check.yml`. It re-f
 event's payload snapshot may not yet reflect GitHub clearing the submitting reviewer from
 `requested_reviewers`.
 
-**The merge hold is `waiting-human-review`.** A PR owing a human look — either an unresolved
-review request (N>1) or the `waiting-human-review` label applied directly (solo-developer path)
-— fails this required check and cannot merge, including via auto-merge. The retired
-`status:owner-queue` label used to be the advisory version of this same hold; draft status
-remains the manual hold for a PR that isn't ready for auto-merge to evaluate at all.
+**The merge hold is `waiting-human-review`.** A PR owing a review — either an unresolved
+review request to someone with the reviewing role or, when no one but the author holds that
+role, the `waiting-human-review` label applied directly — fails this required check and cannot
+merge, including via auto-merge. The retired `status:owner-queue` label used to be the advisory
+version of this same hold; draft status remains the manual hold for a PR that isn't ready for
+auto-merge to evaluate at all.
 
 ### The `code-gate` rule: "Review evidence" (#1964)
 
@@ -427,12 +428,12 @@ body).
 - **Draft is the manual hold** — a PR stays in draft while it's not ready for auto-merge to
   even consider it; flip to ready only once gates should start evaluating.
 - **`waiting-human-review`** (#1892, required as of #1893) is the developer-count-agnostic
-  merge hold: red while at least one review request is pending (N>1), or while the
-  `waiting-human-review` label is applied with no request pending (the solo-developer path — a
-  review can't be requested from oneself, so the label carries the same hold under the same
-  name). Being a required check, a red `waiting-human-review` blocks merge outright, including
-  via auto-merge. The `status:owner-queue` label it replaced is retired — the label no longer
-  exists in the repo.
+  merge hold: red while a review is owed — at least one review request pending to someone with
+  the reviewing role, or, when no one but the author holds that role, the
+  `waiting-human-review` label applied with no request pending (a review can't be requested
+  from oneself, so the label carries the same hold under the same name). Being a required
+  check, a red `waiting-human-review` blocks merge outright, including via auto-merge. The
+  `status:owner-queue` label it replaced is retired — the label no longer exists in the repo.
 
 ### Free-plan / private-repo caveats
 

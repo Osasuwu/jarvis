@@ -563,8 +563,8 @@ def evaluate_pr(pr, files, entries, default_branch):
             False,
             "gate-machinery",
             "This PR changes the gate itself, so its own review cannot be trusted. "
-            "A human merges it by review-blind admin-merge, backed by a fresh-session "
-            "/code-review posted with the final SHA.",
+            "A holder of the admin role merges it by review-blind admin-merge, outside any "
+            "agent session, backed by a fresh-session /code-review posted with the final SHA.",
         )
     if not classify_paths(paths)["code"]:
         return Verdict(True, "cosmetic", "Every changed file is cosmetic; no review needed.")
