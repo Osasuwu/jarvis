@@ -1,11 +1,11 @@
 name: Waiting for human review
 
-# #1892: a merge hold that reads the same at any team size: red while a review
-# is owed. A pending review request to someone with the reviewing role carries
-# it; when no one but the author holds that role, a review cannot be requested
-# from oneself, so the `waiting-human-review` label carries the same hold
-# instead. Required as of #1893, which also retired the `status:owner-queue`
-# label this check replaced.
+# #1892: a merge hold that reads the same at any team size: red while any
+# review request is pending (to a user or a team, whatever the reviewer's
+# role) or while the `waiting-human-review` label is present; no role or team
+# size is read. The label is how a hold is placed when no review can be
+# requested (GitHub refuses a request to the PR's own author). Required as of
+# #1893, which also retired the `status:owner-queue` label this check replaced.
 #
 # #1999 AP5: the AFK worker is the machine user `osasuwu-bot` with write access,
 # so it can remove the label or a review request. The decision lives in

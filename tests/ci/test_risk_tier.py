@@ -1,8 +1,8 @@
 """The `risk-tier` required check (.github/scripts/risk_tier.py, #2004).
 
 The PR body's `Risk:` line is a merge hold: the check goes red on a bad line, floors the tier by
-the diff, and holds a non-admin author's HIGH/CRITICAL until an admin human approves the current
-head (#2088). These tests run the real script against a fake GitHub API and the real workflow
+the diff, and holds a non-admin author's HIGH/CRITICAL until a holder of the releasing role
+(admin, not a Bot account, not the lane's bot) approves the current head (#2088). These tests run the real script against a fake GitHub API and the real workflow
 file; expected values are literals.
 """
 
@@ -500,7 +500,7 @@ def test_a_test_file_without_a_readable_diff_reads_high(base):
     )
 
 
-# --- AC4: the release is an admin human's approval at the current head -------------------
+# --- AC4: the release is an approval at the current head from a releasing-role holder -----
 
 HIGH_FILES = [_file("AGENTS.md")]
 
@@ -547,15 +547,15 @@ def test_an_admin_approval_on_the_current_head_releases_a_high_pr(high):
         "no reviews",
     ],
 )
-def test_nothing_but_an_admin_humans_approval_at_head_releases_a_high_pr(
+def test_nothing_but_a_releasing_role_holders_approval_at_head_releases_a_high_pr(
     high, reviews, permissions
 ):
     ok, messages = high(reviews, permissions)
     assert ok is False
     assert messages[-1] == (
-        "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
-        "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
-        ".github/scripts/risk_tier.md (residual risks)."
+        "HIGH holds until a holder of the releasing role (admin, not a Bot account, not "
+        "osasuwu-bot) leaves an APPROVED review on the current head aaaaaaa; a new push "
+        "needs a new approval. See .github/scripts/risk_tier.md (residual risks)."
     )
 
 
@@ -568,9 +568,9 @@ def test_a_reviews_listing_past_its_page_cap_does_not_release(high):
     assert ok is False
     assert messages[1:] == [
         "reviews listing truncated at 10 pages",
-        "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
-        "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
-        ".github/scripts/risk_tier.md (residual risks).",
+        "HIGH holds until a holder of the releasing role (admin, not a Bot account, not "
+        "osasuwu-bot) leaves an APPROVED review on the current head aaaaaaa; a new push "
+        "needs a new approval. See .github/scripts/risk_tier.md (residual risks).",
     ]
 
 
@@ -603,9 +603,9 @@ def test_an_event_for_a_head_that_has_since_moved_is_red_as_superseded(high):
 
 HIGH_SUMMARY = "declared HIGH, computed HIGH, final HIGH\n  - protected path(s): AGENTS.md"
 HIGH_HOLD = (
-    "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
-    "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
-    ".github/scripts/risk_tier.md (residual risks)."
+    "HIGH holds until a holder of the releasing role (admin, not a Bot account, not "
+    "osasuwu-bot) leaves an APPROVED review on the current head aaaaaaa; a new push "
+    "needs a new approval. See .github/scripts/risk_tier.md (residual risks)."
 )
 
 
@@ -838,9 +838,9 @@ DEPENDABOT = ("dependabot[bot]", "Bot")
 # computed tier is LOW: only the fixed declared tier holds the PR.
 LOCK_BUMP = [_file("uv.lock")]
 DEPENDABOT_HOLD = (
-    "HIGH holds until a holder of the releasing role (admin, not osasuwu-bot) leaves an "
-    "APPROVED review on the current head aaaaaaa; a new push needs a new approval. See "
-    ".github/scripts/risk_tier.md (residual risks)."
+    "HIGH holds until a holder of the releasing role (admin, not a Bot account, not "
+    "osasuwu-bot) leaves an APPROVED review on the current head aaaaaaa; a new push "
+    "needs a new approval. See .github/scripts/risk_tier.md (residual risks)."
 )
 DEPENDABOT_SUMMARY = (
     "declared HIGH (fixed: dependabot[bot] PR, body not read), computed LOW, final HIGH"
