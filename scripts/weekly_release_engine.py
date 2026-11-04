@@ -264,6 +264,32 @@ def format_retraction_section(retractions: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# -- "Эксперименты недели" section (#2184) ------------------------------------
+
+EXPERIMENTS_MAX_LINES = 5
+
+
+def format_experiments_section(lines: list[str], window_refs: set[str]) -> str:
+    """Agent-authored experiment lines ("гипотеза → результат → вывод", one
+    per experiment PR of the window) -> a `## 🧪 Эксперименты недели` block.
+    Empty `lines` -> "" (no experiments this week means no section, never an
+    empty heading). Unlike the retraction/goal formatters the lines here are
+    prose, so each goes through lint_release_notes against `window_refs`;
+    any violation, or more than EXPERIMENTS_MAX_LINES lines, raises
+    ValueError rather than publishing an uncited claim."""
+    lines = [line for line in lines if line.strip()]
+    if not lines:
+        return ""
+    if len(lines) > EXPERIMENTS_MAX_LINES:
+        raise ValueError(
+            f"experiments section: {len(lines)} lines, at most {EXPERIMENTS_MAX_LINES}"
+        )
+    violations = lint_release_notes(lines, window_refs)
+    if violations:
+        raise ValueError("experiments section: " + "; ".join(violations))
+    return "\n".join(["## 🧪 Эксперименты недели", *lines])
+
+
 # -- Window-truncation disclosure (#1668) -------------------------------------
 
 
@@ -396,6 +422,7 @@ def assemble_release_body(
     retraction_section: str = "",
     disclosure_section: str = "",
     goal_section: str = "",
+    experiments_section: str = "",
 ) -> str:
     """Structural assembly only. `notes_body` and `remaining_section` are
     already agent-authored prose — facts sourced from the collected window /
@@ -416,10 +443,17 @@ def assemble_release_body(
 
     `goal_section` (#1669) is the pre-formatted goal-movement block from
     format_goal_section() — included only when non-empty, placed after
-    retractions and before remaining_section."""
+    retractions and before remaining_section.
+
+    `experiments_section` (#2184) is the block from
+    format_experiments_section() — included only when non-empty, placed
+    after notes_body and the disclosure (it is part of the week's content
+    the disclosure qualifies) and before retractions."""
     parts = [notes_body.rstrip()]
     if disclosure_section.strip():
         parts.append(disclosure_section.rstrip())
+    if experiments_section.strip():
+        parts.append(experiments_section.rstrip())
     if retraction_section.strip():
         parts.append(retraction_section.rstrip())
     if goal_section.strip():
