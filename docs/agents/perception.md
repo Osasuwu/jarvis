@@ -51,7 +51,7 @@ record cited at the end of this section.
 | **Source tier** | Perception modules + GitHub issue labels (`source:1-auto`, `source:2-review`, `source:3-human`) | 1, 2, 3 | Classifies an *incoming signal*: how autonomous can dispatch be? |
 | **`safety.Tier`** | `agents/safety.py` (IntEnum: `AUTO`, `OWNER_QUEUE`, `BLOCKED`; demolished with reactive-core in #1802) | 0, 1, 2 | Classified an *outgoing action* in `gate(tool_name, action, target, area)`. |
 | **`task_queue.auto_dispatch`** | DB column (boolean) | true / false | Filters what dispatcher's `poll_queue_node` picks up. |
-| **Plan-review class** (`agents/plan_classifier.py`, #1685/#1707) | GitHub issue labels (`afk:2-plan`, `afk:3-human`) | 1, 2, 3 | Classifies a *change-set's complexity*: does it need a locked plan / owner review before merge? Unrelated to perception's ingest-trust question. |
+| **Plan-review class** (`agents/plan_classifier.py`, #1685/#1707) | GitHub issue labels (`afk:2-plan`, `afk:3-human`) | 1, 2, 3 | Classifies a *change-set's complexity*: does it need a locked plan / principal review before merge? Unrelated to perception's ingest-trust question. |
 
 Source tier and `safety.Tier` are independent dimensions: source tier is
 "how trusted is the input," `safety.Tier` is "how dangerous is the
