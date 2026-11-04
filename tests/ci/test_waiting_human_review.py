@@ -3,11 +3,13 @@
 `.github/scripts/waiting_human_review.py` decides the check; the workflow runs it from the
 base ref. The check is red exactly when a human look is owed:
 
-  - A pending reviewer or team request     -> red
-  - The `waiting-human-review` label,      -> red (solo-developer path: a
-    with no request pending                   review cannot be requested from
-                                               oneself, so the label carries
-                                               the same hold)
+  - A pending reviewer or team request,    -> red
+    whoever it is to (no role is read)
+  - The `waiting-human-review` label       -> red whenever present, with or
+                                               without a request (the label is
+                                               how a hold is placed when no
+                                               review can be requested, e.g.
+                                               from the PR's own author)
   - Neither present, but the bot (or any   -> red, and the label goes back on
     non-human actor) released the hold
   - Neither present, released by a human   -> green
@@ -76,7 +78,7 @@ def test_no_request_no_label_is_green():
 
 
 def test_label_with_no_request_is_red():
-    """#1892 AC4: the solo-developer path — a label of the same name."""
+    """#1892 AC4: the label alone holds — the hold placed when no review can be requested."""
     assert whr.decide(_pr(labels=[LABEL_NAME]), [], _event()) == (True, "label", False)
 
 
@@ -367,7 +369,7 @@ def test_workflow_yaml_triggers_on_required_events():
 
 
 def test_workflow_yaml_triggers_on_label_toggle():
-    """#1892 AC2/AC4: the solo-developer path is carried by the label alone, so
+    """#1892 AC2/AC4: the hold placed when no review can be requested is the label alone, so
     toggling it must itself re-run the check — otherwise a label add/remove
     with no other PR event leaves a stale status until an unrelated re-run,
     breaking AC2's "settles without a re-run needed by hand" promise for that

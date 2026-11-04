@@ -375,9 +375,9 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
     return False, [
         summary,
         *unread,
-        f"{final} holds until a holder of the releasing role (admin, not {bot}) leaves an "
-        f"APPROVED review on the current head {head[:7]}; a new push needs a new approval. "
-        f"See {DOC} (residual risks).",
+        f"{final} holds until a holder of the releasing role (admin, not a Bot account, not "
+        f"{bot}) leaves an APPROVED review on the current head {head[:7]}; a new push needs a "
+        f"new approval. See {DOC} (residual risks).",
     ]
 
 
