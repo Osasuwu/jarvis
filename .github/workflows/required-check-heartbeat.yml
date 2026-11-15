@@ -1,0 +1,38 @@
+name: Required Check Heartbeat
+
+# #2142 (failure-class matrix row 8): a required check that never posts leaves its PR
+# pending forever, and pending is not red, so nobody is told. This reads the required checks
+# from live protection and goes red when one has had no result on an open PR's head for more
+# than an hour. A red scheduled run is the signal: GitHub notifies the repo's maintainers of
+# failed scheduled runs, as for branch-protection-drift.yml.
+#
+# Hourly on paper; GitHub drops many scheduled runs, so the alert can come hours late. It is
+# not a check on PRs: it reports on them, and a PR check would only add one more to wait for.
+# Logic: .github/scripts/required_check_heartbeat.py.
+
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+  pull-requests: read
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Find required checks with no result in time
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 .github/scripts/required_check_heartbeat.py

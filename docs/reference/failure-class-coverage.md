@@ -32,11 +32,11 @@ most: jarvis neither configures nor reads them back.
 
 | Class | Covered | Partial | Absent | Total |
 |---|---|---|---|---|
-| absence-read-as-success | 2 | 8 | 2 | 12 |
+| absence-read-as-success | 3 | 8 | 1 | 12 |
 | claims-from-plausibility | 3 | 6 | 7 | 16 |
 | pattern-matched-boundaries | 0 | 16 | 4 | 20 |
 | irreversible-effects | 1 | 8 | 3 | 12 |
-| **total** | 6 | 38 | 16 | 60 |
+| **total** | 7 | 38 | 15 | 60 |
 
 ## Matrix
 
@@ -49,7 +49,7 @@ most: jarvis neither configures nor reads them back.
 | 5 | absence-read-as-success | Tools: make each tool fail when it has nothing to check | pytest exits 5 on zero collected tests; gitleaks, ruff and the review prepare step have no empty-input check (seeded fixture `absence-read-as-success`) | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
 | 6 | absence-read-as-success | Shell: run steps fail-fast | `.github/workflows/code-review.yml`, `lane.yml`, `lane-watch.yml` and `lane-close.yml` set `set -euo pipefail`; other workflows use the runner default; nothing checks every `run:` step | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
 | 7 | absence-read-as-success | Preflight: fail the job when a tool the check needs is missing | none | absent | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
-| 8 | absence-read-as-success | Heartbeat: alert when a check has not reported a result in time | none (the lane watchers are frozen with the AFK lane) | absent | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
+| 8 | absence-read-as-success | Heartbeat: alert when a check has not reported a result in time | `.github/scripts/required_check_heartbeat.py` `stale_checks`, run hourly by `.github/workflows/required-check-heartbeat.yml`: a required check (read from live protection) with no result on an open PR's head after 60 min turns the scheduled run red, and GitHub notifies the maintainers; GitHub drops many scheduled runs, so the alert can come hours late | covered |  |
 | 9 | absence-read-as-success | Verdict: pass only on a positive result from the expected source, for this commit | `.github/scripts/code_gate_verdict.py` `evaluate_pr`: green on reviewed, non-blocking evidence whose SHA is the head, from a run titled for this PR and SHA; but a PR whose every file is cosmetic passes with no review evidence at all, where the Protection asks for an explicit nothing-to-review result from the expected source | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
 | 10 | absence-read-as-success | Canary: run the gate against the ways it can be skipped | Unit tests of the skip paths in `tests/ci/test_code_gate_verdict.py`; the seeded-defect harness below (`scripts/seeded_defects.py`); no live canary | partial | [#1935](https://github.com/Osasuwu/jarvis/issues/1935) |
 | 11 | absence-read-as-success | One copy: run the same gate code in every repository | Each owned repo has its own code-review implementation | partial | [#1935](https://github.com/Osasuwu/jarvis/issues/1935) |
