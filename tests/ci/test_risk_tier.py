@@ -501,7 +501,8 @@ def test_a_docstring_code_or_directive_change_keeps_the_floor(base, after):
     ("sources", "files"),
     [
         ({SCRIPT: (b"def f(:\n", b"def f(:  # x\n")}, None),
-        ({SCRIPT: (CODE, CODE + b"# x\n"), "docs/a.md": (b"a", b"b")}, None),
+        # sides that would pass as Python, so only the extension can refuse it
+        ({SCRIPT: (CODE, CODE + b"# x\n"), "docs/a.md": (b"a\n", b"a  # x\n")}, None),
         ({SCRIPT: (CODE, CODE + b"# x\n")}, [_file(SCRIPT), _file("docs/a.md")]),
         ({".github/x.pyi": (b"x: int\n", b"x: int  # x\n")}, None),
         ({SCRIPT: (None, CODE)}, None),
@@ -538,6 +539,38 @@ def test_what_the_rule_cannot_read_keeps_the_floor(base, sources, files):
     assert [r for r in reasons if r.startswith(("protected", "comment-only"))] == [
         f"protected path(s): {floor[0]}"
     ]
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (b"x = f(\n    1,\n    # nosec\n    2,\n)\n", b"x = f(\n    1,  # nosec\n    2,\n)\n"),
+        (b"#!/usr/bin/env python\nx = 1\n", b"# note\n#!/usr/bin/env python\nx = 1\n"),
+        (b"# coding: utf-8\nx = 1\n", b"# note\n\n# coding: utf-8\nx = 1\n"),
+    ],
+    ids=[
+        "onto a line of code",
+        "shebang pushed down",
+        "coding cookie pushed down",
+    ],
+)
+def test_a_directive_moved_to_another_line_keeps_the_floor(base, before, after):
+    assert _with_sources(base, {SCRIPT: (before, after)}) == SCRIPT_FLOOR
+
+
+def test_a_path_in_the_reason_cannot_start_a_workflow_command(base):
+    path = "supabase/a\n::error::x.py"
+    shown = "supabase/a\\n::error::x.py"
+    comments = (CODE, CODE + b"# x\n")
+    assert _with_sources(base, {path: comments}) == (
+        "LOW",
+        [f"comment-only exemption: protected path(s) {shown} changed in comments only"],
+    )
+    code = (CODE, CODE.replace(b"return 1", b"return 2"))
+    assert _with_sources(base, {path: code}) == (  # supabase/** is the shared surface too
+        "HIGH",
+        [f"protected path(s): {shown}", "classifier ordinal 2"],
+    )
 
 
 def test_the_exemption_lowers_only_the_path_floor(base):

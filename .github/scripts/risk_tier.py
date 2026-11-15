@@ -129,9 +129,12 @@ _DIRECTIVE = re.compile(
     r"|pyre-|ruff\s*:|flake8|nosec|gitleaks\s*:|coding[:=]",
     re.IGNORECASE,
 )
-# A CR not followed by LF. The interpreter and ruff read it as a line break; tokenize on
-# Python 3.12+ does not, so a directive after it can drop out of the comparison.
+# A CR not followed by LF. Python versions and tools disagree on whether it ends a line
+# (tokenize on 3.12+ says no, 3.11 and ruff say yes), so the line a directive sits on is
+# not well defined: no exemption.
 _LONE_CR = re.compile(rb"\r(?!\n)")
+# A shebang or a coding cookie: read by position, on the first line or two.
+_HEADER = re.compile(r"^#!|coding[:=]", re.IGNORECASE)
 
 
 def _visible_lines(body):
@@ -235,21 +238,27 @@ def _path_floor(paths, repo, host_root):
     verdict = path_policy.classify_buckets(paths, buckets)
     if verdict.risk_floor == "HIGH":
         matched = tuple(verdict.risk_matched)
-        return "HIGH", [f"protected path(s): {', '.join(matched)}"], matched
+        return "HIGH", [f"protected path(s): {', '.join(map(_clean, matched))}"], matched
     return "LOW", [], ()
 
 
 def _directives(source):
     """Each directive comment of `source` (bytes) with its anchor: the number of code tokens
-    before it. Comments and blank lines do not move the anchor, so a plain comment added next
-    to a directive leaves it in place; a directive moved to another statement does not."""
-    anchor, found = 0, []
+    before it, and whether it trails code on its line. Comments and blank lines do not move
+    the anchor, so a plain comment added next to a directive leaves it in place; a directive
+    moved to another line of code, or from its own line onto a line of code, does not. A
+    shebang or coding cookie works only on the first lines, so its line number counts too."""
+    anchor, last, found = 0, None, []
     for tok in tokenize.tokenize(io.BytesIO(source).readline):
         if tok.type == tokenize.COMMENT:
             if _DIRECTIVE.search(tok.string):
-                found.append((anchor, tok.string))
+                trailing = last is not None and last.end[0] == tok.start[0]
+                row = tok.start[0] if _HEADER.search(tok.string) else None
+                found.append((anchor, trailing, row, tok.string))
         elif tok.type != tokenize.NL:
             anchor += 1
+            if tok.type not in (tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT):
+                last = tok
     return found
 
 
@@ -401,7 +410,7 @@ def computed_tier(files, changed_files, repo, host_root, code_root=CODE_ROOT, re
         exempt = is_comment_only(files, sources)
     if exempt:
         reasons.append(
-            f"{EXEMPTION}: protected path(s) {', '.join(floor[2])} changed in comments only"
+            f"{EXEMPTION}: protected path(s) {', '.join(map(_clean, floor[2]))} changed in comments only"
         )
         floor = ("LOW", [], ())
     for tier, why in (

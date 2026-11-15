@@ -45,13 +45,14 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
      inline limit. The summary says `comment-only exemption not checked: <why>`.
    - The `ast.dump` of both sides is equal. A docstring is a node of the AST, so a
      docstring edit is a code change here.
-   - Every directive comment is unchanged and at the same anchor, its count of code tokens
-     before it. The directives covered are `noqa`, `type:`, `pragma`, `fmt:`, `isort:`,
+   - Every directive comment is unchanged and at the same anchor: its count of code tokens
+     before it, and whether it trails code on its line. A shebang or coding cookie must
+     also keep its line number. The directives covered are `noqa`, `type:`, `pragma`, `fmt:`, `isort:`,
      `pylint:`, `mypy:`, `pyright:`, `pyre-`, `ruff:`, `flake8`, `nosec`, `gitleaks:`,
      `yapf:`, a shebang and a coding cookie, in any case. They steer a linter, a type
      checker or a scanner, so moving one changes what the code is checked for.
-   - Neither side has a lone CR. Python's tokenizer reads a lone CR as a line break, and
-     GitHub's view of the diff may not.
+   - Neither side has a lone CR. Python versions and tools disagree on whether it ends a
+     line, so the line a directive sits on is not well defined.
    - Neither side fails to decode, parse or tokenize. Any such failure keeps the floor.
 
    When the exemption applies, the summary carries `comment-only exemption: protected
