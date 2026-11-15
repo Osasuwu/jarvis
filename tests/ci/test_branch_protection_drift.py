@@ -263,6 +263,24 @@ def test_a_flag_missing_from_classic_protection_is_drift_not_a_block():
     ]
 
 
+def test_a_classic_protection_answer_with_neither_flag_is_drift_on_both():
+    # Folded from #2214: a readable answer that names no flag confirms nothing.
+    assert drift.find_history_drift({}, None, []) == [
+        "force pushes: branch protection allow_force_pushes.enabled is null,"
+        " no active ruleset `non_fast_forward` rule",
+        "deletion: branch protection allow_deletions.enabled is null,"
+        " no active ruleset `deletion` rule",
+    ]
+
+
+@pytest.mark.parametrize("entry", [False, "false", {"enabled": "false"}])
+def test_a_flag_not_shaped_enabled_false_is_drift_not_a_crash(entry):
+    # Folded from #2214: only {"enabled": false} is a block; any other shape is unconfirmed.
+    protection = {"allow_force_pushes": entry, "allow_deletions": {"enabled": False}}
+    (problem,) = drift.find_history_drift(protection, None, [])
+    assert problem.startswith("force pushes: branch protection allow_force_pushes.enabled is ")
+
+
 def test_unreadable_classic_protection_with_no_ruleset_rule_is_drift_not_a_pass():
     assert drift.find_history_drift(None, "HTTP 403", _rules("non_fast_forward")) == [
         "deletion: no active ruleset `deletion` rule, and branch protection was not read (HTTP 403)"
@@ -302,16 +320,28 @@ def _run_main(monkeypatch, tmp_path, api):
     return drift.main(make_client=lambda token: api)
 
 
-def test_main_fails_when_force_pushes_are_allowed_with_the_binding_in_step(
-    monkeypatch, tmp_path, capsys
+@pytest.mark.parametrize(
+    ("allowed", "line"),
+    [
+        (
+            {"force_pushes": True},
+            "  - force pushes: branch protection allow_force_pushes.enabled is true,"
+            " no active ruleset `non_fast_forward` rule\n",
+        ),
+        (  # folded from #2214: deletion alone turns the run red too
+            {"deletions": True},
+            "  - deletion: branch protection allow_deletions.enabled is true,"
+            " no active ruleset `deletion` rule\n",
+        ),
+    ],
+)
+def test_main_fails_when_one_history_guard_is_allowed_with_the_binding_in_step(
+    allowed, line, monkeypatch, tmp_path, capsys
 ):
-    api = FakeApi(_routes(_live(**{"code-gate": 3969106}), _protection(force_pushes=True)))
+    api = FakeApi(_routes(_live(**{"code-gate": 3969106}), _protection(**allowed)))
     assert _run_main(monkeypatch, tmp_path, api) == 1
     out = capsys.readouterr().out
-    assert (
-        "  - force pushes: branch protection allow_force_pushes.enabled is true,"
-        " no active ruleset `non_fast_forward` rule\n"
-    ) in out
+    assert line in out
     assert "No drift" not in out
 
 

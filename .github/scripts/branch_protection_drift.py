@@ -138,7 +138,8 @@ def find_history_drift(protection, unreadable, rules):
                 f" ({unreadable})"
             )
             continue
-        allowed = (protection.get(flag) or {}).get("enabled")
+        entry = protection.get(flag)
+        allowed = entry.get("enabled") if isinstance(entry, dict) else None
         if allowed is not False:
             problems.append(
                 f"{effect}: branch protection {flag}.enabled is {json.dumps(allowed)},"
