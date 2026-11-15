@@ -10,6 +10,11 @@ merge gate; this probe is what notices.
 The branch object (`GET /repos/{owner}/{repo}/branches/{branch}`) carries the protection
 settings for any token that can read the repo, so the probe needs no admin credential.
 
+The force-push and deletion flags (#2146) are not on the branch object; they come from
+`GET /repos/{owner}/{repo}/branches/{branch}/protection`, which needs a token with repository
+Administration read, so the job passes `PROTECTION_READ_TOKEN`. A flag the probe cannot read is
+reported as drift: a check that cannot run is not a check that passed.
+
 Stdlib only: the job needs no dependency install. The branch is read through the shared
 client `github_client.py` beside this script (#2068), loaded by file path at import.
 """
@@ -19,6 +24,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 from pathlib import Path
 
 
@@ -45,6 +51,9 @@ github_client = _load_client()
 
 MARKER = "<!-- required-checks-binding -->"
 _BLOCK = re.compile(re.escape(MARKER) + r"\s*```json\s*\n(.*?)\n```", re.DOTALL)
+FLAGS_MARKER = "<!-- protection-flags-binding -->"
+_FLAGS_BLOCK = re.compile(re.escape(FLAGS_MARKER) + r"\s*```json\s*\n(.*?)\n```", re.DOTALL)
+FLAG_NAMES = ("allow_force_pushes", "allow_deletions")
 DEFAULT_DOC = "docs/reference/github-repo-setup.md"
 
 
@@ -67,6 +76,40 @@ def parse_documented_binding(markdown):
     if bad:
         raise BindingError(f"app id must be an integer for: {', '.join(bad)}")
     return binding
+
+
+def parse_documented_flags(markdown):
+    """Return {flag: bool} from the marked JSON block of the doc: the value each of
+    FLAG_NAMES must have on the default branch's protection (#2146)."""
+    match = _FLAGS_BLOCK.search(markdown)
+    if not match:
+        raise BindingError(f"no ```json block follows {FLAGS_MARKER}")
+    try:
+        flags = json.loads(match.group(1))
+    except json.JSONDecodeError as exc:
+        raise BindingError(f"flags block is not valid JSON: {exc}") from exc
+    if not isinstance(flags, dict) or set(flags) != set(FLAG_NAMES):
+        raise BindingError(f"flags block must have exactly the keys {', '.join(FLAG_NAMES)}")
+    bad = [k for k, v in flags.items() if type(v) is not bool]
+    if bad:
+        raise BindingError(f"flag value must be a boolean for: {', '.join(bad)}")
+    return flags
+
+
+def find_flag_drift(documented_flags, protection):
+    """List the flags of `GET .../protection` that differ from the documented values.
+
+    A flag absent from the answer, or not shaped `{"enabled": bool}`, is drift: the
+    probe cannot confirm it."""
+    problems = []
+    for name, expected in documented_flags.items():
+        entry = (protection or {}).get(name)
+        live = entry.get("enabled") if isinstance(entry, dict) else None
+        if type(live) is not bool:
+            problems.append(f"{name}: documented {expected}, live value unreadable")
+        elif live != expected:
+            problems.append(f"{name}: documented {expected}, live {live}")
+    return problems
 
 
 def live_binding(branch):
@@ -348,16 +391,30 @@ def unmatched_known_stale(claims, known=KNOWN_STALE):
     return [entry for entry in known if tuple(entry[:3]) not in present]
 
 
-def run(doc_text, fetch_branch, claims=(), scan_error=None, known=KNOWN_STALE):
+def run(
+    doc_text, fetch_branch, claims=(), scan_error=None, known=KNOWN_STALE, fetch_protection=None
+):
     """Compare; print the verdict; return the process exit code.
 
     scan_error is the DocScanError of a doc scan that could not run: the binding comparison
     still runs and reports, but the verdict is a failure, never "No drift". known is the
-    tracked-stale list (KNOWN_STALE by default).
+    tracked-stale list (KNOWN_STALE by default). fetch_protection, when given, returns the
+    `GET .../protection` object and enables the force-push/deletion flag comparison (#2146);
+    an HTTP error from it is reported as drift, not raised.
     """
     documented = parse_documented_binding(doc_text)
     branch = fetch_branch()
     problems = find_drift(documented, branch)
+    if fetch_protection is not None:
+        documented_flags = parse_documented_flags(doc_text)
+        try:
+            problems += find_flag_drift(documented_flags, fetch_protection())
+        except urllib.error.HTTPError as error:
+            problems.append(
+                "protection flags unreadable "
+                f"(HTTP {error.code}; the token needs repository Administration read): "
+                + ", ".join(FLAG_NAMES)
+            )
     live = live_binding(branch)
     tracked = {(path, line, name): issue for path, line, name, issue in known}
     stale, warnings = [], []
@@ -402,7 +459,11 @@ def _make_client(token):
 def main(make_client=None):
     repo = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ["DEFAULT_BRANCH"]
-    client = (make_client or _make_client)(os.environ["GH_TOKEN"])
+    make = make_client or _make_client
+    client = make(os.environ["GH_TOKEN"])
+    # An unset or empty secret falls back to the job token, which cannot read /protection:
+    # the flags then report as unreadable drift, never as a pass.
+    protection_client = make(os.environ.get("PROTECTION_READ_TOKEN") or os.environ["GH_TOKEN"])
     try:
         claims, scan_error = scan_docs(os.environ.get("DOC_ROOT", ".")), None
     except DocScanError as error:
@@ -413,6 +474,9 @@ def main(make_client=None):
             lambda: client("GET", f"repos/{repo}/branches/{branch}"),
             claims,
             scan_error,
+            fetch_protection=lambda: protection_client(
+                "GET", f"repos/{repo}/branches/{branch}/protection"
+            ),
         )
 
 

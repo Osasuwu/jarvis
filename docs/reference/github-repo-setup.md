@@ -146,6 +146,20 @@ there accepts a same-named check run or commit status from any token, so an unap
 fail-open gate. Change the block and the live setting together
 (`gh api -X PATCH repos/<owner>/<repo>/branches/<default>/protection/required_status_checks`).
 
+The same job also compares the default branch's force-push and deletion protection (#2146) with
+the block below, read from `GET /branches/<default>/protection`. That endpoint needs repository
+Administration read, which `GITHUB_TOKEN` cannot have: the job reads the secret
+`PROTECTION_READ_TOKEN` (a fine-grained token with Administration: read on this repo only). Without
+it the flags report as unreadable and the job goes red, since a check that cannot run is not a pass.
+
+<!-- protection-flags-binding -->
+```json
+{
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+```
+
 <!-- required-checks-binding -->
 ```json
 {

@@ -7,8 +7,9 @@ name: Branch Protection Drift
 # maintainers of failed scheduled runs.
 #
 # Scheduled/dispatch only: it judges the default branch's doc, and a required-check run on
-# PRs would only add a check to wait for. Reads protection through the branch object, which
-# any read token sees, so no admin credential is needed. Logic:
+# PRs would only add a check to wait for. Reads the required checks through the branch object,
+# which any read token sees; the force-push and deletion flags need the PROTECTION_READ_TOKEN
+# secret (Administration: read). Logic:
 # .github/scripts/branch_protection_drift.py.
 
 on:
@@ -40,4 +41,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Administration: read, for the force-push/deletion flags (#2146); GITHUB_TOKEN cannot.
+          PROTECTION_READ_TOKEN: ${{ secrets.PROTECTION_READ_TOKEN }}
         run: python3 .github/scripts/branch_protection_drift.py

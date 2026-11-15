@@ -8,6 +8,7 @@ what it calls drift, against the real documented block and the real workflow.
 """
 
 import importlib.util
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -152,24 +153,122 @@ def test_main_reads_the_default_branch_with_the_job_token_and_exits_on_drift(
     monkeypatch, tmp_path, capsys
 ):
     doc = tmp_path / "binding.md"
-    doc.write_text(
-        '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
-        encoding="utf-8",
+    doc.write_text(DOC_WITH_FLAGS, encoding="utf-8")
+    api = FakeApi(
+        {
+            "repos/owner/repo/branches/main/protection": _protection(),
+            "repos/owner/repo/branches/main": _live(**{"code-gate": None}),
+        }
     )
-    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": None})})
     tokens = []
     for key, value in {
         "GITHUB_REPOSITORY": "owner/repo",
         "DEFAULT_BRANCH": "main",
         "GH_TOKEN": "t0ken",
+        "PROTECTION_READ_TOKEN": "adm1n",
         "BINDING_DOC": str(doc),
         "DOC_ROOT": str(tmp_path / "no-docs"),
     }.items():
         monkeypatch.setenv(key, value)
     assert drift.main(make_client=lambda token: tokens.append(token) or api) == 1
-    assert tokens == ["t0ken"]
-    assert api.calls == [("GET", "repos/owner/repo/branches/main", None)]
+    assert tokens == ["t0ken", "adm1n"]
+    assert api.calls == [
+        ("GET", "repos/owner/repo/branches/main", None),
+        ("GET", "repos/owner/repo/branches/main/protection", None),
+    ]
     assert "code-gate: documented app_id 3969106, live None" in capsys.readouterr().out
+
+
+# --- Force-push and deletion flags (#2146) ---------------------------------------------------
+# `GET .../protection` answers each flag as {"enabled": bool}. The default branch has both off.
+
+DOC_WITH_FLAGS = (
+    '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n'
+    "<!-- protection-flags-binding -->\n```json\n"
+    '{"allow_force_pushes": false, "allow_deletions": false}\n```\n'
+)
+FLAGS_OFF = {"allow_force_pushes": False, "allow_deletions": False}
+
+
+def _protection(force=False, deletions=False):
+    return {"allow_force_pushes": {"enabled": force}, "allow_deletions": {"enabled": deletions}}
+
+
+def _run_flags(protection, capsys):
+    live = _live(**{"code-gate": 3969106})
+    code = drift.run(DOC_WITH_FLAGS, lambda: live, fetch_protection=protection)
+    return code, capsys.readouterr().out
+
+
+def test_flags_in_step_have_no_drift():
+    assert drift.find_flag_drift(FLAGS_OFF, _protection()) == []
+
+
+def test_enabled_force_push_is_drift():
+    assert drift.find_flag_drift(FLAGS_OFF, _protection(force=True)) == [
+        "allow_force_pushes: documented False, live True"
+    ]
+
+
+def test_enabled_deletion_is_drift():
+    assert drift.find_flag_drift(FLAGS_OFF, _protection(deletions=True)) == [
+        "allow_deletions: documented False, live True"
+    ]
+
+
+@pytest.mark.parametrize("answer", [{}, None, {"allow_force_pushes": {"enabled": False}}])
+def test_a_flag_missing_from_the_answer_is_drift_not_a_pass(answer):
+    assert drift.find_flag_drift(FLAGS_OFF, answer)
+
+
+def test_run_goes_red_on_force_push_drift_alone(capsys):
+    code, out = _run_flags(lambda: _protection(force=True), capsys)
+    assert code == 1
+    assert "allow_force_pushes: documented False, live True" in out
+
+
+def test_run_goes_red_on_deletion_drift_alone(capsys):
+    code, out = _run_flags(lambda: _protection(deletions=True), capsys)
+    assert code == 1
+    assert "allow_deletions: documented False, live True" in out
+
+
+def test_run_is_green_when_checks_and_flags_are_in_step(capsys):
+    code, out = _run_flags(lambda: _protection(), capsys)
+    assert code == 0
+    assert out.startswith("No drift")
+
+
+def test_an_unreadable_protection_endpoint_is_red_not_a_crash_or_a_pass(capsys):
+    def forbidden():
+        raise urllib.error.HTTPError("u", 403, "Forbidden", {}, None)
+
+    code, out = _run_flags(forbidden, capsys)
+    assert code == 1
+    assert "HTTP 403" in out
+    assert "allow_force_pushes" in out
+
+
+def test_the_real_doc_documents_both_flags_blocked():
+    assert drift.parse_documented_flags(DOC) == FLAGS_OFF
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        '{"allow_force_pushes": false}',
+        '{"allow_force_pushes": false, "allow_deletions": "no"}',
+        "not json",
+    ],
+)
+def test_an_unreadable_flags_block_is_an_error(block):
+    with pytest.raises(drift.BindingError):
+        drift.parse_documented_flags(f"{drift.FLAGS_MARKER}\n```json\n{block}\n```\n")
+
+
+def test_the_probe_job_passes_the_protection_read_token():
+    (step,) = [s for s in WORKFLOW["jobs"]["drift"]["steps"] if "run" in s]
+    assert step["env"]["PROTECTION_READ_TOKEN"] == "${{ secrets.PROTECTION_READ_TOKEN }}"
 
 
 def test_the_probe_runs_unattended_on_a_schedule_and_on_demand():
@@ -548,13 +647,15 @@ def test_main_fails_on_a_doc_claim_under_doc_root_that_is_not_required_live(
     monkeypatch, tmp_path, capsys
 ):
     doc = tmp_path / "binding.md"
-    doc.write_text(
-        '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
-        encoding="utf-8",
-    )
+    doc.write_text(DOC_WITH_FLAGS, encoding="utf-8")
     root = _doc_root(tmp_path / "root")
     (root / "AGENTS.md").write_text("Here `ghost` is a required check.\n", encoding="utf-8")
-    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": 3969106})})
+    api = FakeApi(
+        {
+            "repos/owner/repo/branches/main/protection": _protection(),
+            "repos/owner/repo/branches/main": _live(**{"code-gate": 3969106}),
+        }
+    )
     for key, value in {
         "GITHUB_REPOSITORY": "owner/repo",
         "DEFAULT_BRANCH": "main",
@@ -605,11 +706,13 @@ def test_main_fails_closed_when_doc_root_is_missing_even_with_protection_in_step
     monkeypatch, tmp_path, capsys
 ):
     doc = tmp_path / "binding.md"
-    doc.write_text(
-        '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
-        encoding="utf-8",
+    doc.write_text(DOC_WITH_FLAGS, encoding="utf-8")
+    api = FakeApi(
+        {
+            "repos/owner/repo/branches/main/protection": _protection(),
+            "repos/owner/repo/branches/main": _live(**{"code-gate": 3969106}),
+        }
     )
-    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": 3969106})})
     for key, value in {
         "GITHUB_REPOSITORY": "owner/repo",
         "DEFAULT_BRANCH": "main",
@@ -623,7 +726,7 @@ def test_main_fails_closed_when_doc_root_is_missing_even_with_protection_in_step
     assert "Doc scan failed: scan roots missing" in out
     assert "AGENTS.md" in out
     assert "No drift" not in out
-    assert api.calls == [("GET", "repos/owner/repo/branches/main", None)]
+    assert api.calls[0] == ("GET", "repos/owner/repo/branches/main", None)
 
 
 def test_the_workflow_sparse_checkout_covers_every_scanned_root():
