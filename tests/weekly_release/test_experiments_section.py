@@ -167,3 +167,21 @@ def test_empty_section_leaves_body_unchanged():
     assert assemble_release_body(**kwargs, experiments_section="") == assemble_release_body(
         **kwargs
     )
+
+
+# -- engine: heading follows the release language (#2183) -------------------------
+
+
+def test_english_release_gets_english_heading():
+    line = "- Idle trim -> -8.1 % hours at the same p99 -> accepted (#10)."
+    section = format_experiments_section([line], {"10"}, lang="en")
+    assert section.splitlines() == ["## 🧪 Experiments this week", line]
+
+
+def test_english_release_with_no_lines_has_no_heading():
+    assert format_experiments_section([], {"10"}, lang="en") == ""
+
+
+def test_unknown_language_is_rejected():
+    with pytest.raises(ValueError, match="lang"):
+        format_experiments_section(["- x (#10)."], {"10"}, lang="de")

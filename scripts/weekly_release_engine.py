@@ -267,16 +267,23 @@ def format_retraction_section(retractions: list[dict]) -> str:
 # -- "Эксперименты недели" section (#2184) ------------------------------------
 
 EXPERIMENTS_MAX_LINES = 5
+EXPERIMENTS_HEADINGS = {
+    "ru": "## 🧪 Эксперименты недели",
+    "en": "## 🧪 Experiments this week",
+}
 
 
-def format_experiments_section(lines: list[str], window_refs: set[str]) -> str:
+def format_experiments_section(lines: list[str], window_refs: set[str], lang: str = "ru") -> str:
     """Agent-authored experiment lines ("гипотеза → результат → вывод", one
-    per experiment PR of the window) -> a `## 🧪 Эксперименты недели` block.
+    per experiment PR of the window) -> a `## 🧪 Эксперименты недели` block
+    (`lang="en"`: `## 🧪 Experiments this week`; other languages raise).
     Empty `lines` -> "" (no experiments this week means no section, never an
     empty heading). Unlike the retraction/goal formatters the lines here are
     prose, so each goes through lint_release_notes against `window_refs`;
     any violation, or more than EXPERIMENTS_MAX_LINES lines, raises
     ValueError rather than publishing an uncited claim."""
+    if lang not in EXPERIMENTS_HEADINGS:
+        raise ValueError(f"experiments section: unsupported lang {lang!r}")
     lines = [line for line in lines if line.strip()]
     if not lines:
         return ""
@@ -287,7 +294,7 @@ def format_experiments_section(lines: list[str], window_refs: set[str]) -> str:
     violations = lint_release_notes(lines, window_refs)
     if violations:
         raise ValueError("experiments section: " + "; ".join(violations))
-    return "\n".join(["## 🧪 Эксперименты недели", *lines])
+    return "\n".join([EXPERIMENTS_HEADINGS[lang], *lines])
 
 
 # -- Window-truncation disclosure (#1668) -------------------------------------
