@@ -1,7 +1,8 @@
 """Tests for scripts/dispatch_ledger.py — the #2115 AC4 revisit count.
 
-The ledger rows below are shapes copied from the real ledger comments on
-Osasuwu/jarvis#2115 (five-column rows, run tables, prose outcome lines).
+The ledger lines below are shapes copied from the real ledger comments on
+Osasuwu/jarvis#2115: five-column rows, PR URLs, `repo #N` with a space, two dispatches
+on one line, the PR named before its issue.
 """
 
 from __future__ import annotations
@@ -16,6 +17,12 @@ import dispatch_ledger as dl  # noqa: E402
 
 LEDGER = dl.Ref("Osasuwu/jarvis", 2115)
 AGENT_MSG = "feat(x): thing (#5)\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+OWNERS = {
+    "jarvis": "Osasuwu/jarvis",
+    "jarvis-private": "Osasuwu/jarvis-private",
+    "like-current-song": "Osasuwu/like-current-song",
+    "redrobot": "SergazyNarynov/redrobot",
+}
 
 
 def _commit(sha, login, message, parents=1):
@@ -27,63 +34,66 @@ def _commit(sha, login, message, parents=1):
     }
 
 
-# --- parsing the rows ---------------------------------------------------
+def _refs(line, default="Osasuwu/jarvis"):
+    return [str(r) for r in dl.line_refs(line, default, OWNERS)]
 
 
-def test_parse_ledger_reads_the_row_shapes_the_ledger_holds():
+# --- reading references --------------------------------------------------
+
+
+def test_line_refs_reads_every_reference_form_the_ledger_uses():
+    # full refs; a bare PR ref after a full ref takes that ref's repo
+    assert _refs("batch-h outcome: SergazyNarynov/redrobot#3154 → PR #3270 merged") == [
+        "SergazyNarynov/redrobot#3154",
+        "SergazyNarynov/redrobot#3270",
+    ]
+    # a bare ref first on the line is the ledger's repo; a short `repo#N`
+    assert _refs("| #2000 | — (subagent) | x | jarvis-private#84 | held |") == [
+        "Osasuwu/jarvis#2000",
+        "Osasuwu/jarvis-private#84",
+    ]
+    # a PR given only as a URL (comments [99]/[100])
+    assert _refs(
+        "| Osasuwu/jarvis#2160 | — | x | https://github.com/Osasuwu/jarvis-private/pull/96 |"
+    ) == [
+        "Osasuwu/jarvis#2160",
+        "Osasuwu/jarvis-private#96",
+    ]
+    # `repo #N` with a space, then a bare ref in the same repo (comments [155]-[158])
+    assert _refs("| like-current-song #281+#289 | — (subagent) | x | — |") == [
+        "Osasuwu/like-current-song#281",
+        "Osasuwu/like-current-song#289",
+    ]
+    # a short name the ledger never spells out in full tells no repo: skipped
+    assert _refs("| scratch#1 | Osasuwu/jarvis#7 |") == ["Osasuwu/jarvis#7"]
+
+
+def test_ledger_refs_collects_distinct_refs_with_short_names_from_the_whole_ledger():
     bodies = [
-        # five-column row, full refs, PR in the fourth cell
-        "| issue | card shown (UTC) | started (UTC) | PR | outcome |\n"
-        "|---|---|---|---|---|\n"
-        "| SergazyNarynov/redrobot#2184 (rc) | 2026-10-19 06:59 | 2026-10-19 07:20 "
-        "| SergazyNarynov/redrobot#2643 | merged-unedited |",
-        # bare issue ref (the ledger's repo) and a short `repo#N` PR ref
-        "| #2000 | — (subagent) | 2026-10-20T14:42:31Z | jarvis-private#84 | held HIGH |",
-        # prose outcome line with a bare PR ref in the issue's repo, then another issue
-        "batch-h outcome: SergazyNarynov/redrobot#3154 → PR #3270 merged, see #2248",
-        "| Osasuwu/jarvis-private#50 | — | 2026-10-19 19:05 | — | merged |",
-        # a short name the ledger never spells out in full is skipped, not taken as the issue
-        "| scratch#1 | Osasuwu/like-current-song#269 | subagent | #272 merged |",
+        "| redrobot#2550 | — | x | — | in progress |",  # short form before any full one
+        "| SergazyNarynov/redrobot#2553 | — | x | SergazyNarynov/redrobot#2679 | held |",
+        "| redrobot#2553 | — | x | — | merged |",  # the same issue again, short
     ]
-    got = {
-        str(d.issue): [str(r) for r in d.candidates] for d in dl.parse_ledger(bodies, LEDGER.repo)
-    }
-    assert got == {
-        "SergazyNarynov/redrobot#2184": ["SergazyNarynov/redrobot#2643"],
-        "Osasuwu/jarvis#2000": ["Osasuwu/jarvis-private#84"],
-        "SergazyNarynov/redrobot#3154": [
-            "SergazyNarynov/redrobot#3270",
-            "SergazyNarynov/redrobot#2248",
-        ],
-        "Osasuwu/jarvis-private#50": [],
-        "Osasuwu/like-current-song#269": ["Osasuwu/like-current-song#272"],
-    }
-
-
-def test_parse_ledger_merges_rows_of_one_issue_in_first_seen_order():
-    bodies = [
-        "| Osasuwu/jarvis#2131 | — (subagent) | 2026-10-20T15:58:45Z | #2150 | rework |",
-        "| #2131 | — (subagent) | 2026-10-20T16:36:17Z | #2147, #2148, #2150 | ready |",
-    ]
-    dispatches = dl.parse_ledger(bodies, LEDGER.repo)
-    assert [(str(d.issue), [r.number for r in d.candidates]) for d in dispatches] == [
-        ("Osasuwu/jarvis#2131", [2150, 2147, 2148])
+    assert [str(r) for r in dl.ledger_refs(bodies, LEDGER.repo)] == [
+        "SergazyNarynov/redrobot#2550",
+        "SergazyNarynov/redrobot#2553",
+        "SergazyNarynov/redrobot#2679",
     ]
 
 
-# --- attribution and edits ----------------------------------------------
-
-
-def test_names_issue_accepts_the_issue_and_rejects_a_neighbour():
-    issue = dl.Ref("Osasuwu/jarvis", 2129)
-    assert dl.names_issue("Closes Osasuwu/jarvis#2129", issue, "Osasuwu/jarvis-private")
-    assert dl.names_issue("Closes #2129", issue, "Osasuwu/jarvis")
-    # a bare #N in another repo is that repo's issue, not this one
-    assert not dl.names_issue("Closes #2129", issue, "Osasuwu/jarvis-private")
-    # a longer number, or the same number in another repo, is not the issue
-    assert not dl.names_issue(
-        "Closes #21290 and Osasuwu/jarvis-private#2129", issue, "Osasuwu/jarvis"
+def test_linked_refs_takes_keyword_links_only():
+    text = (
+        "fix(x): y (#12)\n\nCloses #12\nRefs Osasuwu/jarvis#5\n"
+        "Fixes like-current-song#3\nfollow-up #9, see Osasuwu/jarvis#6"
     )
+    assert dl.linked_refs(text, "Osasuwu/jarvis-private", OWNERS) == {
+        dl.Ref("Osasuwu/jarvis-private", 12),
+        dl.Ref("Osasuwu/jarvis", 5),
+        dl.Ref("Osasuwu/like-current-song", 3),
+    }
+
+
+# --- edits and outcomes --------------------------------------------------
 
 
 def test_human_commits_counts_only_unmarked_non_merge_non_bot_commits():
@@ -108,7 +118,6 @@ def test_issue_outcome_and_verdict():
     assert dl.issue_outcome([("closed", True, []), ("closed", True, ["x"])]) == dl.EDITED
     assert dl.issue_outcome([("open", False, []), ("closed", False, [])]) == dl.OPEN
     assert dl.issue_outcome([("closed", False, [])]) == dl.CLOSED
-    assert dl.issue_outcome([]) == dl.NO_PR
     # the threshold the 2026-10-17 freeze decision fixed: >= 10 retires the lane
     assert dl.verdict(10) == "retire the lane"
     assert dl.verdict(9) == "reopen the freeze decision"
@@ -118,38 +127,41 @@ def test_issue_outcome_and_verdict():
 
 
 def _fake_github():
-    issue = lambda user: {"user": {"login": user}, "state": "closed"}  # noqa: E731
-    pr = lambda body, merged: {  # noqa: E731
-        "title": "t",
-        "body": body,
-        "state": "closed" if merged is not None else "open",
-        "merged_at": merged,
-        "pull_request": {},
-    }
+    def issue(user):
+        return {"user": {"login": user}, "state": "closed"}
+
+    def pr(body, merged):
+        return {
+            "title": "t",
+            "body": body,
+            "state": "closed" if merged else "open",
+            "merged_at": "2026-10-21" if merged else None,
+        }
+
+    is_pr = {"pull_request": {"url": "u"}}
     data = {
         "repos/Osasuwu/jarvis/issues/2115/comments": [
             {"body": "| Osasuwu/jarvis#1 | — | 2026-10-20 | #11 | merged |"},
-            {"body": "| Osasuwu/jarvis#2 | — | 2026-10-20 | #12, #13 | merged |"},
-            {"body": "Osasuwu/jarvis#3 → #14 closed"},
-            {"body": "| Osasuwu/jarvis#4 | — | 2026-10-20 | #15 | merged |"},
-            {"body": "| Osasuwu/jarvis#11 | — | 2026-10-20 | — | PR named first |"},
-            # a bare #N meant for another repo: not an issue of the ledger's repo
-            {"body": "| SergazyNarynov/redrobot (no issue; #9999 follow-up) | — | x | — | — |"},
+            # two dispatches on one line (comment [296]); #13 is an unrelated PR
+            {"body": "Osasuwu/jarvis#2 → #12 merged, also #13. Osasuwu/jarvis#3 → #14"},
+            # the PR first, the issue named elsewhere (comment [294])
+            {"body": "new PRs: Osasuwu/jarvis#15 (4)"},
+            {"body": "| Osasuwu/jarvis#4 | — | 2026-10-20 | — | in progress |"},
+            # a bare #N meant for another repo: not readable in the ledger's repo
+            {"body": "| SergazyNarynov/redrobot (no issue; #9999 follow-up) | — | x |"},
         ],
         "repos/Osasuwu/jarvis/issues/1": issue("Osasuwu"),
         "repos/Osasuwu/jarvis/issues/2": issue("Osasuwu"),
         "repos/Osasuwu/jarvis/issues/3": issue("Osasuwu"),
         "repos/Osasuwu/jarvis/issues/4": issue("SergazyNarynov"),
-        "repos/Osasuwu/jarvis/issues/11": {"pull_request": {}},
-        "repos/Osasuwu/jarvis/issues/12": {"pull_request": {}},
-        "repos/Osasuwu/jarvis/issues/13": {"pull_request": {}},
-        "repos/Osasuwu/jarvis/issues/14": {"pull_request": {}},
-        "repos/Osasuwu/jarvis/issues/15": {"pull_request": {}},
-        "repos/Osasuwu/jarvis/pulls/11": pr("Closes #1", "2026-10-21"),
-        "repos/Osasuwu/jarvis/pulls/12": pr("Closes #2", "2026-10-21"),
-        "repos/Osasuwu/jarvis/pulls/13": pr("unrelated, fixes #99", "2026-10-21"),
-        "repos/Osasuwu/jarvis/pulls/14": pr("Closes #3", None),
-        "repos/Osasuwu/jarvis/pulls/15": pr("Closes #4", "2026-10-21"),
+        **{f"repos/Osasuwu/jarvis/issues/{n}": is_pr for n in (11, 12, 13, 14, 15)},
+        "repos/Osasuwu/jarvis/pulls/11": pr("Closes #1", True),
+        "repos/Osasuwu/jarvis/pulls/12": pr("Closes #2", True),
+        "repos/Osasuwu/jarvis/pulls/13": pr(
+            "chore: unrelated, mentions #2\n\nRefs #11", True
+        ),  # links a PR
+        "repos/Osasuwu/jarvis/pulls/14": pr("Closes #3", False),
+        "repos/Osasuwu/jarvis/pulls/15": pr("Closes #4", True),
         "repos/Osasuwu/jarvis/pulls/11/commits": [_commit("a1", "Osasuwu", AGENT_MSG)],
         "repos/Osasuwu/jarvis/pulls/12/commits": [
             _commit("b1", "Osasuwu", AGENT_MSG),
@@ -167,25 +179,21 @@ def _fake_github():
     return api
 
 
-def test_build_report_attributes_prs_and_classifies_each_issue():
-    rows, dropped = dl.build_report(LEDGER, _fake_github())
-    assert [(str(r.issue), r.author, r.prs, r.outcome) for r in rows] == [
+def test_build_report_attributes_prs_by_their_links_and_classifies_each_issue():
+    report = dl.build_report(LEDGER, _fake_github(), workers=2)
+    assert [(str(r.issue), r.author, r.prs, r.outcome) for r in report.rows] == [
         ("Osasuwu/jarvis#1", "Osasuwu", ["Osasuwu/jarvis#11"], dl.MERGED_UNEDITED),
         ("Osasuwu/jarvis#2", "Osasuwu", ["Osasuwu/jarvis#12"], dl.EDITED),
         ("Osasuwu/jarvis#3", "Osasuwu", ["Osasuwu/jarvis#14"], dl.OPEN),
         ("Osasuwu/jarvis#4", "SergazyNarynov", ["Osasuwu/jarvis#15"], dl.MERGED_UNEDITED),
     ]
-    assert rows[1].touches == ["Osasuwu/jarvis#12: b2 by Osasuwu: hand edit"]
-    assert [(str(ref), why) for ref, why in dropped] == [
-        ("Osasuwu/jarvis#13", "in the row of Osasuwu/jarvis#2, but does not name it"),
-        ("Osasuwu/jarvis#11", "named as the issue, but it is a pull request"),
-        ("Osasuwu/jarvis#9999", "named as the issue, but not readable on GitHub"),
-    ]
+    assert report.rows[1].touches == ["Osasuwu/jarvis#12: b2 by Osasuwu: hand edit"]
+    assert report.unattributed == [dl.Ref("Osasuwu/jarvis", 13)]
+    assert report.unreadable == 1  # Osasuwu/jarvis#9999
 
 
-def test_render_counts_only_the_users_merged_issues(capsys):
-    rows, dropped = dl.build_report(LEDGER, _fake_github())
-    text = dl.render(rows, dropped, "osasuwu")
+def test_render_counts_only_the_users_merged_issues():
+    text = dl.render(dl.build_report(LEDGER, _fake_github(), workers=2), "osasuwu")
     # #1 unedited + #2 edited; #3 is open, #4 is a collaborator's issue
     assert "Brought to merge (`merged-unedited` + `edited`): **2** (threshold 10)" in text
     assert "→ **reopen the freeze decision**" in text

@@ -8,15 +8,17 @@ more, otherwise reopen the freeze decision (`docs/decisions/2026-Q4.md`, "2026-1
 AFK lane frozen; orchestrator session dispatches", D4 and its predicts).
 
 The rows were written by hand over many runs, so their shape varies: five-column tables,
-run tables with a session column, prose lines like `owner/repo#N → owner/repo#M merged`.
-Most rows say `merged` without saying whether the user edited the PR. So the rows only
-supply the issue → PR pairs; GitHub supplies the rest:
+run tables with a session column, prose lines with several dispatches, the PR before the
+issue, PRs as URLs. Most rows say `merged` without saying whether the user edited the PR.
+So the rows supply only the set of issues and PRs they name; GitHub supplies the rest:
 
-- per line, the first issue reference is the dispatched issue (in a table row, the refs of
-  the first cell), and the later references are candidate PRs;
-- a candidate counts as the issue's PR only when GitHub says it is a pull request and its
-  title or body names the issue — a later reference to some other issue or PR in the
-  outcome text is dropped and listed;
+- every reference in the rows is read — `owner/repo#N`, a github.com issue or pull URL,
+  `repo#N` or `repo #N` for a repo the ledger names in full somewhere, and a bare `#N`,
+  which means the repo of the last reference before it on the line (else the ledger's);
+- GitHub says which of them are pull requests. A PR is attributed to an issue the rows
+  name when its title or body links that issue after a keyword (`Closes`, `Fixes`,
+  `Resolves`, `Refs`, `Part of`), as every orchestrator PR does — not by where the two sit
+  in a row, which the free-form rows do not keep consistent;
 - a merged PR is `edited` when any non-merge commit on it was made by a person: its
   message carries no agent `Co-Authored-By:` trailer (Claude or Jarvis) and its author is
   not a `*[bot]` login. Agent and user share one login here, so the login cannot tell them
@@ -29,8 +31,8 @@ Usage (needs `gh` signed in):
 
     python scripts/dispatch_ledger.py report --ledger Osasuwu/jarvis#2115 --user <login>
 
-It prints a Markdown report for the AC4 comment: counts, the verdict, one line per
-dispatched issue, and the references it could not attribute. It writes nothing to GitHub.
+It prints a Markdown report for the AC4 comment: counts, the verdict, one line per issue
+with a PR, and the merged PRs it could not attribute. It writes nothing to GitHub.
 """
 
 from __future__ import annotations
@@ -40,24 +42,24 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 # Fixed by the 2026-10-17 freeze decision (predicts: ">=10 of the user's issues to merge").
 RETIRE_AT = 10
 VERDICT_RETIRE = "retire the lane"
 VERDICT_REOPEN = "reopen the freeze decision"
 
-MERGED_UNEDITED, EDITED, CLOSED, OPEN, NO_PR = (
-    "merged-unedited",
-    "edited",
-    "closed",
-    "open",
-    "no-pr",
-)
+MERGED_UNEDITED, EDITED, CLOSED, OPEN = "merged-unedited", "edited", "closed", "open"
+OUTCOMES = (MERGED_UNEDITED, EDITED, CLOSED, OPEN)
 MERGED = (MERGED_UNEDITED, EDITED)
 
-# `owner/repo#N`, `repo#N` or `#N`, not inside a word or a path.
-_REF = re.compile(r"(?<![\w/#])(?:([A-Za-z0-9-]+)/)?([A-Za-z0-9_.-]+)?#(\d+)\b")
+# One reference: a github.com issue/pull URL, or `owner/repo#N`, `repo#N`, `repo #N`, `#N`.
+_TOKEN = re.compile(
+    r"github\.com/(?P<uo>[A-Za-z0-9-]+)/(?P<ur>[A-Za-z0-9_.-]+)/(?:issues|pull)/(?P<un>\d+)"
+    r"|(?<![\w/#])(?:(?P<o>[A-Za-z0-9-]+)/)?(?P<r>[A-Za-z0-9_.-]+)?(?P<sp>[ \t]+)?#(?P<n>\d+)\b"
+)
+_LINK = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part of)\b:?[ \t]+", re.I)
 _AGENT_TRAILER = re.compile(r"^co-authored-by:.*\b(claude|jarvis)\b", re.IGNORECASE | re.MULTILINE)
 
 
@@ -70,80 +72,68 @@ class Ref:
         return f"{self.repo}#{self.number}"
 
 
-@dataclass
-class Dispatch:
-    issue: Ref
-    candidates: list[Ref] = field(default_factory=list)
-
-
-def _raw_refs(text):
-    return [(m.group(1), m.group(2), int(m.group(3))) for m in _REF.finditer(text)]
-
-
-def known_repos(bodies):
-    """Short repo name → owner, from every full `owner/repo#N` in the ledger."""
+def known_repos(texts):
+    """Short repo name → `owner/repo`, from every full reference or URL in `texts`."""
     owners = {}
-    for body in bodies:
-        for owner, name, _ in _raw_refs(body):
+    for text in texts:
+        for m in _TOKEN.finditer(text or ""):
+            owner, name = (m["uo"], m["ur"]) if m["un"] else (m["o"], m["r"])
             if owner and name:
                 owners.setdefault(name.casefold(), f"{owner}/{name}")
     return owners
 
 
-def _resolve(raw, context_repo, owners):
-    owner, name, number = raw
-    if owner and name:
-        return Ref(f"{owner}/{name}", number)
-    if name:
-        full = owners.get(name.casefold())
-        return Ref(full, number) if full else None
-    return Ref(context_repo, number) if context_repo else None
+def _ref(m, context_repo, owners):
+    """The `Ref` one token match names, or None when its repo cannot be told."""
+    if m["un"]:
+        return Ref(f"{m['uo']}/{m['ur']}", int(m["un"]))
+    number = int(m["n"])
+    if m["o"] and m["r"]:
+        return Ref(f"{m['o']}/{m['r']}", number)
+    if m["r"]:
+        full = owners.get(m["r"].casefold())
+        if full:
+            return Ref(full, number)
+        if not m["sp"]:
+            return None  # `word#N` for a repo the ledger never names in full
+        # `PR #3270`, `Closes #12`: the word is prose, the ref is bare
+    return Ref(context_repo, number)
 
 
-def parse_line(line, ledger_repo, owners):
-    """The dispatch one ledger line records, or None when it names no issue.
-
-    Table row or prose, the first reference is the issue (every row shape in the ledger
-    puts it first). A bare `#N` there means the ledger's own repo; a later bare ref means
-    the issue's repo, as the rows write PRs (`PR #3270` beside
-    `SergazyNarynov/redrobot#3154`).
-    """
-    raw = _raw_refs(line)
-    resolved = [_resolve(x, ledger_repo, owners) for x in raw]
-    start = next((i for i, ref in enumerate(resolved) if ref), None)
-    if start is None:
-        return None
-    issue = resolved[start]
-    tail = [_resolve(x, issue.repo, owners) for x in raw[start + 1 :]]
-    return Dispatch(issue, [r for r in tail if r and r != issue])
+def line_refs(line, default_repo, owners):
+    """Every reference on one line, in order. A bare `#N` takes the repo of the last
+    reference before it on the line (`like-current-song #281+#289`), else `default_repo`."""
+    refs, context = [], default_repo
+    for m in _TOKEN.finditer(line):
+        ref = _ref(m, context, owners)
+        if ref:
+            refs.append(ref)
+            context = ref.repo
+    return refs
 
 
-def parse_ledger(bodies, ledger_repo):
-    """Every dispatch in the ledger's comment bodies, merged per issue, in first-seen order."""
+def ledger_refs(bodies, ledger_repo):
+    """Every distinct reference in the ledger's comment bodies, in first-seen order."""
     owners = known_repos(bodies)
-    merged = {}
+    seen = {}
     for body in bodies:
         for line in (body or "").splitlines():
-            dispatch = parse_line(line, ledger_repo, owners)
-            if dispatch is None:
-                continue
-            seen = merged.setdefault(dispatch.issue, Dispatch(dispatch.issue))
-            for ref in dispatch.candidates:
-                if ref not in seen.candidates:
-                    seen.candidates.append(ref)
-    return list(merged.values())
+            for ref in line_refs(line, ledger_repo, owners):
+                seen.setdefault(ref, None)
+    return list(seen)
 
 
-def names_issue(text, issue, pr_repo):
-    """True when a PR's title or body names `issue`: `owner/repo#N`, its URL, or `#N` in-repo."""
-    text = text or ""
-    owner, name = issue.repo.split("/", 1)
-    full = rf"(?<![\w/]){re.escape(owner)}/{re.escape(name)}#{issue.number}\b"
-    url = rf"github\.com/{re.escape(owner)}/{re.escape(name)}/issues/{issue.number}\b"
-    if re.search(full, text, re.IGNORECASE) or re.search(url, text, re.IGNORECASE):
-        return True
-    same_repo = pr_repo.casefold() == issue.repo.casefold()
-    return same_repo and re.search(rf"(?<![\w/#])#{issue.number}\b", text) is not None
+def linked_refs(text, pr_repo, owners):
+    """The references a PR's title/body links after a keyword (`Closes #12`,
+    `Refs Osasuwu/jarvis#5`). A bare `#N` is the PR's own repo; a ref merely mentioned
+    (`follow-up #9`) is not a link."""
+    found = set()
+    for m in _LINK.finditer(text or ""):
+        token = _TOKEN.match(text, m.end())
+        ref = _ref(token, pr_repo, owners) if token else None
+        if ref:
+            found.add(ref)
+    return found
 
 
 def human_commits(commits):
@@ -172,12 +162,10 @@ def human_commits(commits):
 
 def issue_outcome(prs):
     """An issue's outcome from its attributed PRs: [(state, merged, human_commit_lines)]."""
-    merged = [touches for state, was_merged, touches in prs if was_merged]
+    merged = [touches for _, was_merged, touches in prs if was_merged]
     if merged:
         return EDITED if any(merged) else MERGED_UNEDITED
-    if any(state == "open" for state, _, _ in prs):
-        return OPEN
-    return CLOSED if prs else NO_PR
+    return OPEN if any(state == "open" for state, _, _ in prs) else CLOSED
 
 
 def verdict(count):
@@ -204,6 +192,21 @@ def gh_api(path):
     return _gh_json(["api", path])
 
 
+def _fetch_all(api, paths, workers):
+    """{path: answer} for each path; one that cannot be read (a bare `#N` the rows meant
+    for another repo, a 404) is None."""
+
+    def one(path):
+        try:
+            return api(path)
+        except (subprocess.CalledProcessError, ValueError):
+            return None
+
+    paths = list(dict.fromkeys(paths))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return dict(zip(paths, pool.map(one, paths), strict=True))
+
+
 @dataclass
 class IssueRow:
     issue: Ref
@@ -213,69 +216,66 @@ class IssueRow:
     touches: list[str]
 
 
-def build_report(ledger, api=gh_api):
-    """(rows, dropped) for the ledger `Ref`: one row per dispatched issue, and the
-    candidate references that were not attributed, each with the reason."""
+@dataclass
+class Report:
+    rows: list[IssueRow]  # issues the rows name that have at least one attributed PR
+    unattributed: list[Ref]  # merged PRs the rows name that link none of those issues
+    unreadable: int  # references GitHub did not answer for
+
+
+def build_report(ledger, api=gh_api, workers=8):
     comments = api(f"repos/{ledger.repo}/issues/{ledger.number}/comments")
     bodies = [c.get("body") or "" for c in comments]
-    cache = {}
+    refs = [r for r in ledger_refs(bodies, ledger.repo) if r != ledger]
+    items = _fetch_all(api, [f"repos/{r.repo}/issues/{r.number}" for r in refs], workers)
+    item = {r: items[f"repos/{r.repo}/issues/{r.number}"] for r in refs}
+    issues = [r for r in refs if item[r] is not None and "pull_request" not in item[r]]
+    pr_refs = [r for r in refs if item[r] is not None and "pull_request" in item[r]]
+    pulls = _fetch_all(api, [f"repos/{r.repo}/pulls/{r.number}" for r in pr_refs], workers)
+    pr = {r: pulls[f"repos/{r.repo}/pulls/{r.number}"] or {} for r in pr_refs}
+    merged = [r for r in pr_refs if pr[r].get("merged_at")]
+    commits = _fetch_all(api, [f"repos/{r.repo}/pulls/{r.number}/commits" for r in merged], workers)
 
-    def get(path):
-        # A ref the rows got wrong (a bare `#N` meant for another repo) reads as None.
-        if path not in cache:
-            try:
-                cache[path] = api(path)
-            except (subprocess.CalledProcessError, ValueError):
-                cache[path] = None
-        return cache[path]
+    owners = known_repos(bodies)
+    issue_set = set(issues)
+    prs_of = {r: [] for r in issues}
+    unattributed = []
+    for r in pr_refs:
+        text = f"{pr[r].get('title') or ''}\n{pr[r].get('body') or ''}"
+        targets = linked_refs(text, r.repo, owners) & issue_set
+        for issue in sorted(targets):
+            prs_of[issue].append(r)
+        if not targets and r in merged:
+            unattributed.append(r)
 
-    rows, dropped = [], []
-    for dispatch in parse_ledger(bodies, ledger.repo):
-        if dispatch.issue == ledger:
+    rows = []
+    for issue in issues:
+        if not prs_of[issue]:
             continue
-        issue = get(f"repos/{dispatch.issue.repo}/issues/{dispatch.issue.number}")
-        if issue is None:
-            dropped.append((dispatch.issue, "named as the issue, but not readable on GitHub"))
-            continue
-        if "pull_request" in issue:
-            dropped.append((dispatch.issue, "named as the issue, but it is a pull request"))
-            continue
-        prs, pr_names, touches = [], [], []
-        for ref in dispatch.candidates:
-            item = get(f"repos/{ref.repo}/issues/{ref.number}")
-            if item is None:
-                dropped.append((ref, f"in the row of {dispatch.issue}, not readable on GitHub"))
-                continue
-            if "pull_request" not in item:
-                continue  # another issue named in the outcome text
-            pr = get(f"repos/{ref.repo}/pulls/{ref.number}") or {}
-            text = f"{pr.get('title') or ''}\n{pr.get('body') or ''}"
-            if not names_issue(text, dispatch.issue, ref.repo):
-                dropped.append((ref, f"in the row of {dispatch.issue}, but does not name it"))
-                continue
-            merged = bool(pr.get("merged_at"))
-            commits = get(f"repos/{ref.repo}/pulls/{ref.number}/commits") if merged else None
-            lines = human_commits(commits or []) if merged else []
-            prs.append((pr.get("state"), merged, lines))
-            pr_names.append(str(ref))
-            touches.extend(f"{ref}: {line}" for line in lines)
-        author = (issue.get("user") or {}).get("login") or ""
-        rows.append(IssueRow(dispatch.issue, author, issue_outcome(prs), pr_names, touches))
-    return rows, dropped
+        states, touches = [], []
+        for r in prs_of[issue]:
+            was_merged = r in merged
+            path = f"repos/{r.repo}/pulls/{r.number}/commits"
+            lines = human_commits(commits[path] or []) if was_merged else []
+            states.append((pr[r].get("state"), was_merged, lines))
+            touches.extend(f"{r}: {line}" for line in lines)
+        author = (item[issue].get("user") or {}).get("login") or ""
+        prs = [str(r) for r in prs_of[issue]]
+        rows.append(IssueRow(issue, author, issue_outcome(states), prs, touches))
+    unreadable = sum(item[r] is None for r in refs)
+    return Report(rows, unattributed, unreadable)
 
 
-def render(rows, dropped, user):
-    mine = [r for r in rows if r.author.casefold() == user.casefold()]
+def render(report, user):
+    mine = [r for r in report.rows if r.author.casefold() == user.casefold()]
     count = sum(r.outcome in MERGED for r in mine)
-    by = {
-        o: sum(r.outcome == o for r in mine) for o in (MERGED_UNEDITED, EDITED, CLOSED, OPEN, NO_PR)
-    }
     out = [
-        f"**Dispatched issues authored by {user}: {len(mine)}** (all dispatched: {len(rows)})",
+        f"**Issues authored by {user} with an orchestrator PR: {len(mine)}** "
+        f"(all authors: {len(report.rows)})",
         "",
         "| outcome | issues |",
         "|---|---|",
-        *(f"| {o} | {n} |" for o, n in by.items()),
+        *(f"| {o} | {sum(r.outcome == o for r in mine)} |" for o in OUTCOMES),
         "",
         f"Brought to merge (`merged-unedited` + `edited`): **{count}** "
         f"(threshold {RETIRE_AT}) → **{verdict(count)}**",
@@ -283,12 +283,16 @@ def render(rows, dropped, user):
         "| issue | author | PR | outcome | human commits |",
         "|---|---|---|---|---|",
     ]
-    for r in rows:
-        prs = ", ".join(r.prs) or "—"
+    for r in report.rows:
         touches = "<br>".join(t.replace("|", "\\|") for t in r.touches) or "—"
-        out.append(f"| {r.issue} | {r.author} | {prs} | {r.outcome} | {touches} |")
-    if dropped:
-        out += ["", "Not attributed:", *(f"- {ref} — {why}" for ref, why in dropped)]
+        out.append(f"| {r.issue} | {r.author} | {', '.join(r.prs)} | {r.outcome} | {touches} |")
+    if report.unattributed:
+        out += [
+            "",
+            "Merged PRs the rows name that link none of the rows' issues:",
+            *(f"- {ref}" for ref in report.unattributed),
+        ]
+    out += ["", f"References GitHub did not answer for: {report.unreadable}"]
     return "\n".join(out)
 
 
@@ -306,8 +310,7 @@ def main(argv=None, api=gh_api):
     report.add_argument("--ledger", type=parse_ref, required=True, help="owner/repo#N")
     report.add_argument("--user", required=True, help="login whose issues count")
     args = parser.parse_args(argv)
-    rows, dropped = build_report(args.ledger, api)
-    print(render(rows, dropped, args.user))
+    print(render(build_report(args.ledger, api), args.user))
     return 0
 
 
