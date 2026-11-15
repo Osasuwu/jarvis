@@ -7,8 +7,15 @@ to post it. An `app_id` of null in live protection accepts a same-named check ru
 status from any source, so a documented binding that was never applied (#1998) is a fail-open
 merge gate; this probe is what notices.
 
-The branch object (`GET /repos/{owner}/{repo}/branches/{branch}`) carries the protection
-settings for any token that can read the repo, so the probe needs no admin credential.
+The branch object (`GET /repos/{owner}/{repo}/branches/{branch}`) carries the required checks
+for any token that can read the repo, so the binding comparison needs no admin credential.
+
+It also confirms that force pushes and deletion of the default branch are blocked (#2146). Either
+source counts: an active ruleset rule (`GET .../rules/branches/{branch}`, readable with metadata
+access, so by the job token) or classic protection's `allow_force_pushes` / `allow_deletions`
+(`GET .../branches/{branch}/protection`, which needs Administration: read, a permission the job
+token cannot be given). When neither confirms a block, that is drift, an unreadable source
+included: a probe that cannot see the flag does not report it as set.
 
 Stdlib only: the job needs no dependency install. The branch is read through the shared
 client `github_client.py` beside this script (#2068), loaded by file path at import.
@@ -19,6 +26,7 @@ import json
 import os
 import re
 import sys
+import urllib.error
 from pathlib import Path
 
 
@@ -90,6 +98,52 @@ def find_drift(documented, branch):
     for name, app_id in live.items():
         if name not in documented:
             problems.append(f"{name}: required live (app_id {app_id}), not documented")
+    return problems
+
+
+# --- History guards (#2146) --------------------------------------------------------------------
+# (effect, classic protection flag, ruleset rule type): each effect must be blocked on the default
+# branch by at least one of the two. Rulesets and classic protection layer, so either one blocks.
+HISTORY_GUARDS = (
+    ("force pushes", "allow_force_pushes", "non_fast_forward"),
+    ("deletion", "allow_deletions", "deletion"),
+)
+
+
+def read_history_guards(client, repo, branch):
+    """(classic protection or None, why it is None, active ruleset rules) for the branch.
+
+    A 403 or 404 on the classic endpoint leaves it None: the token lacks Administration: read,
+    or the branch has no classic protection. Any other failure raises.
+    """
+    rules = github_client.paged(client, f"repos/{repo}/rules/branches/{branch}")
+    try:
+        return client("GET", f"repos/{repo}/branches/{branch}/protection"), None, rules
+    except urllib.error.HTTPError as error:
+        if error.code not in (403, 404):
+            raise
+        return None, f"HTTP {error.code}", rules
+
+
+def find_history_drift(protection, unreadable, rules):
+    """List the history guards of the default branch that neither source confirms in force."""
+    active = {rule.get("type") for rule in rules}
+    problems = []
+    for effect, flag, rule in HISTORY_GUARDS:
+        if rule in active:
+            continue
+        if protection is None:
+            problems.append(
+                f"{effect}: no active ruleset `{rule}` rule, and branch protection was not read"
+                f" ({unreadable})"
+            )
+            continue
+        allowed = (protection.get(flag) or {}).get("enabled")
+        if allowed is not False:
+            problems.append(
+                f"{effect}: branch protection {flag}.enabled is {json.dumps(allowed)},"
+                f" no active ruleset `{rule}` rule"
+            )
     return problems
 
 
@@ -348,16 +402,18 @@ def unmatched_known_stale(claims, known=KNOWN_STALE):
     return [entry for entry in known if tuple(entry[:3]) not in present]
 
 
-def run(doc_text, fetch_branch, claims=(), scan_error=None, known=KNOWN_STALE):
+def run(doc_text, fetch_branch, claims=(), scan_error=None, known=KNOWN_STALE, fetch_history=None):
     """Compare; print the verdict; return the process exit code.
 
     scan_error is the DocScanError of a doc scan that could not run: the binding comparison
     still runs and reports, but the verdict is a failure, never "No drift". known is the
-    tracked-stale list (KNOWN_STALE by default).
+    tracked-stale list (KNOWN_STALE by default). fetch_history returns the arguments of
+    find_history_drift; main always passes it, a caller that omits it checks no history guard.
     """
     documented = parse_documented_binding(doc_text)
     branch = fetch_branch()
     problems = find_drift(documented, branch)
+    history = find_history_drift(*fetch_history()) if fetch_history else None
     live = live_binding(branch)
     tracked = {(path, line, name): issue for path, line, name, issue in known}
     stale, warnings = [], []
@@ -387,11 +443,22 @@ def run(doc_text, fetch_branch, claims=(), scan_error=None, known=KNOWN_STALE):
         print("Docs name required checks that live protection does not require:")
         for message in stale:
             print(f"  - {message}")
+    if history:
+        print("Force pushes or deletion of the default branch are not confirmed blocked:")
+        for problem in history:
+            print(f"  - {problem}")
+        print(
+            "Apply the default-branch ruleset in " + DEFAULT_DOC + " (Rulesets) or restore the"
+            " classic protection flags."
+        )
     if scan_error:
         print(f"Doc scan failed: {scan_error}")
-    if problems or stale or scan_error:
+    if problems or stale or scan_error or history:
         return 1
-    print(f"No drift: {len(documented)} required checks match the documented binding.")
+    message = f"No drift: {len(documented)} required checks match the documented binding"
+    if history is not None:
+        message += "; force pushes and deletion of the default branch are blocked"
+    print(message + ".")
     return 0
 
 
@@ -413,6 +480,7 @@ def main(make_client=None):
             lambda: client("GET", f"repos/{repo}/branches/{branch}"),
             claims,
             scan_error,
+            fetch_history=lambda: read_history_guards(client, repo, branch),
         )
 
 
