@@ -3,8 +3,9 @@ name: Required Check Heartbeat
 # #2142 (failure-class matrix row 8): a required check that never posts leaves its PR
 # pending forever, and pending is not red, so nobody is told. This reads the required checks
 # from live protection and goes red when one has had no result on an open PR's head for more
-# than an hour. A red scheduled run is the signal: GitHub notifies the repo's maintainers of
-# failed scheduled runs, as for branch-protection-drift.yml.
+# an hour or more. A red scheduled run is the signal, as for branch-protection-drift.yml: it
+# shows in the Actions tab, and GitHub emails it to the user who last changed the `cron` line
+# below, if that user has Actions notifications on.
 #
 # Hourly on paper; GitHub drops many scheduled runs, so the alert can come hours late. It is
 # not a check on PRs: it reports on them, and a PR check would only add one more to wait for.

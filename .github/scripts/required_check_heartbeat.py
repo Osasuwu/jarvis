@@ -5,11 +5,13 @@ required check; one that never posts (a workflow that did not trigger, a stuck r
 that is down) leaves the PR pending forever, and nothing on the PR turns red. This probe reads
 the required checks from live protection and, for each open PR into the default branch, the
 check runs and commit statuses on its head. A required check whose newest result is missing or
-unfinished past `STALE_AFTER_MIN` makes the run exit 1; a red scheduled run is the alert
-(GitHub notifies the repo's maintainers of failed scheduled runs).
+unfinished for `STALE_AFTER_MIN` or more makes the run exit 1. The red scheduled run is the
+alert: it shows in the repo's Actions tab, and GitHub emails it to the user who last changed
+the workflow's `cron` line, if that user has Actions notifications on.
 
 When a check is due:
-- no run or status at all: from the head commit's committer date;
+- no run or status at all: from the later of the head commit's committer date and the PR's
+  `created_at`;
 - a run still queued or in progress (the newest one by id, so a stuck re-run is not hidden by
   an older result): from that run's `started_at`; a pending status: from its `created_at`.
 
@@ -116,8 +118,10 @@ def scan(api, repo, branch, now, stale_after_min=STALE_AFTER_MIN):
             else []
         )
         committed = api("GET", f"repos/{repo}/commits/{sha}")["commit"]["committer"]["date"]
+        # A commit made long before the PR opened is not due before the PR is.
+        head_since = max(committed, pr["created_at"], key=_parse)
         for name, state, due in stale_checks(
-            required, runs, statuses, committed, now, stale_after_min
+            required, runs, statuses, head_since, now, stale_after_min
         ):
             what = "no result" if state == "no result" else f"still {state}"
             stale.append(f"#{number} {sha}: {name} — {what} for {due} min")

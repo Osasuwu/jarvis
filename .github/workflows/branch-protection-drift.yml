@@ -3,8 +3,9 @@ name: Branch Protection Drift
 # #1998: docs/reference/github-repo-setup.md documents which App may post each required
 # check; #1982 documented it without applying it, and nothing noticed for a day. This
 # compares live protection on the default branch with that documented binding and goes red
-# on any difference. A red scheduled run is the signal: GitHub notifies the repo's
-# maintainers of failed scheduled runs.
+# on any difference. A red scheduled run is the signal: it shows in the Actions tab, and
+# GitHub emails it to the user who last changed the `cron` line, if that user has Actions
+# notifications on.
 #
 # Scheduled/dispatch only: it judges the default branch's doc, and a required-check run on
 # PRs would only add a check to wait for. Reads protection through the branch object, which

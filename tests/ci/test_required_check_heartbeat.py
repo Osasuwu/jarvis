@@ -58,6 +58,7 @@ def _stale(required, runs=(), statuses=(), committed=90):
 
 def test_a_required_check_with_no_run_is_stale_only_once_the_head_is_older_than_the_limit():
     assert _stale({"pytest": ACTIONS}, committed=90) == [("pytest", "no result", 90)]
+    assert _stale({"pytest": ACTIONS}, committed=60) == [("pytest", "no result", 60)]
     assert _stale({"pytest": ACTIONS}, committed=59) == []
 
 
@@ -115,7 +116,7 @@ def _branch(**required):
     }
 
 
-def _api(prs, runs_by_sha, *, required=None, mergeable_state="clean"):
+def _api(prs, runs_by_sha, *, required=None, mergeable_state="clean", statuses_by_sha=None):
     responses = {
         "repos/o/r/branches/main": _branch(**(required or {"pytest": ACTIONS})),
         "repos/o/r/pulls?state=open&base=main": prs,
@@ -127,13 +128,13 @@ def _api(prs, runs_by_sha, *, required=None, mergeable_state="clean"):
             "mergeable_state": mergeable_state,
         }
         responses[f"repos/o/r/commits/{sha}/check-runs"] = {"check_runs": runs_by_sha.get(sha, [])}
-        responses[f"repos/o/r/commits/{sha}/statuses"] = []
+        responses[f"repos/o/r/commits/{sha}/statuses"] = (statuses_by_sha or {}).get(sha, [])
         responses[f"repos/o/r/commits/{sha}"] = {"commit": {"committer": {"date": _ago(90)}}}
     return FakeApi(responses)
 
 
-def _pr(number, sha):
-    return {"number": number, "draft": False, "head": {"sha": sha}}
+def _pr(number, sha, opened=120):
+    return {"number": number, "draft": False, "head": {"sha": sha}, "created_at": _ago(opened)}
 
 
 def _main(api, monkeypatch):
@@ -154,6 +155,26 @@ def test_main_goes_red_naming_the_pr_and_the_check_that_never_reported(monkeypat
 
 def test_main_is_green_when_every_required_check_reported(monkeypatch, capsys):
     api = _api([_pr(7, "aaa")], {"aaa": [_run("pytest")]})
+    assert _main(api, monkeypatch) == 0
+
+
+def test_a_check_with_no_run_is_due_from_the_pr_opening_when_the_commit_is_older(
+    monkeypatch, capsys
+):
+    # The head commit is 90 min old; a PR opened on it 20 min ago is not yet late.
+    assert _main(_api([_pr(7, "aaa", opened=20)], {}), monkeypatch) == 0
+    assert _main(_api([_pr(7, "aaa", opened=70)], {}), monkeypatch) == 1
+    assert "#7 aaa: pytest — no result for 70 min" in capsys.readouterr().out
+
+
+def test_an_unbound_required_check_is_satisfied_by_a_commit_status_on_the_head(monkeypatch):
+    status = {"id": 5, "context": "legacy", "state": "failure", "created_at": _ago(80)}
+    api = _api(
+        [_pr(7, "aaa")],
+        {"aaa": [_run("pytest")]},
+        required={"pytest": ACTIONS, "legacy": None},
+        statuses_by_sha={"aaa": [status]},
+    )
     assert _main(api, monkeypatch) == 0
 
 
