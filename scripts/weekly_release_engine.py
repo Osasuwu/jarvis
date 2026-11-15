@@ -277,6 +277,8 @@ def format_experiments_section(lines: list[str], window_refs: set[str], lang: st
     """Agent-authored experiment lines ("гипотеза → результат → вывод", one
     per experiment PR of the window) -> a `## 🧪 Эксперименты недели` block
     (`lang="en"`: `## 🧪 Experiments this week`; other languages raise).
+    Unlike the other structural sections this one takes the release language
+    (#2183): the caller passes the language of the body it assembles.
     Empty `lines` -> "" (no experiments this week means no section, never an
     empty heading). Unlike the retraction/goal formatters the lines here are
     prose, so each goes through lint_release_notes against `window_refs`;
