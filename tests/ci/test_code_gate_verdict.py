@@ -341,6 +341,69 @@ def test_build_evidence_stamps_sha_and_base():
     }
 
 
+# --- the reviewer's tier raise (#2202) -------------------------------------
+
+
+@pytest.mark.parametrize("tier", ["LOW", "MEDIUM", "HIGH"])
+def test_a_well_formed_raise_is_valid(tier):
+    obj = {"blocking": False, "findings": [], "raise": {"tier": tier, "reason": "touches auth"}}
+    assert gate.validate_findings(obj) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "HIGH",
+        {"tier": "CRITICAL", "reason": "x"},  # CRITICAL is leaving the grammar (#2198)
+        {"tier": "high", "reason": "x"},
+        {"tier": "HIGH"},
+        {"reason": "x"},
+        {"tier": "HIGH", "reason": ""},
+        {"tier": "HIGH", "reason": "   "},
+        {"tier": "HIGH", "reason": 3},
+        {"tier": "HIGH", "reason": "x" * 301},
+        {"tier": "HIGH", "reason": "x", "lower": True},
+    ],
+    ids=[
+        "null",
+        "bare-string",
+        "critical",
+        "lower-case",
+        "no-reason",
+        "no-tier",
+        "empty-reason",
+        "blank-reason",
+        "reason-not-string",
+        "reason-too-long",
+        "extra-key",
+    ],
+)
+def test_a_malformed_raise_makes_the_findings_invalid(value):
+    """Invalid findings get the reviewer's retry, then fail the review run: no evidence,
+    so `code-gate` stays red. A malformed raise never reads as no raise."""
+    assert gate.validate_findings({"blocking": False, "findings": [], "raise": value}) != []
+
+
+def test_build_evidence_carries_the_raise():
+    raised = {"tier": "HIGH", "reason": "rewrites the token refresh"}
+    got = gate.build_evidence(
+        {"blocking": False, "findings": [], "raise": raised}, sha=SHA, base_ref="main"
+    )
+    assert got["raise"] == raised
+    assert gate._judge_artifact(got, SHA, "main") == "clean"
+
+
+def test_build_evidence_without_a_raise_has_no_raise_key():
+    got = gate.build_evidence({"blocking": False, "findings": []}, sha=SHA, base_ref="main")
+    assert "raise" not in got
+
+
+def test_an_artifact_with_a_malformed_raise_is_invalid_evidence():
+    art = _artifact(**{"raise": {"tier": "CRITICAL", "reason": "x"}})
+    assert gate._judge_artifact(art, SHA, "main") == "evidence-invalid"
+
+
 def test_skipped_evidence_shape():
     assert gate.build_skipped_evidence(sha=SHA, base_ref="main", reason="cosmetic") == {
         "schema": 1,

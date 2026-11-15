@@ -17,7 +17,8 @@ Verdict, in order:
 2. the computed tier is the highest of: a changed path in any bucket of the host base's
    `config/protected-paths.json` entry (HIGH), test weakening (HIGH), and the plan
    classifier's ordinal (3 -> HIGH, 2 -> MEDIUM, 1 -> LOW). Anything unreadable is HIGH;
-3. final tier = max(computed, declared). LOW and MEDIUM pass;
+3. final tier = max(computed, declared, the CI reviewer's raise from its review evidence,
+   #2202); red while the head's code review has not completed. LOW and MEDIUM pass;
 4. HIGH and CRITICAL pass when the live PR's author holds the releasing role: `admin`
    permission, not a `Bot` account, not the lane's bot (#2088). Every other author's HIGH or
    CRITICAL PR passes only with an APPROVED review on the current head SHA from a holder of
@@ -35,6 +36,7 @@ import importlib.util
 import os
 import re
 import sys
+import urllib.error
 import urllib.parse
 from pathlib import Path
 
@@ -319,6 +321,113 @@ def admin_author(api, repo, pr, bot):
     return login if permission.get("permission") == "admin" else None
 
 
+# --- the reviewer's raise (#2202) ---------------------------------------------------------
+
+
+def _gate():
+    """`code_gate_verdict.py` beside this script, by file path on first use: the review
+    evidence is read with the code-gate's own provenance and artifact rules."""
+    name = "_jarvis_code_gate_verdict"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).resolve().with_name("code_gate_verdict.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)  # a half-built module must not be handed out next time
+        raise
+    return module
+
+
+def review_raise(entries, number, head_sha, base_ref, default_branch):
+    """`(pending, raises)` from the code review's evidence entries for this head (#2202).
+
+    `entries` are `code_gate_verdict.gather_entries`'s. `pending` is why the review is not
+    done yet, or None: a bound review run is unfinished, or no successful bound run has
+    left evidence. `raises` lists `(tier, reason)`: each raise any attempt's evidence
+    carries, and HIGH for each attempt whose evidence cannot be read (deleted, expired,
+    undownloadable, malformed, for another commit), since it may hide a raise.
+    """
+    gate = _gate()
+    raises, reviewed = [], False
+    for entry in entries:
+        run = entry["run"]
+        provenance = gate.run_provenance(run, number, head_sha, default_branch)
+        if not provenance:
+            continue
+        if run.get("status") != "completed" or run.get("conclusion") == "action_required":
+            return f"review run {run.get('id')} is not finished", raises
+        if "key" not in entry:
+            continue  # a run none of whose attempts left evidence: no reviewer verdict
+        if entry.get("state") != "ok":
+            judged = entry.get("state")
+        else:
+            judged = gate._judge_artifact(entry["artifact"], head_sha, base_ref)
+        if judged not in ("skipped", "clean", "evidence-blocking"):
+            raises.append(
+                (
+                    "HIGH",
+                    f"review evidence {entry['key']} is {judged}: its raise is unknown, fail closed",
+                )
+            )
+            continue
+        raised = entry["artifact"].get("raise") if judged != "skipped" else None
+        if raised:  # validated by _judge_artifact: {"tier": LOW|MEDIUM|HIGH, "reason": str}
+            raises.append((raised["tier"], _clean(raised["reason"])))
+        if provenance == "bound" and run.get("conclusion") == "success":
+            reviewed = True
+    if not reviewed:
+        return "no successful review run has left evidence for this commit yet", raises
+    return None, raises
+
+
+def read_review(api, repo, pr, number, head_sha):
+    """`(pending, raises, notes)` for this head, read through the API (#2202).
+
+    No raise is read for a PR into another base (code-gate decides none) or on a host
+    without the review workflow. Any other failure to read is a raise to HIGH."""
+    base = pr.get("base") or {}
+    default_branch = (base.get("repo") or {}).get("default_branch")
+    if base.get("ref") != default_branch:
+        return (
+            None,
+            [],
+            [
+                f"base {_clean(str(base.get('ref')))} is not the default branch "
+                f"{default_branch}: no reviewer raise to read"
+            ],
+        )
+    workflow = _gate().REVIEW_WORKFLOW
+    try:
+        api("GET", f"repos/{repo}/actions/workflows/{workflow.rsplit('/', 1)[1]}")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None, [], [f"no {workflow} on this repo: no reviewer raise to read"]
+        return None, [("HIGH", f"review evidence unreadable (HTTP {exc.code}): fail closed")], []
+    except Exception as exc:  # unreadable must not read as "no reviewer"
+        return (
+            None,
+            [("HIGH", f"review evidence unreadable ({type(exc).__name__}): fail closed")],
+            [],
+        )
+    try:
+        entries = _gate().gather_entries(
+            api, repo, int(number), head_sha, default_branch, pr["created_at"]
+        )
+    except Exception as exc:  # a truncated or failed listing may hide a raise
+        return (
+            None,
+            [("HIGH", f"review evidence unreadable ({type(exc).__name__}): fail closed")],
+            [],
+        )
+    pending, raises = review_raise(entries, int(number), head_sha, base["ref"], default_branch)
+    return pending, raises, []
+
+
 def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_ROOT):
     """`(ok, messages)` for one PR. `api` is a `github_client.Client`: `api("GET", path)`
     returns a JSON document from the GitHub API."""
@@ -353,9 +462,25 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
         computed = max(computed, "HIGH", key=SEVERITY.index)
         reasons.append(truncated)
     final = max(declared, computed, key=SEVERITY.index)
+    pending, raises, notes = read_review(api, repo, pr, number, head)
+    reasons.extend(notes)
+    # The reviewer may raise the tier, never lower it (#2202): highest first, so each
+    # raise is logged as applied or as at or below the tier it met.
+    for tier, why in sorted(raises, key=lambda r: SEVERITY.index(r[0]), reverse=True):
+        if SEVERITY.index(tier) > SEVERITY.index(final):
+            reasons.append(f"reviewer raise to {tier} applied (was {final}): {why}")
+            final = tier
+        else:
+            reasons.append(f"reviewer raise to {tier} not applied: at or below {final}: {why}")
     summary = f"declared {declared}{note}, computed {computed}, final {final}" + "".join(
         f"\n  - {r}" for r in reasons
     )
+    if pending:
+        return False, [
+            summary,
+            f"waiting for the code review of {head[:7]}: {pending}; the tier is re-decided "
+            "when it completes, since the reviewer may raise it (#2202)",
+        ]
     if final not in HOLD_TIERS:
         return True, [summary]
     author = admin_author(api, repo, pr, bot)

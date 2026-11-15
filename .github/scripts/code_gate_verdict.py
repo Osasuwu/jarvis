@@ -89,6 +89,12 @@ FINDING_CLASSES = (
     "performance",
 )
 
+# The reviewer's optional tier raise (#2202): `"raise": {"tier": ..., "reason": ...}` in the
+# findings file, carried into the evidence for the `risk-tier` check, which takes
+# max(declared, computed, raise). CRITICAL is not offered: it is leaving the grammar (#2198).
+RAISE_TIERS = ("LOW", "MEDIUM", "HIGH")
+MAX_RAISE_REASON = 300
+
 # `run-name` of code-review.yml: `Code review PR #<n> @ <40-hex head sha>`.
 RUN_TITLE = re.compile(r"^Code review PR #(\d+) @ ([0-9a-f]{40})$")
 
@@ -228,6 +234,27 @@ def validate_findings(obj):
             errors.append(f"findings[{i}].file must be a non-empty string")
     if isinstance(blocking, bool) and blocking != bool(findings):
         errors.append("`blocking` must be true exactly when `findings` is non-empty")
+    if "raise" in obj:
+        errors.extend(validate_raise(obj["raise"]))
+    return errors
+
+
+def validate_raise(value):
+    """Problems with a `raise` value; empty list means valid (#2202).
+
+    Present means exactly `{"tier", "reason"}`; no raise is the key left out. Anything
+    else is invalid, never read as "no raise": invalid findings get the reviewer's
+    retry and then fail the review run, so the gate fails closed."""
+    if not isinstance(value, dict) or set(value) != {"tier", "reason"}:
+        return ['`raise` must be an object with exactly the keys "tier" and "reason"']
+    errors = []
+    if value["tier"] not in RAISE_TIERS:
+        errors.append(f"raise.tier {value['tier']!r} is not one of {', '.join(RAISE_TIERS)}")
+    reason = value["reason"]
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > MAX_RAISE_REASON:
+        errors.append(
+            f"raise.reason must be a non-empty string of at most {MAX_RAISE_REASON} characters"
+        )
     return errors
 
 
@@ -251,7 +278,7 @@ def build_evidence(findings, sha, base_ref):
         "base_ref": base_ref,
         "blocking": findings["blocking"],
         "findings": findings["findings"],
-    }
+    } | ({"raise": findings["raise"]} if "raise" in findings else {})
 
 
 def build_skipped_evidence(sha, base_ref, reason):

@@ -238,6 +238,16 @@ jobs:
                field, or any prose — this schema deliberately carries neither.
                A clean review writes {"blocking": false, "findings": []}.
 
+               Optional, beside `findings`: when the diff carries more risk than
+               the PR body's `Risk:` line declares, add the top-level key
+               "raise": {"tier": "<MEDIUM|HIGH>", "reason": "<one sentence, at
+               most 300 characters>"}. HIGH: a mistake would be costly or slow
+               to undo (security, CI gates, data, a shared contract); MEDIUM: a
+               behaviour change worth a plan. It can only raise: the risk-tier
+               check takes the highest of the declared tier, the tier computed
+               from the diff and yours. It is not a finding and does not set
+               `blocking`. Leave the key out when you see no reason to raise.
+
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
             (not available in this runner).
           claude_args: |
@@ -362,6 +372,16 @@ jobs:
                spelled exactly as given. Do not emit a line number, a severity
                field, or any prose — this schema deliberately carries neither.
                A clean review writes {"blocking": false, "findings": []}.
+
+               Optional, beside `findings`: when the diff carries more risk than
+               the PR body's `Risk:` line declares, add the top-level key
+               "raise": {"tier": "<MEDIUM|HIGH>", "reason": "<one sentence, at
+               most 300 characters>"}. HIGH: a mistake would be costly or slow
+               to undo (security, CI gates, data, a shared contract); MEDIUM: a
+               behaviour change worth a plan. It can only raise: the risk-tier
+               check takes the highest of the declared tier, the tier computed
+               from the diff and yours. It is not a finding and does not set
+               `blocking`. Leave the key out when you see no reason to raise.
 
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
             (not available in this runner).

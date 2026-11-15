@@ -201,7 +201,10 @@ jobs:
   risk-tier:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # actions: read — the code review's runs and evidence artifacts, for the reviewer's
+    # raise (#2202); the pinned action ignores it until the pin reaches #2202's commit.
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     concurrency:

@@ -36,6 +36,7 @@ EXPECTED_PINNED_PATHS = (
     ".github/scripts/lane_ledger.py",
     ".github/scripts/risk_tier.py",
     ".github/scripts/github_client.py",
+    ".github/scripts/code_gate_verdict.py",  # read by risk_tier.py for the raise (#2202)
     "agents/__init__.py",
     "agents/plan_lock.py",
     "agents/plan_classifier.py",
@@ -71,13 +72,13 @@ def test_lists_only_later_commits_that_touch_the_pinned_code(tmp_path):
     pin = _commit(tmp_path, ".github/scripts/risk_tier.py", "pinned")
     _commit(tmp_path, "docs/readme.md", "docs only")
     _commit(tmp_path, ".github/scripts/lane_publish.py", "fix lane publish")
-    _commit(tmp_path, ".github/scripts/code_gate_verdict.py", "gate script, not pinned")
+    _commit(tmp_path, ".github/scripts/code_gate_verdict.py", "gate script, read by risk_tier")
     _commit(tmp_path, ".github/actions/risk-tier/action.yml", "fix action")
     _commit(tmp_path, ".github/workflows/agent-dispatch.yml", "bump caller")
     _commit(tmp_path, ".github/scripts/lane_pin_drift.py", "drift script, not run by the lane")
     _commit(tmp_path, ".github/workflows/lane-pin-drift.yml", "drift workflow, not run by the lane")
     found = [line.split(" ", 1)[1] for line in drift.missing_commits(tmp_path, pin)]
-    assert found == ["fix action", "fix lane publish"]
+    assert found == ["fix action", "gate script, read by risk_tier", "fix lane publish"]
 
 
 def test_a_current_pin_reports_nothing_missing(tmp_path):
