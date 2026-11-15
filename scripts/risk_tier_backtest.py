@@ -341,10 +341,31 @@ def render(results, *, since, until, command, run_date):
         and r.buckets
         and set(r.buckets) <= {"machinery", "gate"}
     ]
+    without_mach = (counts["HIGH"] - len(only_mach)) / n if n else 0.0
+    kinds = collections.Counter(
+        re.split(r": | in ", reason)[0] for r in results for reason in r.weakening
+    )
     out += [
         "",
         f"HIGH from the `machinery`/`gate` buckets alone (no `hitl`/`guarded` path, no test "
-        f"weakening, list readable): {len(only_mach)} of {counts['HIGH']} HIGH PRs.",
+        f"weakening, list readable): {len(only_mach)} of {counts['HIGH']} HIGH PRs. Were those "
+        f"two buckets not to floor the tier, HIGH would be {_pct(without_mach)} "
+        "(those PRs would fall to the classifier's MEDIUM or LOW).",
+        "",
+        "Test-weakening reasons (one PR can carry several):",
+        "",
+        "| reason | occurrences |",
+        "|---|---|",
+    ]
+    out += [f"| {k} | {v} |" for k, v in sorted(kinds.items(), key=lambda kv: -kv[1])]
+    protected = [r for r in results if r.buckets and not r.unreadable]
+    all_py = [r for r in protected if not r.exemption_why.startswith("not .py")]
+    out += [
+        "",
+        f"Comment-only exemption: {len(protected)} PRs touched a protected path, "
+        f"{len(all_py)} of them changed only `.py` files, "
+        f"{sum(1 for r in protected if r.exemption)} were exempted, "
+        f"{sum(1 for r in protected if r.exemption is None)} could not be computed.",
     ]
     by_week = collections.defaultdict(list)
     for r in results:
@@ -413,28 +434,48 @@ def fetch_prs(since, until):
     return json.loads(raw)
 
 
-def fetch_files(number):
-    """The PR's file listing, or `None` when the API call fails."""
-    try:
-        raw = _gh(
-            ["api", "--paginate", f"repos/{REPO}/pulls/{number}/files?per_page=100", "--jq", ".[]"]
-        )
-    except subprocess.CalledProcessError:
-        return None
-    return [json.loads(line) for line in raw.splitlines() if line.strip()]
+def fetch_files(number, attempts=3):
+    """The PR's file listing, or `None` when every attempt at the API call fails.
+
+    A transient failure is retried: a list left unread counts HIGH, so a network blip must
+    not become a tier.
+    """
+    for _ in range(attempts):
+        try:
+            raw = _gh(
+                [
+                    "api", "--paginate", f"repos/{REPO}/pulls/{number}/files?per_page=100",
+                    "--jq", ".[]",
+                ]
+            )  # fmt: skip
+        except subprocess.CalledProcessError:
+            continue
+        return [json.loads(line) for line in raw.splitlines() if line.strip()]
+    return None
 
 
 def git_reader(merge_sha):
     """`read_blob` for one merge commit: `base` is its first parent, `head` the commit."""
     refs = {"base": f"{merge_sha}^1", "head": merge_sha}
+    present = {}
 
     def read_blob(side, path):
         rev = refs[side]
-        check = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
-            capture_output=True,
-        )
-        if check.returncode != 0:
+        if rev not in present:
+            check = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(REPO_ROOT),
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    f"{rev}^{{commit}}",
+                ],
+                capture_output=True,
+            )
+            present[rev] = check.returncode == 0
+        if not present[rev]:
             raise LookupError(f"commit {rev} not in the local history")
         shown = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "show", f"{rev}:{path}"],
@@ -462,9 +503,12 @@ def main(argv=None):
         data = json.loads(cache.read_text("utf-8"))
     else:
         prs = fetch_prs(args.since, args.until)
-        data = {"prs": prs, "files": {str(p["number"]): fetch_files(p["number"]) for p in prs}}
-        if cache:
-            cache.write_text(json.dumps(data), "utf-8")
+        data = {"prs": prs, "files": {str(p["number"]): None for p in prs}}
+    for number, files in data["files"].items():
+        if files is None:  # never fetched, or every attempt failed last time: try again
+            data["files"][number] = fetch_files(number)
+    if cache:
+        cache.write_text(json.dumps(data), "utf-8")
 
     policy = path_policy.load_policy(REPO_ROOT / "config" / "protected-paths.json")
     buckets = policy.buckets(REPO)
