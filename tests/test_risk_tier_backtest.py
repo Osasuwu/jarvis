@@ -25,8 +25,8 @@ REPO = "Osasuwu/jarvis"
 PROTECTED = {
     REPO: {
         "hitl": ["AGENTS.md"],
-        "guarded": ["supabase/**"],
-        "machinery": [".github/**", "uv.lock", "agents/path_policy.py"],
+        "guarded": ["supabase/**", "agents/path_policy.py"],
+        "machinery": [".github/**", "uv.lock"],
     }
 }
 
@@ -102,10 +102,17 @@ def test_docs_only_is_low_whatever_the_churn(host):
     assert result.inputs() == ["docs-only"]
 
 
-def test_protected_path_is_high_in_every_variant_and_names_the_bucket(host):
-    result = _run(host, [_f(".github/workflows/x.yml", 1)])
+def test_guarded_path_is_high_in_every_variant_and_names_the_bucket(host):
+    result = _run(host, [_f("supabase/x.sql", 1)])
     assert set(result.tiers.values()) == {"HIGH"}
-    assert result.buckets == {"machinery": (".github/workflows/x.yml",)}
+    assert result.buckets == {"guarded": ("supabase/x.sql",)}
+
+
+def test_machinery_path_is_named_but_sets_no_floor(host):
+    """#2200: only `guarded` floors the tier; a one-line machinery diff is LOW everywhere."""
+    result = _run(host, [_f(".github/workflows/x.yml", 1)])
+    assert set(result.tiers.values()) == {"LOW"}
+    assert result.inputs() == ["path:machinery"]
 
 
 def test_short_file_listing_is_high_and_reported(host):
@@ -175,7 +182,7 @@ def test_comment_only_exemption_unreadable_history_stays_high_and_says_so(host):
     result = _run(host, [_f("agents/path_policy.py", 1, 1)], blobs={})
     assert result.tier == "HIGH"
     assert result.exemption is None
-    assert result.inputs() == ["path:machinery", "exemption not computable (unreadable: base)"]
+    assert result.inputs() == ["path:guarded", "exemption not computable (unreadable: base)"]
 
 
 def test_week_starts_on_monday_utc():
@@ -187,7 +194,7 @@ def test_week_starts_on_monday_utc():
 def test_report_checks_the_25_percent_prediction(host, n_high, verdict):
     results = []
     for i in range(4):
-        path = ".github/x.yml" if i < n_high else "scripts/a.py"
+        path = "supabase/x.sql" if i < n_high else "scripts/a.py"
         r = _run(host, [_f(path, 1)])
         r.number = i
         results.append(r)

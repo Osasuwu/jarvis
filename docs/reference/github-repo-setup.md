@@ -287,12 +287,11 @@ optional third, below):
 
 - **`machinery`** (optional) — the CI/process machinery that decides what merges: workflows,
   hooks, the plan classifier and this file, dependency manifests, the merge-gate docs. Read only
-  by the `risk-tier` check, from the base commit, never by `/to-tickets`; any changed file
-  matching these globs floors the PR at HIGH. A repo without the bucket still gets the `hitl`
-  and `guarded` floors.
+  by the `risk-tier` check, from the base commit, never by `/to-tickets`. It sets no risk
+  floor (#2200): only `guarded` floors a PR at HIGH.
 - **`gate`** (jarvis only today) — the code-review gate's own machinery. `code_gate_verdict.py`
-  reads it and posts a `gate-machinery` red for any PR touching it; `risk-tier` floors it at
-  HIGH like any other bucket. It holds `.github/scripts/github_client.py` too, since the
+  reads it and posts a `gate-machinery` red for any PR touching it; `risk-tier` sets no floor
+  for it (#2200). It holds `.github/scripts/github_client.py` too, since the
   verdict job executes it (#2068).
 
 Every reader matches these globs through `agents/path_policy.py`, whose docstring defines the

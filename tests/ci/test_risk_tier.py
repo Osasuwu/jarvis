@@ -39,8 +39,9 @@ GRAMMAR_LINE = "Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>"
 BASE_LIST = {
     REPO: {
         "hitl": ["AGENTS.md"],
-        "guarded": ["supabase/**"],
+        "guarded": ["supabase/**", "shared/**", "docs/schema/**"],
         "machinery": [".github/**", "docs/security/**"],
+        "gate": ["agents/path_policy.py"],
     }
 }
 GOOD_BODY = "Refs #1\n\nRisk: LOW — small"
@@ -205,34 +206,55 @@ def test_a_bad_risk_line_is_red_and_names_the_expected_grammar(base, body, probl
 # --- AC2: the computed tier floors the declared one --------------------------------------
 
 
-@pytest.mark.parametrize(
-    "path",
-    ["AGENTS.md", ".github/workflows/x.yml", "supabase/x.sql"],
-    ids=["hitl", "machinery", "guarded"],
-)
-def test_a_path_in_any_bucket_of_the_base_list_reads_high_whatever_the_declared_line(base, path):
-    ok, messages = _run(base, FakeGitHub(body="Risk: LOW — x", files=[_file(path)]))
+def test_a_guarded_path_reads_high_whatever_the_declared_line(base):
+    ok, messages = _run(base, FakeGitHub(body="Risk: LOW — x", files=[_file("shared/x.py")]))
     assert ok is False
-    assert messages[0].startswith(
-        f"declared LOW, computed HIGH, final HIGH\n  - protected path(s): {path}"
+    assert (
+        messages[0] == "declared LOW, computed HIGH, final HIGH\n  - guarded path(s): shared/x.py"
     )
 
 
+# #2200: "guarded paths" in the 2026-11-11 decision is the `guarded` bucket alone. A one-file,
+# one-area, one-line diff in any other bucket is LOW: nothing but the floor could raise it.
 @pytest.mark.parametrize(
     "path",
-    [
-        ".gitleaksignore",
-        "SECURITY.md",
-        ".github/workflows/x.yml",
-        "config/plan_review.yaml",
-        "pyproject.toml",
-        "agents/plan_lock.py",
-        "config/repos.conf",
-    ],
+    ["AGENTS.md", ".github/workflows/x.yml", "agents/path_policy.py"],
+    ids=["hitl", "machinery", "gate"],
 )
-def test_the_real_protected_list_floors_the_gate_machinery_at_high(path):
-    tier, reasons = risk_tier.path_tier([path], REPO, _root)
-    assert (tier, reasons) == ("HIGH", [f"protected path(s): {path}"])
+def test_a_path_in_a_bucket_other_than_guarded_sets_no_floor(base, path):
+    ok, messages = _run(base, FakeGitHub(body="Risk: LOW — x", files=[_file(path)]))
+    assert (ok, messages) == (True, ["declared LOW, computed LOW, final LOW"])
+
+
+# The real list, read from this checkout: its `guarded` members floor at HIGH, and members of
+# `machinery`, `gate` and `hitl` do not (#2200). Each path's bucket is asserted first, so a
+# path dropped from its bucket fails here instead of passing as LOW for the wrong reason.
+REAL_GUARDED = ["supabase/migrations/x.sql", "config/repos.conf"]
+REAL_UNFLOORED = {
+    ".gitleaksignore": "machinery",
+    "SECURITY.md": "machinery",
+    ".github/workflows/x.yml": "machinery",
+    "config/plan_review.yaml": "machinery",
+    "pyproject.toml": "machinery",
+    "agents/plan_lock.py": "machinery",
+    ".github/scripts/code_gate_verdict.py": "gate",
+    "config/SOUL.md": "hitl",
+}
+
+
+def test_the_real_protected_list_floors_only_its_guarded_paths_at_high():
+    from agents import path_policy
+
+    buckets = path_policy.load_policy(_root / "config" / "protected-paths.json").buckets(REPO)
+    wrong_bucket = [
+        p for p, b in REAL_UNFLOORED.items() if not path_policy.matched_paths([p], buckets[b])
+    ] + [p for p in REAL_GUARDED if not path_policy.matched_paths([p], buckets["guarded"])]
+    assert wrong_bucket == []
+    assert [risk_tier.path_tier([p], REPO, _root) for p in REAL_GUARDED] == [
+        ("HIGH", [f"guarded path(s): {p}"]) for p in REAL_GUARDED
+    ]
+    floored = {p: risk_tier.path_tier([p], REPO, _root) for p in REAL_UNFLOORED}
+    assert {p: t for p, t in floored.items() if t != ("LOW", [])} == {}
 
 
 def test_repos_conf_is_a_shared_surface_to_the_classifier_and_to_afk_fit():
@@ -265,9 +287,9 @@ def test_risk_tier_imports_no_private_name_from_the_afk_fit_script():
 
 
 def test_a_rename_out_of_a_protected_path_reads_high(base):
-    files = [_file("scripts/moved.py", status="renamed", previous_filename="AGENTS.md")]
+    files = [_file("scripts/moved.py", status="renamed", previous_filename="shared/x.py")]
     tier, reasons = _computed(base, files)
-    assert (tier, reasons[0]) == ("HIGH", "protected path(s): AGENTS.md")
+    assert (tier, reasons[0]) == ("HIGH", "guarded path(s): shared/x.py")
 
 
 def test_a_corrupt_protected_list_reads_high(base):
@@ -338,7 +360,7 @@ def test_a_path_only_the_hosts_own_list_names_reads_high(tmp_path):
     )
     assert risk_tier.path_tier(["host_only/a.py"], REPO, host) == (
         "HIGH",
-        ["protected path(s): host_only/a.py"],
+        ["guarded path(s): host_only/a.py"],
     )
     assert risk_tier.path_tier(["AGENTS.md"], REPO, host) == ("LOW", [])
 
@@ -380,9 +402,10 @@ def test_two_production_areas_read_medium_through_the_classifier(base):
     assert _computed(base, files) == ("MEDIUM", ["classifier ordinal 2"])
 
 
-def test_the_docs_only_exemption_does_not_lower_a_protected_path(base):
-    tier, reasons = _computed(base, [_file("docs/security/agent-boundaries.md")])
-    assert (tier, reasons) == ("HIGH", ["protected path(s): docs/security/agent-boundaries.md"])
+def test_the_docs_only_exemption_does_not_lower_a_guarded_path(base):
+    """#2200 AC3: docs-only lowers only the classifier ordinal, never the path floor."""
+    tier, reasons = _computed(base, [_file("docs/schema/tables.md")])
+    assert (tier, reasons) == ("HIGH", ["guarded path(s): docs/schema/tables.md"])
 
 
 def test_an_unreadable_plan_review_config_reads_high(base, tmp_path):
@@ -502,12 +525,12 @@ def test_a_test_file_without_a_readable_diff_reads_high(base):
 
 # --- AC4: the release is an approval at the current head from a releasing-role holder -----
 
-HIGH_FILES = [_file("AGENTS.md")]
+HIGH_FILES = [_file("shared/x.py")]
 
 
 @pytest.fixture
 def high(base):
-    """Evaluate a PR that touches AGENTS.md (HIGH by path) with the given reviews."""
+    """Evaluate a PR that touches shared/x.py (HIGH by a guarded path) with the given reviews."""
 
     def run(reviews, permissions, body="Risk: HIGH — rules file", head=HEAD, files=HIGH_FILES):
         api = FakeGitHub(body=body, files=files, reviews=reviews, permissions=permissions)
@@ -601,7 +624,7 @@ def test_an_event_for_a_head_that_has_since_moved_is_red_as_superseded(high):
 
 # --- #2088: an admin author's own HIGH/CRITICAL PR skips the hold ------------------------
 
-HIGH_SUMMARY = "declared HIGH, computed HIGH, final HIGH\n  - protected path(s): AGENTS.md"
+HIGH_SUMMARY = "declared HIGH, computed HIGH, final HIGH\n  - guarded path(s): shared/x.py"
 HIGH_HOLD = (
     "HIGH holds until a holder of the releasing role (admin, not a Bot account, not "
     "osasuwu-bot) leaves an APPROVED review on the current head aaaaaaa; a new push "

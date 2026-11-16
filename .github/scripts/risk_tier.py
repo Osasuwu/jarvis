@@ -14,9 +14,10 @@ Verdict, in order:
 1. the body must carry exactly one well-formed `Risk:` line (grammar: risk_tier.md), except a
    Dependabot PR (author `dependabot[bot]`, type `Bot`), whose body is not read and whose
    declared tier is fixed at HIGH (#2059);
-2. the computed tier is the highest of: a changed path in any bucket of the host base's
-   `config/protected-paths.json` entry (HIGH), test weakening (HIGH), and the plan
-   classifier's ordinal (3 -> HIGH, 2 -> MEDIUM, 1 -> LOW). Anything unreadable is HIGH;
+2. the computed tier is the highest of: a changed path in the `guarded` bucket of the host
+   base's `config/protected-paths.json` entry (HIGH; the other buckets set no floor, #2200),
+   test weakening (HIGH), and the plan classifier's ordinal (3 -> HIGH, 2 -> MEDIUM,
+   1 -> LOW). Anything unreadable is HIGH;
 3. final tier = max(computed, declared). LOW and MEDIUM pass;
 4. HIGH and CRITICAL pass when the live PR's author holds the releasing role: `admin`
    permission, not a `Bot` account, not the lane's bot (#2088). Every other author's HIGH or
@@ -164,9 +165,10 @@ def _is_test_file(path):
 
 
 def path_tier(paths, repo, host_root):
-    """HIGH when a changed path sits in any bucket of the host base's protected list.
+    """HIGH when a changed path sits in the `guarded` bucket of the host base's protected list.
 
-    A host with no list, or none for this repo, is HIGH on every diff: the reason names the
+    `hitl`, `machinery` and `gate` set no floor (#2200); their paths reach the tier through the
+    classifier and test weakening like any other path. A host with no list, or none for this repo, is HIGH on every diff: the reason names the
     fix (D2, D7), so a host that has not finished enabling the lane reads it in the check.
     """
     if host_root is None:
@@ -196,7 +198,7 @@ def path_tier(paths, repo, host_root):
         return "HIGH", [f"protected-path list for {repo} has no globs at the base commit: {adopt}"]
     verdict = path_policy.classify_buckets(paths, buckets)
     if verdict.risk_floor == "HIGH":
-        return "HIGH", [f"protected path(s): {', '.join(verdict.risk_matched)}"]
+        return "HIGH", [f"guarded path(s): {', '.join(verdict.risk_matched)}"]
     return "LOW", []
 
 

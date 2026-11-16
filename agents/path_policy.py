@@ -23,9 +23,10 @@ fewer paths than it did.
 Buckets, per repo entry (keys starting with `_` are comments, never buckets):
 
 - `hitl`    — any match is AFK class 3 (checked first);
-- `guarded` — any match is AFK class 2;
-- `machinery`, `gate` and any bucket name this module does not know — no AFK class, but any
-  match in any bucket floors the risk tier at HIGH; `gate` also sets the `gate` flag.
+- `guarded` — any match is AFK class 2, and the only bucket that floors the risk tier at HIGH
+  (#2200: the 2026-11-11 decision's "guarded paths" input is this bucket alone);
+- `machinery`, `gate` and any bucket name this module does not know — no AFK class and no risk
+  floor; `gate` sets the `gate` flag, `machinery` and `hitl` their own flags.
 
 Stdlib only, importing nothing from `agents`: `code_gate_verdict.py` loads this file by path
 under `python -I`, where neither the package nor PyYAML is importable.
@@ -41,6 +42,7 @@ from pathlib import Path
 
 AFK_BUCKETS = (("hitl", 3), ("guarded", 2))
 GATE_BUCKET = "gate"
+RISK_FLOOR_BUCKET = "guarded"
 
 
 class PolicyError(ValueError):
@@ -126,8 +128,7 @@ def classify_buckets(paths: Iterable[str], buckets: Mapping[str, Iterable[str]])
         if hits.get(name):
             afk_class, afk_bucket, afk_matched = cls, name, hits[name]
             break
-    matched = {p for found in hits.values() for p in found}
-    risk_matched = tuple(p for p in paths if p in matched)
+    risk_matched = hits.get(RISK_FLOOR_BUCKET, ())
     return PathVerdict(
         afk_class=afk_class,
         afk_bucket=afk_bucket,
