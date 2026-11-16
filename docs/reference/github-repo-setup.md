@@ -159,6 +159,53 @@ fail-open gate. Change the block and the live setting together
 }
 ```
 
+**Rulesets: history of the default branch and release tags (#2146).** The same probe also goes red
+unless force pushes and deletion of the default branch are confirmed blocked, by an active
+ruleset rule (`GET /repos/<owner>/<repo>/rules/branches/<default>`) or by classic protection's
+`allow_force_pushes` / `allow_deletions`. The job's `GITHUB_TOKEN` can read only the first:
+classic protection needs Administration: read, which a workflow token cannot be given. Classic
+protection on `main` blocks both today (read back with an admin token, 2026-11-16), so until the
+branch ruleset below exists the scheduled run is red for want of a readable source, not for a
+real change.
+
+Two rulesets, **not applied** as of 2026-11-16 (a repository setting is the human's to change):
+
+- `default-branch-history`: blocks deletion and non-fast-forward pushes on the default branch,
+  in a form the job token can read back.
+- `release-tags`: blocks deletion and update (a force-moved tag) of `v*` tags, so a published
+  release keeps pointing at the commit it was cut from. Creating a tag stays open, so
+  `weekly-release` still publishes; it never moves or deletes a tag (its error path forbids
+  `--force`). Until it exists, a release tag can be deleted or moved by any token with push
+  access, the operator's included.
+
+No bypass actors on either: whoever needs to move a tag disables the ruleset for that change, in
+the UI, on purpose.
+
+```json
+{
+  "name": "default-branch-history",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+  "rules": [{"type": "deletion"}, {"type": "non_fast_forward"}]
+}
+```
+
+```json
+{
+  "name": "release-tags",
+  "target": "tag",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+  "rules": [{"type": "deletion"}, {"type": "update"}]
+}
+```
+
+Apply each with `gh api -X POST repos/<owner>/<repo>/rulesets --input <file>.json`; read back with
+`gh api repos/<owner>/<repo>/rulesets` and `gh api repos/<owner>/<repo>/rules/branches/<default>`.
+
 `code-gate` is **green iff**:
 
 1. at least one successful `code-review.yml` run bound to the evaluated head SHA carries a valid
