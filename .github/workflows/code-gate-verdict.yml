@@ -33,6 +33,12 @@ permissions:
   actions: read
   pull-requests: read
 
+# An explicit `bash` runs every `run:` step with `-eo pipefail` (#2142,
+# tests/ci/test_workflow_run_fail_fast.py).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Emits `targets`, a JSON list of {pr_number, head_sha}. On an event it parses
   # event data only, no network; `[]` means the event is not bound to a PR (e.g. a
