@@ -630,6 +630,8 @@ def test_the_real_docs_claim_exactly_these_required_checks():
         ("docs/reference/ci-guard-meta-tests.md", "gitleaks"),
         ("docs/reference/ci-guard-meta-tests.md", "pytest"),
         ("docs/reference/failure-class-coverage.md", "pytest"),
+        ("docs/reference/failure-class-coverage.md", "ruff"),
+        ("docs/reference/failure-class-coverage.md", "ruff"),
         ("docs/reference/github-repo-setup.md", "code-gate"),
         ("docs/reference/github-repo-setup.md", "gitleaks"),
         ("docs/reference/github-repo-setup.md", "pytest"),
