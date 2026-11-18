@@ -58,6 +58,11 @@ Scheduled/unattended runs act only from a pre-approved whitelist of actions — 
 present to catch a bad call or an injected instruction. Anything outside the whitelist waits for
 an interactive session.
 
+The scheduled CI fixer is the one routine whose whitelist is not a list of actions: it may do
+what the affected repo's rules file lets an agent do alone, inside the fixed limits of
+[`docs/reference/scheduled-ci-fixer-prompt.md`](docs/reference/scheduled-ci-fixer-prompt.md),
+and it never merges (#2226).
+
 ## Engineering posture
 
 - **Consult memory before deciding.** Before a non-trivial decision, check what's already known
