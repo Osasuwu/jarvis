@@ -10,12 +10,13 @@ Pull-only reference for `scripts/scheduled_ci_fixer.py` (#2226). The reader it s
 The reader sends a red scheduled run to Telegram as it finds it. With the fixer in front, the
 same morning session first lets an agent look at the run: it reads the failing log, finds the
 cause and works under the affected repo's own rules file. One message per red workflow then
-says what came of it, and which of the four it is:
+says what came of it, and which of the five it is:
 
 | First line of the outcome block | Meaning |
 |---|---|
 | `Outcome: PR opened — <url>` | the repo's rules let an agent act alone; the fix is in that PR, unmerged |
 | `Outcome: needs a person — rule: <rule>` | nothing was changed; two or three lines of diagnosis follow |
+| `Outcome: already fixed on the default branch` | nothing was changed and nothing is left to do; the cause and the commit or later green run that shows the fix follow |
 | `Outcome: cause not found` | nothing was changed; what was checked follows |
 | `Outcome: not diagnosed (the fixer session ended without a report)` | the agent never reported this run |
 
@@ -44,16 +45,18 @@ All take `--state-dir <dir>` (default `~/.jarvis/scheduled-ci/`) and `--dry-run`
 |---|---|
 | `start` | sends every item an earlier session left queued as "not diagnosed", then runs the reader in deferred mode: a red run that would have been an alert is queued instead of sent. Monday summary and green workflows as in the reader. Prints `scheduled_ci_fixer: N pending` |
 | `next` | prints the oldest queued item whose report has not been tried, as JSON (`watch_key`, `repo`, `workflow`, `run_id`, `html_url`, `head_sha`, `failing_jobs`, `branch`), or `none`. Writes nothing |
-| `report --run <id> --outcome pr\|needs-person\|cause-not-found [--pr-url] [--rule] [--diagnosis]` | sends that item's message with its outcome, logs it, commits the workflow's state, drops the item |
+| `report --run <id> --outcome pr\|needs-person\|already-fixed\|cause-not-found [--pr-url] [--rule] [--diagnosis]` | sends that item's message with its outcome, logs it, commits the workflow's state, drops the item |
 | `finish` | sends everything still queued: an item whose report was accepted but could not be sent goes out as it was reported, every other one as "not diagnosed". Last command of every session |
 
 Rules of `report`:
 
 - `pr` needs `--pr-url https://github.com/<the item's repo>/pull/<n>`; `--diagnosis` is optional.
 - `needs-person` needs `--rule` (one line, at most 200 characters) and `--diagnosis`.
+- `already-fixed` needs `--diagnosis` (the cause, and the commit or later green run that
+  shows the fix); it takes no `--rule` and no `--pr-url`.
 - `cause-not-found` needs `--diagnosis`.
 - `--diagnosis` is at most 3 lines and 600 characters.
-- **Nothing-written guard.** Before a `needs-person` or `cause-not-found` message is sent, the
+- **Nothing-written guard.** Before a `needs-person`, `already-fixed` or `cause-not-found` message is sent, the
   fixer reads GitHub (two GET calls, no write): a PR whose head is `scheduled-ci-fix/<run_id>`
   in the item's repo, and that branch itself. If either exists, or GitHub cannot be read, the
   report is refused and the item stays queued; `finish` sends it as "not diagnosed". `scheduled-ci-fix/<run_id>` is the
@@ -72,7 +75,7 @@ In the state directory, next to the reader's `state.json`:
 - `pending.json`: the queued items. An item holds the alert text and the workflow state to
   commit once its message is sent.
 - `log.jsonl`: the reader's log; a fixer line is `kind: "alert"` with `run_id`, `outcome`
-  (`pr`, `needs-person`, `cause-not-found`, `not-diagnosed`) and, for `pr`, `pr_url`. No
+  (`pr`, `needs-person`, `already-fixed`, `cause-not-found`, `not-diagnosed`) and, for `pr`, `pr_url`. No
   credential is ever written.
 - `repos/<owner>__<repo>/`: the agent's clones of the affected repos.
 
@@ -132,8 +135,9 @@ outcome, PR link if any.
 
 Permissions the unattended session needs, in the main checkout's `.claude/settings.local.json`
 (the user's to add; an agent session cannot edit that file). The first is enough for the
-`needs-person` and `cause-not-found` paths; without the others the agent cannot clone or push,
-and every run ends as one of those two or as "not diagnosed":
+`needs-person`, `already-fixed` and `cause-not-found` paths when the run log alone settles
+them; without the others the agent cannot clone or push, and every run ends as one of those
+three or as "not diagnosed":
 
 - `Bash(python -m scripts.scheduled_ci_fixer:*)`
 - `Bash(gh run view:*)`
@@ -150,16 +154,15 @@ To go back, restore the reader's prompt from `scheduled-ci-reader.md` § Registr
   agent's cooperation: the fixer never merges, and the repo's own CI and review see the PR.
 - A run log is text an outsider can influence (a dependency's output, a test name). The prompt
   treats it as data; a PR is the most such text can produce, and it is unmerged.
-- "Already fixed on the default branch" and "the cause is outside the repo" have no outcome of
-  their own: they go out as `needs a person` with a rule line that starts `no repo rule:`.
+- "The cause is outside the repo" has no outcome of its own: it goes out as `needs a person`
+  with the rule line `no repo rule: the cause is outside the repo`.
+- `already fixed` is the agent's reading. The fixer checks that nothing was written, not that
+  the commit or green run named in the diagnosis exists or removes the cause.
 - The message is true about writes only as far as the fixed branch name goes: a push to any
   other branch is against the prompt and is not seen by the guard.
 - The branch is named after the run id, not the attempt. A re-run of a run that already has a
   fixer branch, alerting again, finds that branch: the prompt has the agent report the existing
   PR, and a no-change report for it is refused.
-- A dry run of the prompt on redrobot's two red runs of 2026-11-02 (both fixed on the default
-  branch since) showed that "already fixed" reads badly as `needs a person … nothing left to
-  do`. An outcome of its own for "nothing to do" is the obvious next change.
 
 ## Adoption check (#2226, due 2026-12-15)
 

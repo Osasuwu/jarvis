@@ -4,7 +4,8 @@ The reader (``scripts/scheduled_ci_reader.py``) used to send a red scheduled
 run to Telegram as it found it. With this step in front, the morning session
 queues the run, an agent reads its log and works under the affected repo's own
 rules file, and one message goes out saying what came of it: a PR, a diagnosis
-with the rule that needs a person, or that the cause was not found.
+with the rule that needs a person, that the default branch already holds the
+fix, or that the cause was not found.
 
 This module is the deterministic half. The agent's instructions are
 ``docs/reference/scheduled-ci-fixer-prompt.md``; nothing here judges a cause.
@@ -14,6 +15,8 @@ This module is the deterministic half. The agent's instructions are
     python -m scripts.scheduled_ci_fixer report --run <id> --outcome pr --pr-url <url>
     python -m scripts.scheduled_ci_fixer report --run <id> --outcome needs-person \\
         --rule "<the rule>" --diagnosis "<two or three lines>"
+    python -m scripts.scheduled_ci_fixer report --run <id> --outcome already-fixed \\
+        --diagnosis "<the cause, and the commit or green run that shows the fix>"
     python -m scripts.scheduled_ci_fixer report --run <id> --outcome cause-not-found \\
         --diagnosis "<what was checked>"
     python -m scripts.scheduled_ci_fixer finish    # whatever is left goes out as "not diagnosed"
@@ -45,7 +48,7 @@ from scripts.notify_telegram import send as telegram_send
 
 NAME = "scheduled_ci_fixer"
 BRANCH_PREFIX = "scheduled-ci-fix/"  # the one branch the agent may create is <prefix><run id>
-OUTCOMES = ("pr", "needs-person", "cause-not-found")
+OUTCOMES = ("pr", "needs-person", "already-fixed", "cause-not-found")
 NOT_DIAGNOSED = "not-diagnosed"
 RULE_MAX = 200
 DIAGNOSIS_MAX = 600
@@ -109,6 +112,8 @@ def outcome_message(
         head = f"Outcome: PR opened — {pr_url}"
     elif outcome == "needs-person":
         head = f"Outcome: needs a person — rule: {(rule or '').strip()}"
+    elif outcome == "already-fixed":
+        head = "Outcome: already fixed on the default branch"
     elif outcome == "cause-not-found":
         head = "Outcome: cause not found"
     else:

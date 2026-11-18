@@ -58,10 +58,10 @@ tells you what the run saw; the default branch tells you whether it is already f
 
 **Stop early when there is nothing to fix.** If the default branch already holds a change that
 removes the cause, or a later scheduled run of the same workflow is green, change nothing.
-There is no outcome of its own for this case: report `needs-person` with the rule
-`no repo rule: already fixed on the default branch`, and say in the diagnosis which commit or
-run shows it, whether you tied that commit to this cause or only saw the later green run, and
-that nothing is left to do.
+Outcome `already-fixed`. The diagnosis says what the cause was, which commit or later green
+run shows the fix, and whether you tied that commit to this cause or only saw the green run.
+If only part of the cause is fixed there, this is not the outcome: decide below on what is
+left.
 
 **A fix already exists.** If the branch `branch` or a PR from it is already in the repo (an
 earlier session pushed it), do not push again: report `pr` with that PR's link.
@@ -123,6 +123,7 @@ One call per item, from the jarvis checkout:
 ```bash
 python -m scripts.scheduled_ci_fixer report --run <run_id> --outcome pr --pr-url <url> --diagnosis "<cause, one to three lines>"
 python -m scripts.scheduled_ci_fixer report --run <run_id> --outcome needs-person --rule "<the rule, one line>" --diagnosis "<two or three lines>"
+python -m scripts.scheduled_ci_fixer report --run <run_id> --outcome already-fixed --diagnosis "<the cause, then the commit or green run that shows the fix>"
 python -m scripts.scheduled_ci_fixer report --run <run_id> --outcome cause-not-found --diagnosis "<what was checked, two or three lines>"
 ```
 
@@ -131,8 +132,9 @@ python -m scripts.scheduled_ci_fixer report --run <run_id> --outcome cause-not-f
   person's approval`.
 - `--diagnosis`: at most three lines and 600 characters. Line one is the cause, line two the
   evidence (job, step, the failing line in a few words), line three what a person should do
-  next. No log dumps and no credentials.
-- `needs-person` and `cause-not-found` are refused when a branch `scheduled-ci-fix/<run_id>` or
+  next. No log dumps and no credentials. For `already-fixed`, line two is the commit or
+  the later green run, and there is no line three unless something is left for a person.
+- `needs-person`, `already-fixed` and `cause-not-found` are refused when a branch `scheduled-ci-fix/<run_id>` or
   a PR from it exists in the repo: the message would say nothing was written. If you pushed,
   the outcome is `pr`.
 - Write in English, plainly. The reader is on a phone.

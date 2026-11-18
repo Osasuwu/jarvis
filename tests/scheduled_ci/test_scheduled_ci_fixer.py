@@ -308,6 +308,29 @@ def test_report_needs_person_sends_rule_and_diagnosis_and_only_reads_github(tmp_
     assert "pr_url" not in log_lines(tmp_path)[0]
 
 
+def test_report_already_fixed_says_so_with_its_diagnosis_and_only_reads_github(tmp_path):
+    gh, tg = started(tmp_path)
+    before = len(gh.args)
+    diagnosis = "Runner image pin was removed.\nFixed by abc1234; scheduled run 9 is green."
+    argv = ["report", "--run", "3", "--outcome", "already-fixed", "--diagnosis", diagnosis]
+    assert fx(tmp_path, argv, gh, tg) == 0
+    assert tg.texts == [
+        f"{NIGHTLY_ALERT}\n\n"
+        "Outcome: already fixed on the default branch\n"
+        "Runner image pin was removed.\n"
+        "Fixed by abc1234; scheduled run 9 is green."
+    ]
+    assert gh.args[before:] == [
+        ["api", "repos/o/r/pulls?head=o:scheduled-ci-fix/3&state=all&per_page=1"],
+        ["api", "repos/o/r/git/matching-refs/heads/scheduled-ci-fix/3"],
+    ]
+    assert [(e["run_id"], e["outcome"], e["result"]) for e in log_lines(tmp_path)] == [
+        (3, "already-fixed", "ok")
+    ]
+    assert [i["run_id"] for i in pending(tmp_path)] == [11]
+    assert state_of(tmp_path / "st")["cursor"]["id"] == 3
+
+
 @pytest.mark.parametrize(
     "found",
     [
@@ -317,7 +340,7 @@ def test_report_needs_person_sends_rule_and_diagnosis_and_only_reads_github(tmp_
     ],
     ids=["pr-exists", "branch-exists", "github-unreadable"],
 )
-@pytest.mark.parametrize("outcome", ["needs-person", "cause-not-found"])
+@pytest.mark.parametrize("outcome", ["needs-person", "cause-not-found", "already-fixed"])
 def test_no_change_outcome_is_refused_when_the_fixer_branch_or_pr_exists(
     tmp_path, capsys, found, outcome
 ):
@@ -476,6 +499,24 @@ LONG = "x" * 601
             "--rule goes with needs-person only",
         ),
         (["--run", "3", "--outcome", "cause-not-found"], "cause-not-found needs --diagnosis"),
+        (["--run", "3", "--outcome", "already-fixed"], "already-fixed needs --diagnosis"),
+        (
+            ["--run", "3", "--outcome", "already-fixed", "--diagnosis", "d", "--rule", "r"],
+            "--rule goes with needs-person only",
+        ),
+        (
+            [
+                "--run",
+                "3",
+                "--outcome",
+                "already-fixed",
+                "--diagnosis",
+                "d",
+                "--pr-url",
+                "https://github.com/o/r/pull/7",
+            ],
+            "--pr-url goes with pr only",
+        ),
         (
             ["--run", "3", "--outcome", "cause-not-found", "--diagnosis", " \n "],
             "cause-not-found needs --diagnosis",
