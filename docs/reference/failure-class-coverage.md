@@ -35,10 +35,10 @@ most: jarvis neither configures nor reads them back.
 | Class | Covered | Partial | Absent | Accepted | Total |
 |---|---|---|---|---|---|
 | absence-read-as-success | 3 | 8 | 1 | 0 | 12 |
-| claims-from-plausibility | 3 | 6 | 7 | 0 | 16 |
+| claims-from-plausibility | 3 | 7 | 6 | 0 | 16 |
 | pattern-matched-boundaries | 0 | 16 | 4 | 0 | 20 |
 | irreversible-effects | 1 | 3 | 0 | 8 | 12 |
-| **total** | 7 | 33 | 12 | 8 | 60 |
+| **total** | 7 | 34 | 11 | 8 | 60 |
 
 ## Matrix
 
@@ -62,7 +62,7 @@ most: jarvis neither configures nor reads them back.
 | 16 | claims-from-plausibility | Grounding: give the agent the documentation for the versions you use | Prompt only (user CLAUDE.md points at WebFetch) | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
 | 17 | claims-from-plausibility | Grounding: run a language server, so names that do not exist show up as errors | `.github/workflows/ruff.yml` catches undefined names in CI and is a required check on `main` (#2017); no language server in the session | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
 | 18 | claims-from-plausibility | Packages: look a package up before adding it | none | absent | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
-| 19 | claims-from-plausibility | Packages: set a minimum age for the versions you install | none (`.github/dependabot.yml` has no cooldown; uv has no exclude-newer) | absent | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
+| 19 | claims-from-plausibility | Packages: set a minimum age for the versions you install | Configured, not enforced (#2143 AC2): `.github/dependabot.yml` `cooldown.default-days: 7` on both ecosystems (a Dependabot PR is never younger than a week; security updates bypass cooldown); `pyproject.toml` `[tool.uv] exclude-newer = "7 days"`, a relative duration that uv records in `uv.lock` as `exclude-newer-span = "P7D"`, so it never freezes and `uv lock --check` stays green. 7 days: the repo updates monthly, so a week costs one cycle at most and clears most yank/malware windows. Nothing checks the values stay, and a hand-added dependency younger than 7 days still passes (AC1 open) | partial | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
 | 20 | claims-from-plausibility | Packages: block known malware at install | none | absent | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
 | 21 | claims-from-plausibility | Checks: give the agent a check to run, and read its exit code | `.github/workflows/pytest.yml`, the required `pytest` check | covered |  |
 | 22 | claims-from-plausibility | Checks: reproduce the failure before naming its cause | Prompt only (`/diagnose` skill) | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |

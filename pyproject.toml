@@ -58,6 +58,12 @@ dev = [
 Homepage = "https://github.com/Osasuwu/jarvis"
 Issues = "https://github.com/Osasuwu/jarvis/issues"
 
+[tool.uv]
+# Minimum release age (#2143): uv resolves only artifacts uploaded at least 7 days ago. A
+# relative duration, so it never freezes; matches the Dependabot cooldown in
+# .github/dependabot.yml. Needs a uv that parses durations (0.12.3 does; CI installs latest).
+exclude-newer = "7 days"
+
 [tool.setuptools]
 # `agents/` package (the plan-review pipeline) lives at repo root, not under
 # `src/` (now empty — its former contents were retired in #1801/#1802).
