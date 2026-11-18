@@ -54,9 +54,9 @@ Routing table, existing justified exceptions, and the relaxation decision:
 
 ## Unattended runs
 
-Scheduled/unattended runs act only from a pre-approved whitelist of actions — there's no human
-present to catch a bad call or an injected instruction. Anything outside the whitelist waits for
-an interactive session.
+Scheduled/unattended runs act only from a pre-approved whitelist of actions — no human is there to catch a bad call or an injection; the
+rest waits for an interactive session. One exception, the scheduled CI fixer (#2226): it may do what the affected repo's rules file lets
+an agent do alone, inside the limits of [`scheduled-ci-fixer-prompt.md`](docs/reference/scheduled-ci-fixer-prompt.md), and never merges.
 
 ## Engineering posture
 
