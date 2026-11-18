@@ -24,19 +24,21 @@ with it.
 - **partial**: something exists but is prompt-only, fail-open, not required, or misses a spelling
   or tool. The issue tracks the rest.
 - **absent**: nothing in jarvis does it. The issue tracks it.
+- **accepted**: partial or absent on purpose. The cell says what exists; *Accepted gaps* below
+  gives the reason under the row's number, and the issue is where it was accepted.
 
 Native harness features (permission prompt, sandbox, auto-mode classifier) count as partial at
 most: jarvis neither configures nor reads them back.
 
 ## Summary
 
-| Class | Covered | Partial | Absent | Total |
-|---|---|---|---|---|
-| absence-read-as-success | 3 | 8 | 1 | 12 |
-| claims-from-plausibility | 3 | 6 | 7 | 16 |
-| pattern-matched-boundaries | 0 | 16 | 4 | 20 |
-| irreversible-effects | 1 | 8 | 3 | 12 |
-| **total** | 7 | 38 | 15 | 60 |
+| Class | Covered | Partial | Absent | Accepted | Total |
+|---|---|---|---|---|---|
+| absence-read-as-success | 3 | 8 | 1 | 0 | 12 |
+| claims-from-plausibility | 3 | 7 | 6 | 0 | 16 |
+| pattern-matched-boundaries | 0 | 16 | 4 | 0 | 20 |
+| irreversible-effects | 1 | 3 | 0 | 8 | 12 |
+| **total** | 7 | 34 | 11 | 8 | 60 |
 
 ## Matrix
 
@@ -60,7 +62,7 @@ most: jarvis neither configures nor reads them back.
 | 16 | claims-from-plausibility | Grounding: give the agent the documentation for the versions you use | Prompt only (user CLAUDE.md points at WebFetch) | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
 | 17 | claims-from-plausibility | Grounding: run a language server, so names that do not exist show up as errors | `.github/workflows/ruff.yml` catches undefined names in CI and is a required check on `main` (#2017); no language server in the session | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
 | 18 | claims-from-plausibility | Packages: look a package up before adding it | none | absent | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
-| 19 | claims-from-plausibility | Packages: set a minimum age for the versions you install | none (`.github/dependabot.yml` has no cooldown; uv has no exclude-newer) | absent | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
+| 19 | claims-from-plausibility | Packages: set a minimum age for the versions you install | Configured, not enforced (#2143 AC2): `.github/dependabot.yml` `cooldown.default-days: 7` on both ecosystems (a Dependabot PR is never younger than a week; security updates bypass cooldown); `pyproject.toml` `[tool.uv] exclude-newer = "7 days"`, a relative duration that uv records in `uv.lock` as `exclude-newer-span = "P7D"`, so it never freezes and `uv lock --check` stays green. 7 days: the repo updates monthly, so a week costs one cycle at most and clears most yank/malware windows. Nothing checks the values stay, and a hand-added dependency younger than 7 days still passes (AC1 open) | partial | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
 | 20 | claims-from-plausibility | Packages: block known malware at install | none | absent | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
 | 21 | claims-from-plausibility | Checks: give the agent a check to run, and read its exit code | `.github/workflows/pytest.yml`, the required `pytest` check | covered |  |
 | 22 | claims-from-plausibility | Checks: reproduce the failure before naming its cause | Prompt only (`/diagnose` skill) | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
@@ -90,18 +92,68 @@ most: jarvis neither configures nor reads them back.
 | 46 | pattern-matched-boundaries | Identity: run the agent as an identity that lacks the permission | Commits as Jarvis Agent, but `gh` runs under the operator token | partial | [#2111](https://github.com/Osasuwu/jarvis/issues/2111) |
 | 47 | pattern-matched-boundaries | Operating system: sandbox the agent's commands | Native Bash sandbox in the harness; jarvis configures and checks none of it | partial | [#2145](https://github.com/Osasuwu/jarvis/issues/2145) |
 | 48 | pattern-matched-boundaries | Container: run the agent in a container with an egress firewall | none | absent | [#2145](https://github.com/Osasuwu/jarvis/issues/2145) |
-| 49 | irreversible-effects | Reach: run the agent's shell inside a filesystem and network allowlist | Native Bash sandbox only, unconfigured by jarvis | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 50 | irreversible-effects | Reach: give the agent per-environment, scoped credentials, and none for production | Bitwarden Secrets Manager, one project per repo; the `gh` token is not scoped | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 51 | irreversible-effects | Reach: replace stored publish tokens with short-lived, workflow-bound trusted publishing | none; jarvis publishes no package | absent | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 52 | irreversible-effects | Reversibility: protect branches and tags against force-push and deletion | main blocks force-push and deletion; `.github/scripts/branch_protection_drift.py` does not read those flags; no tag ruleset | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 53 | irreversible-effects | Reversibility: keep work in a remote repository, and do not rely on session checkpoints for shell deletes | Prompt only; memory-sync pushes memory at Stop | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 54 | irreversible-effects | Reversibility: keep backups outside the identity's reach, and verify the recovery path | none | absent | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 55 | irreversible-effects | Reversibility: turn on deletion protection and versioning on the resource | none | absent | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 56 | irreversible-effects | Approval: ask at the tool call, in a prompt that names the effect | Native permission prompt; merge-push-guard asks on redrobot tier-1 merges | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
-| 57 | irreversible-effects | Approval: deny the irreversible kinds with a hook at the tool-call boundary | merge-push-guard denies default-branch pushes and admin merges; no destructive-command hook | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 49 | irreversible-effects | Reach: run the agent's shell inside a filesystem and network allowlist | Native Bash sandbox only, unconfigured by jarvis | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 50 | irreversible-effects | Reach: give the agent per-environment, scoped credentials, and none for production | Bitwarden Secrets Manager, one project per repo; the `gh` token is the operator's and not scoped to the agent | partial | [#2111](https://github.com/Osasuwu/jarvis/issues/2111) |
+| 51 | irreversible-effects | Reach: replace stored publish tokens with short-lived, workflow-bound trusted publishing | none; jarvis publishes no package | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 52 | irreversible-effects | Reversibility: protect branches and tags against force-push and deletion | Classic protection blocks force-push and deletion on main; `.github/scripts/branch_protection_drift.py` `find_history_drift` reads both back daily, and under the job token confirms them only through a ruleset, which is not applied yet; no tag ruleset (both written out in `docs/reference/github-repo-setup.md`, *Rulesets*) | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 53 | irreversible-effects | Reversibility: keep work in a remote repository, and do not rely on session checkpoints for shell deletes | Prompt only; memory-sync pushes memory at Stop | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 54 | irreversible-effects | Reversibility: keep backups outside the identity's reach, and verify the recovery path | Device clones of each repo; no backup of the Supabase database; no recovery drill | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 55 | irreversible-effects | Reversibility: turn on deletion protection and versioning on the resource | Git history versions the repos; ref deletion protection is row 52; Supabase has neither | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 56 | irreversible-effects | Approval: ask at the tool call, in a prompt that names the effect | Native permission prompt; merge-push-guard asks on redrobot tier-1 merges | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 57 | irreversible-effects | Approval: deny the irreversible kinds with a hook at the tool-call boundary | merge-push-guard denies default-branch pushes and admin merges; stack-merge-guard denies a `--delete-branch` merge of a stack root; no general destructive-command hook | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
 | 58 | irreversible-effects | Approval: show the plan before the apply, and make a person read it | Plan-review stage (`agents/plan_lock.py`), with no interactive backstop | partial | [#1681](https://github.com/Osasuwu/jarvis/issues/1681) |
-| 59 | irreversible-effects | Approval: require a reviewer on the protected environment that holds the credential | `code-gate-verdict` and `untrusted-review` environments have a branch policy, no required reviewer | partial | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
+| 59 | irreversible-effects | Approval: require a reviewer on the protected environment that holds the credential | `code-gate-verdict` and `untrusted-review` environments have a branch policy, no required reviewer | accepted | [#2146](https://github.com/Osasuwu/jarvis/issues/2146) |
 | 60 | irreversible-effects | Approval: hold the change behind a required check until a person reads it | `.github/scripts/waiting_human_review.py` (required `waiting-human-review`) and `.github/scripts/risk_tier.py` `evaluate` (HIGH+ red until an admin who is not a `Bot` account or the lane's bot approves the head SHA) | covered | [#2111](https://github.com/Osasuwu/jarvis/issues/2111) |
+
+## Accepted gaps
+
+One entry per `accepted` row, by its number: why the gap stays, and what would reopen it.
+Accepted in #2146 (2026-11-16). A new hook, guard or check is weighed by the three questions of
+the operator's rules (the incident it catches, what a miss costs, what the check costs); an entry
+that declines one answers them.
+
+- **49**: The Claude Code sandbox runs on macOS, Linux and WSL2; on native Windows, commands run
+  unsandboxed (code.claude.com/docs/en/sandboxing), and jarvis's devices run Claude Code on native
+  Windows. Closing the row means moving every session into WSL2, a change of working environment,
+  not of configuration. Reopens when a device runs Claude Code on Linux, macOS or WSL2.
+- **51**: Nothing to protect: jarvis publishes no package, so it holds no publish token. Reopens
+  with the first published package.
+- **53**: Work reaches the remote through one PR per issue, and memory-sync pushes memory at Stop;
+  what a lost working tree costs is one session's unpushed work, redone from its transcript. The
+  data-loss incidents of #650 (April 2026: a subagent's `git checkout` discarded another session's
+  edits) came from a shared checkout, and #650 closed them on worktree isolation, not on a push
+  rule. No incident since. A push-on-commit hook would fire on every commit for a loss nobody has
+  had in seven months.
+- **54**: Every repo has full clones on the devices, which no GitHub token reaches; the operator
+  `gh` token carries `repo` and `workflow` but not `delete_repo` (read 2026-11-16), so it cannot
+  delete a repository. Not covered: the Supabase database (free tier: no backup taken by jarvis,
+  no point-in-time recovery on that plan), and no one has restored from a clone to prove the path.
+  Reopens if Supabase comes to hold state that exists nowhere else and gates work.
+- **55**: The resources jarvis writes are git repositories: history is the versioning, and ref
+  deletion is row 52. Repository deletion needs `delete_repo`, which the token lacks (row 54).
+  Supabase has no deletion protection or versioning on the free tier; same reopening as row 54.
+- **56**: The prompt is the harness's own and names the tool and its input, not the effect; jarvis
+  cannot change its text. A jarvis hook that asks would be a second prompt on the same call. The
+  cases where the effect matters most are denied outright (row 57) or held server-side (row 52,
+  row 60). Reopens if the harness lets a hook set the prompt's text.
+- **57**: A general destructive-command deny hook (`rm -rf`, a force push of a non-default branch,
+  a branch delete). (1) Incident: none on record; the destructive-command incidents found are
+  #650's (row 53, an isolation failure) and the stack-root branch deletes of #1926, which already
+  have their own deny hook (stack-merge-guard). (2) Cost of a miss: a feature branch or a local
+  tree; the default branch and, once applied, release tags are protected server-side (row 52),
+  where no command spelling gets around it. (3) Cost of the check: a denylist over shell text is
+  the class rows 30-33 rate partial, misses spellings (`Remove-Item -Recurse`, `git push origin
+  +b`, `git push origin :b`, PowerShell at large), and fires on routine cleanups
+  (`rm -rf build`, `gh pr merge --delete-branch`). Without an incident, (2) does not outweigh (3).
+  Reopens on the first incident.
+- **59**: `code-gate-verdict` holds the App key that posts `code-gate`; a required reviewer on it
+  would hold every verdict run (each PR event and the daily sweep) until a person approves the
+  deployment, so every PR's gate would wait on a click. The per-PR human hold already exists where
+  it is meant to: `waiting-human-review` and risk-tier's HIGH+ approval (row 60). The environment's
+  branch policy keeps the key to default-branch runs, which execute only default-branch code.
+  `untrusted-review` holds no environment secret and is entered only by a maintainer's
+  `workflow_dispatch`, which is itself the person's decision. Reopens if either environment comes
+  to hold a credential that a run not started by a person can use outside the default branch.
 
 ## Seeded defects through code-gate
 
