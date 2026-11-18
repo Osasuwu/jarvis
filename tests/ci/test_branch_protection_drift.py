@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ._github_fake import FakeApi
+from ._github_fake import FakeApi, http_error
 
 _root = next(p for p in Path(__file__).resolve().parents if (p / ".github" / "scripts").is_dir())
 _spec = importlib.util.spec_from_file_location(
@@ -48,6 +48,39 @@ def _branch(checks, enabled=True):
 
 def _live(**ids):
     return _branch([{"context": name, "app_id": app} for name, app in ids.items()])
+
+
+def _protection(force_pushes=False, deletions=False):
+    """The relevant part of `GET /repos/{o}/{r}/branches/{b}/protection`."""
+    return {
+        "allow_force_pushes": {"enabled": force_pushes},
+        "allow_deletions": {"enabled": deletions},
+    }
+
+
+def _rules(*types):
+    """`GET /repos/{o}/{r}/rules/branches/{b}`: one active rule per type."""
+    return [{"type": t, "ruleset_source_type": "Repository", "ruleset_id": 1} for t in types]
+
+
+def _routes(branch, protection=None, rules=()):
+    """FakeApi routes for main: protection None stands for the job token's 403 on it."""
+    return {
+        "repos/owner/repo/branches/main": branch,
+        "repos/owner/repo/branches/main/protection": (
+            http_error(403, "Resource not accessible by integration")
+            if protection is None
+            else protection
+        ),
+        "repos/owner/repo/rules/branches/main": _rules(*rules),
+    }
+
+
+MAIN_CALLS = [
+    ("GET", "repos/owner/repo/branches/main", None),
+    ("GET", "repos/owner/repo/rules/branches/main?per_page=100&page=1", None),
+    ("GET", "repos/owner/repo/branches/main/protection", None),
+]
 
 
 def test_matching_protection_has_no_drift():
@@ -156,7 +189,7 @@ def test_main_reads_the_default_branch_with_the_job_token_and_exits_on_drift(
         '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
         encoding="utf-8",
     )
-    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": None})})
+    api = FakeApi(_routes(_live(**{"code-gate": None}), _protection()))
     tokens = []
     for key, value in {
         "GITHUB_REPOSITORY": "owner/repo",
@@ -168,7 +201,7 @@ def test_main_reads_the_default_branch_with_the_job_token_and_exits_on_drift(
         monkeypatch.setenv(key, value)
     assert drift.main(make_client=lambda token: tokens.append(token) or api) == 1
     assert tokens == ["t0ken"]
-    assert api.calls == [("GET", "repos/owner/repo/branches/main", None)]
+    assert api.calls == MAIN_CALLS
     assert "code-gate: documented app_id 3969106, live None" in capsys.readouterr().out
 
 
@@ -188,6 +221,151 @@ def test_the_probe_job_runs_the_script_with_a_read_only_token():
     (step,) = [s for s in job["steps"] if "run" in s]
     assert step["run"] == "python3 .github/scripts/branch_protection_drift.py"
     assert step["env"]["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+
+
+# --- History guards: force pushes and deletion of the default branch (#2146) -----------------
+# Classic protection blocked both on main, but the probe read only the required checks, so
+# turning either back on went unreported. Either a ruleset rule or the classic flag counts.
+
+
+@pytest.mark.parametrize(
+    ("protection", "rules"),
+    [
+        (_protection(), ()),  # classic protection blocks both
+        (None, ("non_fast_forward", "deletion")),  # classic unreadable, a ruleset blocks both
+        (_protection(True, True), ("non_fast_forward", "deletion")),  # the ruleset wins
+    ],
+)
+def test_history_guards_blocked_by_either_source_are_no_drift(protection, rules):
+    unreadable = "HTTP 403" if protection is None else None
+    assert drift.find_history_drift(protection, unreadable, _rules(*rules)) == []
+
+
+def test_force_pushes_allowed_by_classic_protection_is_drift():
+    assert drift.find_history_drift(_protection(force_pushes=True), None, _rules("deletion")) == [
+        "force pushes: branch protection allow_force_pushes.enabled is true,"
+        " no active ruleset `non_fast_forward` rule"
+    ]
+
+
+def test_deletion_allowed_by_classic_protection_is_drift():
+    assert drift.find_history_drift(_protection(deletions=True), None, []) == [
+        "deletion: branch protection allow_deletions.enabled is true,"
+        " no active ruleset `deletion` rule"
+    ]
+
+
+def test_a_flag_missing_from_classic_protection_is_drift_not_a_block():
+    # Read as "not allowed" it would pass a protection object that never said so.
+    assert drift.find_history_drift({"allow_deletions": {"enabled": False}}, None, []) == [
+        "force pushes: branch protection allow_force_pushes.enabled is null,"
+        " no active ruleset `non_fast_forward` rule"
+    ]
+
+
+def test_a_classic_protection_answer_with_neither_flag_is_drift_on_both():
+    # Folded from #2214: a readable answer that names no flag confirms nothing.
+    assert drift.find_history_drift({}, None, []) == [
+        "force pushes: branch protection allow_force_pushes.enabled is null,"
+        " no active ruleset `non_fast_forward` rule",
+        "deletion: branch protection allow_deletions.enabled is null,"
+        " no active ruleset `deletion` rule",
+    ]
+
+
+@pytest.mark.parametrize("entry", [False, "false", {"enabled": "false"}])
+def test_a_flag_not_shaped_enabled_false_is_drift_not_a_crash(entry):
+    # Folded from #2214: only {"enabled": false} is a block; any other shape is unconfirmed.
+    protection = {"allow_force_pushes": entry, "allow_deletions": {"enabled": False}}
+    (problem,) = drift.find_history_drift(protection, None, [])
+    assert problem.startswith("force pushes: branch protection allow_force_pushes.enabled is ")
+
+
+def test_unreadable_classic_protection_with_no_ruleset_rule_is_drift_not_a_pass():
+    assert drift.find_history_drift(None, "HTTP 403", _rules("non_fast_forward")) == [
+        "deletion: no active ruleset `deletion` rule, and branch protection was not read (HTTP 403)"
+    ]
+
+
+@pytest.mark.parametrize("code", [403, 404])
+def test_read_history_guards_reports_a_403_or_404_on_classic_protection_as_unread(code):
+    api = FakeApi(_routes(_live(), None, ("deletion",)))
+    api.responses["repos/owner/repo/branches/main/protection"] = http_error(code)
+    protection, unreadable, rules = drift.read_history_guards(api, "owner/repo", "main")
+    assert (protection, unreadable) == (None, f"HTTP {code}")
+    assert [r["type"] for r in rules] == ["deletion"]
+
+
+def test_read_history_guards_raises_any_other_error_on_classic_protection():
+    api = FakeApi(_routes(_live(), None))
+    api.responses["repos/owner/repo/branches/main/protection"] = http_error(500)
+    with pytest.raises(drift.urllib.error.HTTPError):
+        drift.read_history_guards(api, "owner/repo", "main")
+
+
+def _run_main(monkeypatch, tmp_path, api):
+    doc = tmp_path / "binding.md"
+    doc.write_text(
+        '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
+        encoding="utf-8",
+    )
+    for key, value in {
+        "GITHUB_REPOSITORY": "owner/repo",
+        "DEFAULT_BRANCH": "main",
+        "GH_TOKEN": "t0ken",
+        "BINDING_DOC": str(doc),
+        "DOC_ROOT": str(_doc_root(tmp_path / "root")),
+    }.items():
+        monkeypatch.setenv(key, value)
+    return drift.main(make_client=lambda token: api)
+
+
+@pytest.mark.parametrize(
+    ("allowed", "line"),
+    [
+        (
+            {"force_pushes": True},
+            "  - force pushes: branch protection allow_force_pushes.enabled is true,"
+            " no active ruleset `non_fast_forward` rule\n",
+        ),
+        (  # folded from #2214: deletion alone turns the run red too
+            {"deletions": True},
+            "  - deletion: branch protection allow_deletions.enabled is true,"
+            " no active ruleset `deletion` rule\n",
+        ),
+    ],
+)
+def test_main_fails_when_one_history_guard_is_allowed_with_the_binding_in_step(
+    allowed, line, monkeypatch, tmp_path, capsys
+):
+    api = FakeApi(_routes(_live(**{"code-gate": 3969106}), _protection(**allowed)))
+    assert _run_main(monkeypatch, tmp_path, api) == 1
+    out = capsys.readouterr().out
+    assert line in out
+    assert "No drift" not in out
+
+
+def test_main_fails_under_the_job_token_when_no_ruleset_blocks_and_protection_is_unread(
+    monkeypatch, tmp_path, capsys
+):
+    # The job token gets a 403 on classic protection: with no ruleset, nothing is confirmed.
+    api = FakeApi(_routes(_live(**{"code-gate": 3969106})))
+    assert _run_main(monkeypatch, tmp_path, api) == 1
+    out = capsys.readouterr().out
+    assert (
+        "  - deletion: no active ruleset `deletion` rule,"
+        " and branch protection was not read (HTTP 403)\n"
+    ) in out
+    assert "No drift" not in out
+
+
+def test_main_passes_under_the_job_token_when_a_ruleset_blocks_both(monkeypatch, tmp_path, capsys):
+    api = FakeApi(_routes(_live(**{"code-gate": 3969106}), None, ("non_fast_forward", "deletion")))
+    assert _run_main(monkeypatch, tmp_path, api) == 0
+    assert capsys.readouterr().out == (
+        "No drift: 1 required checks match the documented binding;"
+        " force pushes and deletion of the default branch are blocked.\n"
+    )
 
 
 # --- Doc claims: prose that names a required check (#1894) -----------------------------------
@@ -556,7 +734,7 @@ def test_main_fails_on_a_doc_claim_under_doc_root_that_is_not_required_live(
     )
     root = _doc_root(tmp_path / "root")
     (root / "AGENTS.md").write_text("Here `ghost` is a required check.\n", encoding="utf-8")
-    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": 3969106})})
+    api = FakeApi(_routes(_live(**{"code-gate": 3969106}), _protection()))
     for key, value in {
         "GITHUB_REPOSITORY": "owner/repo",
         "DEFAULT_BRANCH": "main",
@@ -611,7 +789,7 @@ def test_main_fails_closed_when_doc_root_is_missing_even_with_protection_in_step
         '<!-- required-checks-binding -->\n```json\n{"code-gate": 3969106}\n```\n',
         encoding="utf-8",
     )
-    api = FakeApi({"repos/owner/repo/branches/main": _live(**{"code-gate": 3969106})})
+    api = FakeApi(_routes(_live(**{"code-gate": 3969106}), _protection()))
     for key, value in {
         "GITHUB_REPOSITORY": "owner/repo",
         "DEFAULT_BRANCH": "main",
@@ -625,7 +803,7 @@ def test_main_fails_closed_when_doc_root_is_missing_even_with_protection_in_step
     assert "Doc scan failed: scan roots missing" in out
     assert "AGENTS.md" in out
     assert "No drift" not in out
-    assert api.calls == [("GET", "repos/owner/repo/branches/main", None)]
+    assert api.calls == MAIN_CALLS
 
 
 def test_the_workflow_sparse_checkout_covers_every_scanned_root():
