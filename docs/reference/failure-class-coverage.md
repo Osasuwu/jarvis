@@ -35,10 +35,10 @@ most: jarvis neither configures nor reads them back.
 | Class | Covered | Partial | Absent | Accepted | Total |
 |---|---|---|---|---|---|
 | absence-read-as-success | 3 | 8 | 1 | 0 | 12 |
-| claims-from-plausibility | 3 | 6 | 5 | 2 | 16 |
+| claims-from-plausibility | 3 | 7 | 4 | 2 | 16 |
 | pattern-matched-boundaries | 0 | 16 | 4 | 0 | 20 |
 | irreversible-effects | 1 | 3 | 0 | 8 | 12 |
-| **total** | 7 | 33 | 10 | 10 | 60 |
+| **total** | 7 | 34 | 9 | 10 | 60 |
 
 ## Matrix
 
@@ -62,7 +62,7 @@ most: jarvis neither configures nor reads them back.
 | 16 | claims-from-plausibility | Grounding: give the agent the documentation for the versions you use | Prompt only (user CLAUDE.md points at WebFetch) | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
 | 17 | claims-from-plausibility | Grounding: run a language server, so names that do not exist show up as errors | `.github/workflows/ruff.yml` catches undefined names in CI and is a required check on `main` (#2017); no language server in the session | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
 | 18 | claims-from-plausibility | Packages: look a package up before adding it | The required `ruff` check (`.github/workflows/ruff.yml`) installs with `uv sync --locked`, which resolves `pyproject.toml` against the index and fails when a named package is not on it, so that PR is red; `tests/ci/test_dependency_lookup_gate.py` pins the flag and the binding. Nothing checks that a package which does exist is the intended one and not a lookalike: `risk-tier` floors every manifest change (`config/protected-paths.json`, `machinery`) at HIGH, so a person approves it, with no prompt to check the name. The lookalike half is declined; reason under *Accepted gaps* | accepted | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
-| 19 | claims-from-plausibility | Packages: set a minimum age for the versions you install | none (`.github/dependabot.yml` has no cooldown; uv has no exclude-newer) | absent | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
+| 19 | claims-from-plausibility | Packages: set a minimum age for the versions you install | Configured, not enforced (#2143 AC2): `.github/dependabot.yml` `cooldown.default-days: 7` on both ecosystems (a Dependabot PR is never younger than a week; security updates bypass cooldown); `pyproject.toml` `[tool.uv] exclude-newer = "7 days"`, a relative duration that uv records in `uv.lock` as `exclude-newer-span = "P7D"`, so it never freezes and `uv lock --check` stays green. 7 days: the repo updates monthly, so a week costs one cycle at most and clears most yank/malware windows. Nothing checks the values stay, and a hand-added dependency younger than 7 days still passes (AC1 open) | partial | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
 | 20 | claims-from-plausibility | Packages: block known malware at install | No advisory or malware lookup. In its place: the minimum release age of row 19 (#2215) keeps a new release out for a week, the window in which most malware is reported; the index deletes reported malware, and a locked file that is gone fails `uv sync --locked` in the required `ruff` check; `risk-tier` holds every manifest change for a person (row 18). A malicious version still on the index after that week passes, and so does a package an agent installs ad hoc in a session. Declined; reason under *Accepted gaps* | accepted | [#2143](https://github.com/Osasuwu/jarvis/issues/2143) |
 | 21 | claims-from-plausibility | Checks: give the agent a check to run, and read its exit code | `.github/workflows/pytest.yml`, the required `pytest` check | covered |  |
 | 22 | claims-from-plausibility | Checks: reproduce the failure before naming its cause | Prompt only (`/diagnose` skill) | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
