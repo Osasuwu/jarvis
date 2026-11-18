@@ -51,6 +51,8 @@ WATCH_CONF_RELPATH = "config/scheduled-ci.conf"
 DEVICE_CONF_RELPATH = "config/device.json"
 DEFAULT_STATE_DIR = Path.home() / ".jarvis" / "scheduled-ci"
 PER_PAGE = 50
+TELEGRAM_LIMIT = 4096  # sendMessage refuses a longer text
+NOTE_ROOM = 100  # kept free for the "N earlier alerts left out" line
 
 # A run is red on these conclusions and green on `success`. Everything else
 # (cancelled, skipped, neutral, ...) neither starts nor ends a red streak.
@@ -177,20 +179,46 @@ def failing_jobs(run: dict, jobs: list[dict]) -> list[str]:
     return names or [f"(no failed job: {run.get('conclusion')})"]
 
 
+def _fit(head: str, url: str, limit: int) -> str:
+    """``head`` and the run link in ``limit`` characters: the head is cut, never the link."""
+    block = f"{head}\n{url}"
+    if len(block) <= limit:
+        return block
+    return f"{head[: max(0, limit - len(url) - 2)]}…\n{url}"
+
+
 def alert_message(watch: Watch, alerts: list[Alert]) -> tuple[str, str]:
-    blocks = []
+    """One message for all of a workflow's alerts, never over Telegram's size.
+
+    Telegram refuses a longer text, and an unsent alert is retried the next
+    morning, so an oversized message would be rebuilt and refused for ever. The
+    newest alerts are kept and the number left out is said.
+    """
+    subject = f"Scheduled CI red: {watch.label}"
+    limit = TELEGRAM_LIMIT - len(subject) - 2  # notify_telegram joins them with "\n\n"
+    parts = []
     for alert in alerts:
         what = (
             "new red run"
             if alert.previous is None
             else f"failing jobs changed (was: {', '.join(alert.previous)})"
         )
-        blocks.append(
-            f"{alert.run['created_at'][:10]} — {what}\n"
-            f"Failing jobs: {', '.join(alert.jobs)}\n"
-            f"{alert.run['html_url']}"
-        )
-    return f"Scheduled CI red: {watch.label}", "\n\n".join(blocks)
+        head = f"{alert.run['created_at'][:10]} — {what}\nFailing jobs: {', '.join(alert.jobs)}"
+        parts.append((head, alert.run["html_url"]))
+    body = "\n\n".join(_fit(head, url, limit) for head, url in parts)
+    if len(body) <= limit:
+        return subject, body
+
+    room = limit - NOTE_ROOM
+    kept: list[str] = []
+    for head, url in reversed(parts):
+        block = _fit(head, url, room)
+        if kept and len("\n\n".join([block, *kept])) > room:
+            break
+        kept.insert(0, block)
+    left_out = len(parts) - len(kept)
+    note = f"({left_out} earlier alerts left out: the message would be too long for Telegram)"
+    return subject, "\n\n".join([note, *kept])
 
 
 def summary_monday(today: date) -> date:
@@ -407,7 +435,10 @@ def main(
             print(f"{NAME}: --since needs --dry-run", file=sys.stderr)
             return 2
         try:
-            date.fromisoformat(args.since)
+            # Runs are compared with it as text, so only the exact form is taken:
+            # "20261031" is a date to fromisoformat and matches no run.
+            if date.fromisoformat(args.since).isoformat() != args.since:
+                raise ValueError(args.since)
         except ValueError:
             print(f"{NAME}: --since is not a YYYY-MM-DD date", file=sys.stderr)
             return 2

@@ -206,6 +206,41 @@ def test_host_off_for_three_days_catches_up_in_one_message(tmp_path):
     assert state_of(tmp_path / "st")["cursor"]["id"] == 4
 
 
+def test_catch_up_too_long_for_one_telegram_message_keeps_the_newest_alert(tmp_path):
+    # Telegram refuses a text over 4096 characters. An unsent alert is retried, so an
+    # oversized one would be rebuilt and refused every morning.
+    seed(
+        tmp_path / "st",
+        workflows={"o/r nightly.yml schedule": {"cursor": {"id": 0, "attempt": 1}, "red": None}},
+    )
+    a, b = "a" * 1000, "b" * 1000
+    runs = [row(i, f"2026-11-1{i + 1}", "failure") for i in range(1, 6)]
+    jobs = {i: [(a if i % 2 else b, "failure")] for i in range(1, 6)}
+    gh, tg = FakeGh({"nightly.yml": runs}, jobs), Telegram()
+    assert go(tmp_path, gh, tg) == 0
+    assert tg.texts == [
+        "Scheduled CI red: o/r nightly.yml\n\n"
+        "(4 earlier alerts left out: the message would be too long for Telegram)\n\n"
+        f"2026-11-16 — failing jobs changed (was: {b})\n"
+        f"Failing jobs: {a}\n"
+        "https://github.com/o/r/actions/runs/5"
+    ]
+    assert state_of(tmp_path / "st")["cursor"]["id"] == 5
+
+
+def test_one_alert_too_long_for_telegram_is_cut_and_keeps_its_link(tmp_path):
+    seed(tmp_path / "st")
+    gh = FakeGh({"nightly.yml": [row(7, "2026-11-16", "failure")]}, {7: [("a" * 5000, "failure")]})
+    tg = Telegram()
+    assert go(tmp_path, gh, tg) == 0
+    (text,) = tg.texts
+    assert len(text) == 4096
+    assert text.startswith(
+        "Scheduled CI red: o/r nightly.yml\n\n2026-11-16 — new red run\nFailing jobs: aaaa"
+    )
+    assert text.endswith("aaaa…\nhttps://github.com/o/r/actions/runs/7")
+
+
 def test_first_run_without_state_handles_only_the_newest_completed_run(tmp_path):
     seed(tmp_path / "st")
     runs = [
@@ -458,6 +493,15 @@ def test_since_is_refused_outside_a_dry_run(tmp_path, capsys):
     gh, tg = FakeGh({"nightly.yml": []}), Telegram()
     assert run_main(tmp_path, ["--since", "2026-10-31"], gh, tg, routine_host=True) == 2
     assert "--since needs --dry-run" in capsys.readouterr().err
+    assert gh.calls == []
+
+
+def test_since_in_another_date_form_is_refused(tmp_path, capsys):
+    # "20261031" parses as a date but compares wrong against "2026-10-31" as text.
+    gh, tg = FakeGh({"nightly.yml": [row(1, "2026-11-01", "failure")]}), Telegram()
+    rc = run_main(tmp_path, ["--dry-run", "--since", "20261031"], gh, tg, routine_host=None)
+    assert rc == 2
+    assert "--since is not a YYYY-MM-DD date" in capsys.readouterr().err
     assert gh.calls == []
 
 

@@ -42,6 +42,9 @@ Adding a scheduled check is one new line.
   morning go out as one message.
 - An unfinished run stops the walk; it and the runs after it are handled on a later morning.
 - The first read of a workflow handles only its newest finished run: history is not replayed.
+- A message never exceeds Telegram's 4096 characters. A catch-up too long for one message
+  keeps its newest alerts and says how many earlier ones were left out; a single over-long
+  alert is cut before its link.
 - A red run with no red job (a `startup_failure`) is named `(no failed job: <conclusion>)`.
 - A failing-job set that flips between two values night after night (one flaky job) alerts on
   every flip: each is a changed set.
