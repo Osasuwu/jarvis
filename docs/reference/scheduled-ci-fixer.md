@@ -43,9 +43,9 @@ All take `--state-dir <dir>` (default `~/.jarvis/scheduled-ci/`) and `--dry-run`
 | Command | Does |
 |---|---|
 | `start` | sends every item an earlier session left queued as "not diagnosed", then runs the reader in deferred mode: a red run that would have been an alert is queued instead of sent. Monday summary and green workflows as in the reader. Prints `scheduled_ci_fixer: N pending` |
-| `next` | prints the oldest queued item as JSON (`watch_key`, `repo`, `workflow`, `run_id`, `html_url`, `head_sha`, `failing_jobs`, `branch`) or `none`. Writes nothing |
+| `next` | prints the oldest queued item whose report has not been tried, as JSON (`watch_key`, `repo`, `workflow`, `run_id`, `html_url`, `head_sha`, `failing_jobs`, `branch`), or `none`. Writes nothing |
 | `report --run <id> --outcome pr\|needs-person\|cause-not-found [--pr-url] [--rule] [--diagnosis]` | sends that item's message with its outcome, logs it, commits the workflow's state, drops the item |
-| `finish` | sends everything still queued as "not diagnosed". Last command of every session |
+| `finish` | sends everything still queued: an item whose report was accepted but could not be sent goes out as it was reported, every other one as "not diagnosed". Last command of every session |
 
 Rules of `report`:
 
@@ -55,8 +55,8 @@ Rules of `report`:
 - `--diagnosis` is at most 3 lines and 600 characters.
 - **Nothing-written guard.** Before a `needs-person` or `cause-not-found` message is sent, the
   fixer reads GitHub (two GET calls, no write): a PR whose head is `scheduled-ci-fix/<run_id>`
-  in the item's repo, and that branch itself. If either exists the report is refused and the
-  item stays queued; `finish` sends it as "not diagnosed". `scheduled-ci-fix/<run_id>` is the
+  in the item's repo, and that branch itself. If either exists, or GitHub cannot be read, the
+  report is refused and the item stays queued; `finish` sends it as "not diagnosed". `scheduled-ci-fix/<run_id>` is the
   only branch the agent creates, which is what makes the guard a complete read. It is a fixed
   name also in a repo with its own branch convention; that is the one place the fixer does not
   follow the repo's rules, and the PR body says so.
@@ -76,8 +76,11 @@ In the state directory, next to the reader's `state.json`:
   credential is ever written.
 - `repos/<owner>__<repo>/`: the agent's clones of the affected repos.
 
-A workflow's state is committed only when its item's message was sent. A failed send keeps the
-item; `finish` or the next morning's `start` sends it. So no red run stays silent and none is
+A workflow's state is committed only when its item's message was sent. A report that did not
+go out (a failed send, a refusal by the guard) keeps the item and marks it `tried` with the
+outcome it is owed: the reported one after a failed send, "not diagnosed" after a refusal.
+`next` moves past a tried item, so one stuck item does not hide the ones behind it, and
+`finish` or the next morning's `start` sends it. So no red run stays silent and none is
 reported twice.
 
 | Exit | Meaning |
@@ -151,6 +154,12 @@ To go back, restore the reader's prompt from `scheduled-ci-reader.md` § Registr
   their own: they go out as `needs a person` with a rule line that starts `no repo rule:`.
 - The message is true about writes only as far as the fixed branch name goes: a push to any
   other branch is against the prompt and is not seen by the guard.
+- The branch is named after the run id, not the attempt. A re-run of a run that already has a
+  fixer branch, alerting again, finds that branch: the prompt has the agent report the existing
+  PR, and a no-change report for it is refused.
+- A dry run of the prompt on redrobot's two red runs of 2026-11-02 (both fixed on the default
+  branch since) showed that "already fixed" reads badly as `needs a person … nothing left to
+  do`. An outcome of its own for "nothing to do" is the obvious next change.
 
 ## Adoption check (#2226, due 2026-12-15)
 

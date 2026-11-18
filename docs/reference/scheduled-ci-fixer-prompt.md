@@ -27,9 +27,9 @@ Run every command from the jarvis checkout the task started you in.
 3. Handle that one item (next section) and decide its outcome.
 4. Send it with one `report` call (section *Reporting*). If `report` exits 2 it refused your
    arguments and says why: correct them and call it again. If it exits 1, copy its `FAILED` line
-   and do not retry it; `finish` covers the item.
-5. Go back to step 2. A reported item is gone from the queue, so `next` gives the following one.
-   If `next` prints the same `run_id` twice in a row, stop looping and go to step 6.
+   and do not retry it: the item is remembered, `next` moves past it and `finish` sends it.
+5. Go back to step 2. `next` never gives a reported or remembered item again. If it still
+   prints the same `run_id` twice in a row, stop looping and go to step 6.
 6. `python -m scripts.scheduled_ci_fixer finish`, always, also after an error anywhere above. It
    sends whatever is still queued as "not diagnosed", so no red run stays silent.
 
@@ -37,11 +37,18 @@ Items are handled one after another, never in parallel, each with its own messag
 
 ## Handling one item
 
-**Read the failure.** `gh run view <run_id> --repo <repo> --log-failed`. If the log is long,
-save it to a file under the state directory and search it; read the first failing step of each
-job in `failing_jobs`, not only the last lines. Find the cause: the change, the dependency, the
-data or the outside service that made the step fail. "The test failed" is a symptom, not a
-cause.
+**Read the failure.** The run to diagnose is `run_id`, also when the alert names earlier runs.
+`gh run view <run_id> --repo <repo> --log-failed`, once, saved to a file under the state
+directory; search the file (`##[error]`, a test runner's summary lines) instead of printing it.
+Where the log does not name its steps, `gh run view <run_id> --repo <repo> --json jobs` does.
+Read the first failing step of each job in `failing_jobs`, not only the last lines. Findings
+that a job writes only to an artifact may be downloaded into the state directory and read. Find
+the cause: the change, the dependency, the data or the outside service that made the step
+fail. "The test failed" is a symptom, not a cause.
+
+Be sparing with the GitHub API: one log download per run, one short run list per workflow
+(`gh run list --repo <repo> --workflow <workflow> --event schedule --limit 5`), no loop over
+the run history.
 
 **Get the code.** Work in a clone of the affected repo at
 `~/.jarvis/scheduled-ci/repos/<owner>__<repo>`, never in the jarvis checkout and never in
@@ -53,14 +60,19 @@ tells you what the run saw; the default branch tells you whether it is already f
 removes the cause, or a later scheduled run of the same workflow is green, change nothing.
 There is no outcome of its own for this case: report `needs-person` with the rule
 `no repo rule: already fixed on the default branch`, and say in the diagnosis which commit or
-run shows it and that nothing is left to do.
+run shows it, whether you tied that commit to this cause or only saw the later green run, and
+that nothing is left to do.
+
+**A fix already exists.** If the branch `branch` or a PR from it is already in the repo (an
+earlier session pushed it), do not push again: report `pr` with that PR's link.
 
 **Read the repo's rules.** Read `AGENTS.md` at the root of the clone, or `CLAUDE.md` where it
 has no `AGENTS.md`, and every file those rules tell an agent to read before the kind of change
 you intend. They are the rule set. There is no separate list of causes you may fix: you may do
 what those rules let an agent do alone, in an unattended session, and nothing else. That repo's
 hooks do not load in this session, so a rule its hook would have enforced is yours to keep by
-reading it.
+reading it. Its rules on how a change is made, checked and proposed apply to you; its routines
+for the start of a working session (reading the backlog, triage) do not.
 
 **Decide.**
 
@@ -79,12 +91,18 @@ reading it.
 
 When in doubt whether a rule applies, it applies.
 
+A run with several causes gets one outcome. If the rules let you fix some and need a person for
+the rest, fix what you may: outcome `pr`, and the diagnosis says what is left and which rule
+holds it. If nothing may be fixed alone, `needs-person` names the rule of the first cause and
+the diagnosis lists the others.
+
 **Fix.** Make the smallest change that removes the cause. Never make a check pass by weakening
 it: no skipped or deleted test, no loosened assertion, no raised threshold, no ignored
 advisory, unless the repo's rules name that as the right answer for this case. Run what the
 repo's rules require before a push (its tests for the touched code, its linters, its
 pre-commit). If they do not pass, do not push: outcome `cause-not-found` or `needs-person`,
-whichever is true.
+whichever is true. A required check that cannot run on this machine (a suite that needs the
+repo's own runner, hardware) is a rule you cannot satisfy unattended: `needs-person`.
 
 Push one branch, named exactly as `next` gave it in `branch` (`scheduled-ci-fix/<run_id>`), and
 open the PR the way that repo's rules say an agent opens one (draft or ready, title and body

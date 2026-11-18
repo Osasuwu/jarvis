@@ -189,11 +189,27 @@ def _settle(
     return True
 
 
+def _mark_tried(state_dir: Path, item: dict, **tried: str | None) -> None:
+    """Remember what a report that did not go out is still owed.
+
+    ``next`` skips a tried item, so one stuck item never hides the ones behind
+    it, and ``finish`` sends it with the outcome stored here: the reported one
+    when only the send failed, "not diagnosed" when the report was refused.
+    """
+    items = reader.load_pending(state_dir)
+    for queued in items:
+        if queued["run_id"] == item["run_id"]:
+            queued["tried"] = tried
+    reader.save_pending(state_dir, items)
+
+
 def _settle_all(state_dir: Path, **kwargs) -> int:
-    """Everything still pending goes out as "not diagnosed". Returns the exit code."""
+    """Everything still pending goes out: as it was reported when a report's send
+    failed, else as "not diagnosed". Returns the exit code."""
     code = 0
     for item in reader.load_pending(state_dir):
-        if not _settle(state_dir, item, NOT_DIAGNOSED, **kwargs):
+        owed = item.get("tried") or {"outcome": NOT_DIAGNOSED}
+        if not _settle(state_dir, item, **owed, **kwargs):
             code = 1
     return code
 
@@ -252,10 +268,10 @@ def main(
         return 1
 
     if args.command == "next":
-        if not items:
+        item = next((i for i in items if "tried" not in i), None)
+        if item is None:
             print("none")
             return 0
-        item = items[0]
         public = {**{key: item[key] for key in PUBLIC_KEYS}, "branch": branch_for(item)}
         print(json.dumps(public, indent=2, ensure_ascii=False))
         return 0
@@ -279,11 +295,14 @@ def main(
                 written = something_written(run_gh, item)
             except reader.ReadError as exc:
                 _failed(f"{label}: {exc}")
-                return 1
+                written = None
             if written:
                 _failed(
                     f"{label}: a PR or branch exists for a no-change outcome ({branch_for(item)})"
                 )
+            if written is not False:
+                if not args.dry_run:
+                    _mark_tried(state_dir, item, outcome=NOT_DIAGNOSED)
                 return 1
         sent = _settle(
             state_dir,
@@ -294,6 +313,15 @@ def main(
             diagnosis=args.diagnosis,
             **send,
         )
+        if not sent:
+            _mark_tried(
+                state_dir,
+                item,
+                outcome=args.outcome,
+                pr_url=args.pr_url,
+                rule=args.rule,
+                diagnosis=args.diagnosis,
+            )
         return 0 if sent else 1
 
     if args.command == "finish":

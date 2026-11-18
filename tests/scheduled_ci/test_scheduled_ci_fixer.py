@@ -373,6 +373,54 @@ def test_failed_send_exits_1_logs_failed_and_keeps_the_item(tmp_path, capsys):
     assert [(e["run_id"], e["result"]) for e in log_lines(tmp_path)] == [(11, "failed")]
 
 
+def test_report_whose_send_failed_goes_out_at_finish_with_its_own_outcome(tmp_path):
+    gh, _ = started(tmp_path)
+    pr = "https://github.com/o/r/pull/77"
+    argv = ["report", "--run", "3", "--outcome", "pr", "--pr-url", pr, "--diagnosis", "pin moved"]
+    assert fx(tmp_path, argv, gh, Telegram({"ok": False, "description": "down"})) == 1
+    tg = Telegram()
+    assert fx(tmp_path, ["finish"], gh, tg) == 0
+    assert tg.texts == [
+        f"{NIGHTLY_ALERT}\n\nOutcome: PR opened — {pr}\npin moved",
+        f"{WEEKLY_ALERT}\n\n{NOT_DIAGNOSED}",
+    ]
+    assert [
+        (e["run_id"], e["outcome"], e["result"], e.get("pr_url")) for e in log_lines(tmp_path)
+    ] == [
+        (3, "pr", "failed", pr),
+        (3, "pr", "ok", pr),
+        (11, "not-diagnosed", "ok", None),
+    ]
+    assert pending(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "found",
+    [{}, {"pulls": [{"number": 5}]}, {"guard_fails": True}],
+    ids=["send-failed", "guard-refused", "github-unreadable"],
+)
+def test_next_moves_past_an_item_whose_report_did_not_go_out(tmp_path, capsys, found):
+    gh, _ = started(tmp_path, **found)
+    argv = ["report", "--run", "3", "--outcome", "cause-not-found", "--diagnosis", "d"]
+    assert fx(tmp_path, argv, gh, Telegram({"ok": False, "description": "down"})) == 1
+    capsys.readouterr()
+    tg = Telegram()
+    assert fx(tmp_path, ["next"], gh, tg) == 0
+    assert json.loads(capsys.readouterr().out)["run_id"] == 11
+    argv = ["report", "--run", "11", "--outcome", "pr", "--pr-url", "https://github.com/o/r/pull/8"]
+    assert fx(tmp_path, argv, gh, tg) == 0
+    assert fx(tmp_path, ["next"], gh, tg) == 0
+    assert capsys.readouterr().out.strip() == "none"
+    # The item whose report was not sent is still owed a message: finish sends it,
+    # as reported when only the send failed, as not diagnosed when the report was refused.
+    assert fx(tmp_path, ["finish"], gh, tg) == 0
+    owed = "Outcome: cause not found\nd" if not found else NOT_DIAGNOSED
+    assert tg.texts == [
+        f"{WEEKLY_ALERT}\n\nOutcome: PR opened — https://github.com/o/r/pull/8",
+        f"{NIGHTLY_ALERT}\n\n{owed}",
+    ]
+
+
 # -- report refuses what it cannot stand behind -------------------------------------
 
 LONG = "x" * 601
@@ -491,9 +539,10 @@ def test_dry_run_report_and_finish_print_the_message_and_write_nothing(tmp_path,
     before = files(tmp_path)
     assert sorted(before) == ["pending.json", "state.json"]
     capsys.readouterr()
+    (tmp_path / "repo" / "config" / "device.json").unlink()  # a dry run works off the routine host
     pr = "https://github.com/o/r/pull/77"
     argv = ["report", "--run", "3", "--outcome", "pr", "--pr-url", pr, "--dry-run"]
-    assert fx(tmp_path, argv, gh, tg, routine_host=None) == 0
+    assert fx(tmp_path, argv, gh, tg) == 0
     assert f"{NIGHTLY_ALERT}\n\nOutcome: PR opened — {pr}\n" in capsys.readouterr().out
     assert fx(tmp_path, ["finish", "--dry-run"], gh, tg) == 0
     out = capsys.readouterr().out
