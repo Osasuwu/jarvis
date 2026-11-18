@@ -6,8 +6,9 @@ scheduled task on the routine host. For every line of
 ``config/scheduled-ci.conf`` it reads the workflow's run history through ``gh``
 and sends to Telegram, through ``scripts/notify_telegram.py``:
 
-- a message on the first red run of a workflow, and again when the set of
-  failing jobs changes — an unchanged red streak stays silent;
+- a message on the first red run of a workflow, and again when a job fails
+  that this red streak has not named yet (#2229) — a streak whose failing jobs
+  were all named already stays silent, also when the set flips night to night;
 - every Monday a summary, one line per watched workflow, also when everything
   is green. A missing Monday summary means the reader itself is down.
 
@@ -83,7 +84,7 @@ class Watch:
 class Alert:
     run: dict
     jobs: list[str]
-    previous: list[str] | None  # None: a new red streak; a list: the set it replaced
+    new: list[str] | None  # None: a new red streak; a list: the jobs not named in it before
 
 
 @dataclass(frozen=True)
@@ -137,8 +138,13 @@ def decide(
 ) -> Decision:
     """Walk the runs not handled yet, oldest first, and say what to report.
 
-    ``wstate`` is ``{"cursor": {"id", "attempt"} | None, "red": {"jobs", "since"} | None}``
-    or ``None`` on the first read of a workflow. With no cursor only the newest
+    ``wstate`` is ``{"cursor": {"id", "attempt"} | None, "red": {"jobs", "since",
+    "named"} | None}`` or ``None`` on the first read of a workflow. In an open
+    streak ``jobs`` is the failing set of its last red run and ``named`` every job
+    reported since it began: a run alerts only when one of its failing jobs is not
+    in ``named``, so a flaky job that leaves the set and comes back is not
+    reported twice (#2229). A streak stored before #2229 has no ``named``; its
+    ``jobs`` are taken as named. With no cursor only the newest
     completed run is handled, so a first run does not replay history. ``since``
     (a ``YYYY-MM-DD`` date) replaces the stored state: every run created on or
     after it is walked from a green start.
@@ -164,10 +170,13 @@ def decide(
             jobs = failing_jobs_for(run)
             if red is None:
                 alerts.append(Alert(run, jobs, None))
-                red = {"jobs": jobs, "since": run["created_at"][:10]}
-            elif red["jobs"] != jobs:
-                alerts.append(Alert(run, jobs, red["jobs"]))
-                red = {**red, "jobs": jobs}
+                red = {"jobs": jobs, "since": run["created_at"][:10], "named": jobs}
+            else:
+                named = red.get("named", red["jobs"])
+                new = [job for job in jobs if job not in named]
+                if new:
+                    alerts.append(Alert(run, jobs, new))
+                red = {**red, "jobs": jobs, "named": sorted({*named, *jobs})}
         elif conclusion == GREEN:
             red = None
     return Decision(alerts, {"cursor": cursor, "red": red})
@@ -198,11 +207,7 @@ def alert_message(watch: Watch, alerts: list[Alert]) -> tuple[str, str]:
     limit = TELEGRAM_LIMIT - len(subject) - 2  # notify_telegram joins them with "\n\n"
     parts = []
     for alert in alerts:
-        what = (
-            "new red run"
-            if alert.previous is None
-            else f"failing jobs changed (was: {', '.join(alert.previous)})"
-        )
+        what = "new red run" if alert.new is None else f"new failing jobs: {', '.join(alert.new)}"
         head = f"{alert.run['created_at'][:10]} — {what}\nFailing jobs: {', '.join(alert.jobs)}"
         parts.append((head, alert.run["html_url"]))
     body = "\n\n".join(_fit(head, url, limit) for head, url in parts)

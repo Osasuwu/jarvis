@@ -2,8 +2,8 @@
 
 Scheduled runs (a nightly, a weekly scan) sit on no PR, so a red one was read by
 nobody: redrobot's nightly stayed red for 16 nights. The reader sends a red run to
-Telegram once, again when the set of failing jobs changes, and a Monday summary
-that doubles as its own heartbeat.
+Telegram once, again when a job fails that the streak has not named yet (#2229),
+and a Monday summary that doubles as its own heartbeat.
 
 Every test drives the real ``run`` / ``main`` with a fake ``gh`` and a fake
 Telegram ``post``; the message texts are the contract the user reads, so they
@@ -100,41 +100,94 @@ def go(tmp_path, gh, tg, *, watches=(NIGHTLY,), today=TUE, **kwargs):
     )
 
 
-# -- AC1-AC3: first red run, unchanged streak, changed failing jobs ------------
+# -- first red run, then only a job the streak has not named yet (#2229) -------
 
 
-def test_red_streak_sends_once_then_again_only_when_failing_jobs_change(tmp_path):
+def test_red_streak_sends_once_then_again_only_when_a_job_not_named_yet_fails(tmp_path):
     seed(tmp_path / "st")
-    runs = [row(1, "2026-11-15", "success"), row(2, "2026-11-16", "failure")]
+    runs = [row(1, "2026-11-10", "success"), row(2, "2026-11-11", "failure")]
     jobs = {
-        2: [("unit", "failure"), ("lint", "success"), ("slow", "timed_out"), ("docs", "skipped")],
-        3: [("slow", "timed_out"), ("unit", "failure")],
-        4: [("unit", "failure"), ("slow", "success")],
+        2: [("unit", "failure"), ("lint", "success"), ("docs", "skipped")],
+        3: [("unit", "failure")],
+        4: [("slow", "timed_out"), ("unit", "failure")],
+        5: [("slow", "timed_out"), ("unit", "success")],
+        6: [("unit", "failure"), ("slow", "timed_out")],
+        7: [("e2e", "failure"), ("unit", "success")],
     }
     gh, tg = FakeGh({"nightly.yml": runs}, jobs), Telegram()
 
-    # AC1: the latest scheduled run failed -> one message, failing jobs and the run link.
+    # #2225 AC1: the latest scheduled run failed -> one message, failing jobs and the run link.
     assert go(tmp_path, gh, tg) == 0
     assert tg.texts == [
         "Scheduled CI red: o/r nightly.yml\n\n"
-        "2026-11-16 — new red run\n"
-        "Failing jobs: slow, unit\n"
+        "2026-11-11 — new red run\n"
+        "Failing jobs: unit\n"
         "https://github.com/o/r/actions/runs/2"
     ]
 
-    # AC2: next night, same failing jobs -> the run is handled, nothing is sent.
-    runs.append(row(3, "2026-11-17", "failure"))
-    assert go(tmp_path, gh, tg, today=date(2026, 11, 18)) == 0
+    # #2225 AC2: next night, same failing jobs -> the run is handled, nothing is sent.
+    runs.append(row(3, "2026-11-12", "failure"))
+    assert go(tmp_path, gh, tg) == 0
     assert len(tg.texts) == 1
     assert state_of(tmp_path / "st")["cursor"]["id"] == 3
 
-    # AC3: the set of failing jobs changed -> a new message naming old and new set.
-    runs.append(row(4, "2026-11-18", "failure"))
-    assert go(tmp_path, gh, tg, today=date(2026, 11, 19)) == 0
+    # #2229 AC1: a second job fails for the first time -> a message naming it.
+    runs.append(row(4, "2026-11-13", "failure"))
+    assert go(tmp_path, gh, tg) == 0
     assert tg.texts[1:] == [
         "Scheduled CI red: o/r nightly.yml\n\n"
-        "2026-11-18 — failing jobs changed (was: slow, unit)\n"
-        "Failing jobs: unit\n"
+        "2026-11-13 — new failing jobs: slow\n"
+        "Failing jobs: slow, unit\n"
+        "https://github.com/o/r/actions/runs/4"
+    ]
+
+    # #2229 AC1: the set flips to slow alone and back to slow + unit. Each differs from
+    # the night before, and every job in them was already named -> silence.
+    runs.append(row(5, "2026-11-14", "failure"))
+    assert go(tmp_path, gh, tg) == 0
+    runs.append(row(6, "2026-11-15", "failure"))
+    assert go(tmp_path, gh, tg) == 0
+    assert len(tg.texts) == 2
+    assert state_of(tmp_path / "st")["cursor"]["id"] == 6
+
+    # #2229 AC2: later in the same streak a third job fails for the first time.
+    runs.append(row(7, "2026-11-16", "failure"))
+    assert go(tmp_path, gh, tg) == 0
+    assert tg.texts[2:] == [
+        "Scheduled CI red: o/r nightly.yml\n\n"
+        "2026-11-16 — new failing jobs: e2e\n"
+        "Failing jobs: e2e\n"
+        "https://github.com/o/r/actions/runs/7"
+    ]
+
+
+def test_open_streak_written_by_the_reader_before_2229_is_carried_on(tmp_path):
+    # Before #2229 an open streak was stored as {"jobs", "since"}: the last failing set.
+    seed(
+        tmp_path / "st",
+        workflows={
+            "o/r nightly.yml schedule": {
+                "cursor": {"id": 2, "attempt": 1},
+                "red": {"jobs": ["slow", "unit"], "since": "2026-11-12"},
+            }
+        },
+    )
+    runs = [row(2, "2026-11-12", "failure"), row(3, "2026-11-13", "failure")]
+    jobs = {3: [("unit", "failure")], 4: [("lint", "failure"), ("slow", "failure")]}
+    gh, tg = FakeGh({"nightly.yml": runs}, jobs), Telegram()
+
+    # unit was in the stored set: it counts as named, so the smaller set is silent.
+    assert go(tmp_path, gh, tg) == 0
+    assert tg.texts == []
+    assert state_of(tmp_path / "st")["cursor"]["id"] == 3
+
+    # slow was in the stored set too and stays named; only lint is new.
+    runs.append(row(4, "2026-11-14", "failure"))
+    assert go(tmp_path, gh, tg) == 0
+    assert tg.texts == [
+        "Scheduled CI red: o/r nightly.yml\n\n"
+        "2026-11-14 — new failing jobs: lint\n"
+        "Failing jobs: lint, slow\n"
         "https://github.com/o/r/actions/runs/4"
     ]
 
@@ -199,7 +252,7 @@ def test_host_off_for_three_days_catches_up_in_one_message(tmp_path):
         "2026-11-14 — new red run\n"
         "Failing jobs: unit\n"
         "https://github.com/o/r/actions/runs/2\n\n"
-        "2026-11-15 — failing jobs changed (was: unit)\n"
+        "2026-11-15 — new failing jobs: slow\n"
         "Failing jobs: slow\n"
         "https://github.com/o/r/actions/runs/3"
     ]
@@ -213,16 +266,17 @@ def test_catch_up_too_long_for_one_telegram_message_keeps_the_newest_alert(tmp_p
         tmp_path / "st",
         workflows={"o/r nightly.yml schedule": {"cursor": {"id": 0, "attempt": 1}, "red": None}},
     )
-    a, b = "a" * 1000, "b" * 1000
+    # five nights, a different job each: five alerts of about 1000 characters.
+    names = {i: "abcde"[i - 1] * 1000 for i in range(1, 6)}
     runs = [row(i, f"2026-11-1{i + 1}", "failure") for i in range(1, 6)]
-    jobs = {i: [(a if i % 2 else b, "failure")] for i in range(1, 6)}
+    jobs = {i: [(names[i], "failure")] for i in range(1, 6)}
     gh, tg = FakeGh({"nightly.yml": runs}, jobs), Telegram()
     assert go(tmp_path, gh, tg) == 0
     assert tg.texts == [
         "Scheduled CI red: o/r nightly.yml\n\n"
         "(4 earlier alerts left out: the message would be too long for Telegram)\n\n"
-        f"2026-11-16 — failing jobs changed (was: {b})\n"
-        f"Failing jobs: {a}\n"
+        f"2026-11-16 — new failing jobs: {names[5]}\n"
+        f"Failing jobs: {names[5]}\n"
         "https://github.com/o/r/actions/runs/5"
     ]
     assert state_of(tmp_path / "st")["cursor"]["id"] == 5
