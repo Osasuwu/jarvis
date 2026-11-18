@@ -16,7 +16,14 @@ Telegram, through `scripts/notify_telegram.py`:
   before), also when everything is green. A Monday with no summary means the reader is down.
 
 It sends messages only. It opens no PR, reruns nothing and blocks nothing, so it is not a gate.
-Diagnosing and fixing a red run is a separate agent (#2226), not part of the reader.
+Diagnosing and fixing a red run is the fixer's part (#2226, [`scheduled-ci-fixer.md`](scheduled-ci-fixer.md)),
+not the reader's.
+
+**Deferred mode.** The fixer runs the reader with `run(defer=True)`. An alert is then not sent
+but stored as one item per workflow in `pending.json` in the state directory, and that
+workflow's state is not committed: the fixer sends the item with what the agent did and commits
+the state with it. Summaries and green workflows are handled as in a plain run. The plain
+command below has no such flag and behaves as before.
 
 ## Watch list
 
