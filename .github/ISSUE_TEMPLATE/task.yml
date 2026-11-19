@@ -29,6 +29,11 @@ body:
         - "area:infrastructure"
         - "area:quality"
         - "area:docs"
+        - "area:core-agent"
+        - "area:ci-quality"
+        - "area:memory"
+        - "area:security"
+        - "area:release"
     validations:
       required: true
 
@@ -44,26 +49,13 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: phase
-    attributes:
-      label: "Phase"
-      options:
-        - "P1 OpenClaw Migration + PM Skills"
-        - "P2 Research Skills"
-        - "P3 Expansion"
-    validations:
-      required: true
-
   - type: textarea
     id: acceptance
     attributes:
       label: "Acceptance Criteria"
-      description: "Checklist of requirements for this task to be done."
+      description: "One checkbox per observable outcome, each literally verifiable. State what must be true, not which tests to write."
       value: |
-        - [ ] Implementation complete
-        - [ ] Tests pass
-        - [ ] Documentation updated (if behavior changed)
+        - [ ]
     validations:
       required: true
 
