@@ -110,7 +110,7 @@ Two workflows, split so a PR can never change the rule that judges it:
   write grant is `Edit(/${{ github.workspace }}/.review/findings.json)` — absolute once expanded,
   so a reviewer that `cd`s still writes the seeded file (#2179). Deterministic base steps then validate the
   findings, enforce `blocking ⇔ findings non-empty`, check the tree is clean, stamp `sha` /
-  `base_ref`, and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
+  `base_ref` and `rules` (the `REVIEW.md` blob SHA), and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
   (one per attempt, `overwrite: false`, 90-day retention). A re-run still deletes the earlier
   attempts' artifacts, so the verdict keeps a blocking result in its own ledger, not in the
   artifact (#2062); the upload is the review job's last step and runs unconditionally, so an
@@ -119,6 +119,15 @@ Two workflows, split so a PR can never change the rule that judges it:
   superseded run (a push, a dispatch or a base change); a title/body edit gets a per-run group so
   it never cancels the review in flight (#2044). The PR comment is for humans only and is never
   parsed.
+- **The rules are `REVIEW.md` on the base commit** (#2204). The prompt carries the workspace
+  limits and the findings schema; what to look for is in root `REVIEW.md`, which the reviewer
+  reads from its base checkout. A PR that edits `REVIEW.md` is therefore reviewed under the old
+  rules; its new text is `.pr-head/REVIEW.md.pr`, data under review. `prepare` reads the blob
+  SHA before the reviewer runs and fails the job when the base has no `REVIEW.md`; `stamp`
+  refuses evidence without that SHA. The verdict does not read `rules` (an additive field,
+  `schema` stays 1). `REVIEW.md` is in the `machinery` bucket (HIGH floor), not `gate`: a rules
+  edit is reviewed like any file and needs no admin-merge. The class names stay pinned to
+  `FINDING_CLASSES` by `tests/ci/test_code_gate_verdict.py`.
 - **The reviewer is contained, not trusted** (#2024). The review job's token is `contents: read`
   + `pull-requests: read` with no `id-token`, and both reviewer steps pass it as `github_token`,
   so the reviewer's `gh` cannot write and the action cannot mint a write-scoped App token over
@@ -333,7 +342,8 @@ optional third, below):
   AFK-eligible once a plan locks) — not a refusal, just a higher bar.
 
 - **`machinery`** (optional) — the CI/process machinery that decides what merges: workflows,
-  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs. Read only
+  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs, the
+  review rules (`REVIEW.md`, #2204). Read only
   by the `risk-tier` check, from the base commit, never by `/to-tickets`; any changed file
   matching these globs floors the PR at HIGH. A repo without the bucket still gets the `hitl`
   and `guarded` floors.

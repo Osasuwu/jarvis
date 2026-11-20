@@ -7,6 +7,7 @@ not read back from the module.
 """
 
 import argparse
+import base64
 import http.client
 import importlib.util
 import json
@@ -87,6 +88,7 @@ def test_cosmetic_paths(path):
         "config/SOUL.md",
         ".claude/session-snapshots/de927bb9.md",
         "docs/PNG.PNG",  # extension match is case-sensitive: stricter, fails safe
+        "REVIEW.md",  # the review rules: an edit to them is reviewed like any file (#2204)
     ],
 )
 def test_code_paths(path):
@@ -144,6 +146,7 @@ def test_gate_machinery_paths(path):
         ".github/scripts/unblock_ready.py",
         "tests/ci/test_code_gate_verdict.py",
         "docs/reference/github-repo-setup.md",
+        "REVIEW.md",  # reviewed under the base copy, so a rules edit needs no admin-merge (#2204)
     ],
 )
 def test_non_machinery_paths(path):
@@ -325,17 +328,19 @@ def test_stray_untracked_file_is_dirty():
 # --- build_evidence -------------------------------------------------------
 
 
-def test_build_evidence_stamps_sha_and_base():
+def test_build_evidence_stamps_sha_base_and_the_rules_blob():
     got = gate.build_evidence(
         {"blocking": True, "findings": [{"class": "regression", "file": "a.py"}]},
         sha=SHA,
         base_ref="main",
+        rules_blob=OTHER_SHA,
     )
     assert got == {
         "schema": 1,
         "status": "reviewed",
         "sha": SHA,
         "base_ref": "main",
+        "rules": {"path": "REVIEW.md", "blob": OTHER_SHA},
         "blocking": True,
         "findings": [{"class": "regression", "file": "a.py"}],
     }
@@ -1996,6 +2001,142 @@ def test_prepare_lets_an_unrelated_api_failure_propagate(monkeypatch, tmp_path):
         gate.cmd_prepare(args)
 
 
+# --- the review rules: REVIEW.md read from the base commit (#2204) ---------
+
+OLD_RULES = b"# Review rules\n\nold rules\n"
+NEW_RULES = b"# Review rules\n\nnew rules\n"
+# `git hash-object` of the two texts above, worked out once, not read back from git here.
+OLD_RULES_BLOB = "6152f14f1c257341a86df68491b583f55b069cae"
+NEW_RULES_BLOB = "0fb6d54a5e8ef0ed6cf9f3aa43d57ab9db675d6b"
+
+
+def _git(cwd, *args):
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def _base_checkout(path, rules=OLD_RULES):
+    """A one-commit repo standing in for the review job's base checkout."""
+    path.mkdir()
+    _git(path, "init", "-q")
+    _git(path, "config", "core.autocrlf", "false")
+    if rules is not None:
+        (path / "REVIEW.md").write_bytes(rules)
+    (path / "a.py").write_bytes(b"x = 1\n")
+    _git(path, "add", "--all")
+    _git(
+        path,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "-m",
+        "base",
+    )
+    return path
+
+
+def _rules_edit_api():
+    """A PR whose only change rewrites REVIEW.md to NEW_RULES."""
+    pr = _open_pr()
+    files = [
+        {
+            "filename": "REVIEW.md",
+            "status": "modified",
+            "sha": NEW_RULES_BLOB,
+            "patch": "@@ -3 +3 @@\n-old rules\n+new rules",
+        }
+    ]
+    blob = {"size": len(NEW_RULES), "content": base64.b64encode(NEW_RULES).decode()}
+    return FakeApi(
+        {
+            "repos/o/r/pulls/7/files": files,
+            "repos/o/r/pulls/7": pr,
+            f"repos/Osasuwu/jarvis/git/blobs/{NEW_RULES_BLOB}": blob,
+        }
+    )
+
+
+def test_a_pr_that_edits_review_md_is_reviewed_under_the_base_commits_rules(
+    monkeypatch, tmp_path, capsys
+):
+    """The reviewer's rules are the base commit's REVIEW.md; the PR's edit is inert data
+    under `.pr-head/`, and the blob `prepare` hands to `stamp` is the base one."""
+    base = _base_checkout(tmp_path / "base")
+    _prepare_env(monkeypatch, tmp_path)
+    monkeypatch.chdir(base)
+    args = argparse.Namespace(head_dir=".pr-head", make_client={"t": _rules_edit_api()}.__getitem__)
+    assert gate.cmd_prepare(args) == 0
+    out = capsys.readouterr().out
+    assert f"rules_blob={OLD_RULES_BLOB}\n" in out
+    assert NEW_RULES_BLOB not in out
+    assert (base / "REVIEW.md").read_bytes() == OLD_RULES
+    assert (base / ".pr-head" / "REVIEW.md.pr").read_bytes() == NEW_RULES
+
+
+def test_prepare_refuses_to_review_when_the_base_has_no_review_md(monkeypatch, tmp_path, capsys):
+    """No rules at the base, no review: the job fails before the reviewer, so no
+    evidence is uploaded and `code-gate` stays red, never a review run on no rules."""
+    base = _base_checkout(tmp_path / "base", rules=None)
+    summary = _prepare_env(monkeypatch, tmp_path)
+    monkeypatch.chdir(base)
+    args = argparse.Namespace(head_dir=".pr-head", make_client={"t": _rules_edit_api()}.__getitem__)
+    assert gate.cmd_prepare(args) == 1
+    captured = capsys.readouterr()
+    message = "the base commit has no REVIEW.md, so there are no review rules to run"
+    assert f"::error::{message}" in captured.err
+    assert "rules_blob=" not in captured.out
+    assert summary.read_text("utf-8") == f"**Review not run:** {message}\n"
+
+
+def test_a_skipped_review_needs_no_review_md(monkeypatch, tmp_path, capsys):
+    """A draft is skipped before the rules are looked up: its skip evidence still uploads."""
+    base = _base_checkout(tmp_path / "base", rules=None)
+    _prepare_env(monkeypatch, tmp_path)
+    monkeypatch.chdir(base)
+    api = _rules_edit_api()
+    api.responses["repos/o/r/pulls/7"] = _open_pr(draft=True)
+    args = argparse.Namespace(head_dir=".pr-head", make_client={"t": api}.__getitem__)
+    assert gate.cmd_prepare(args) == 0
+    assert "skip_reason=draft\n" in capsys.readouterr().out
+
+
+def _stamp(monkeypatch, tmp_path, rules_blob):
+    findings = tmp_path / "findings.json"
+    findings.write_text(json.dumps({"blocking": False, "findings": []}), "utf-8")
+    monkeypatch.setenv("HEAD_SHA", SHA)
+    monkeypatch.setenv("BASE_REF", "main")
+    if rules_blob is None:
+        monkeypatch.delenv("RULES_BLOB", raising=False)
+    else:
+        monkeypatch.setenv("RULES_BLOB", rules_blob)
+    out = tmp_path / "review-evidence.json"
+    code = gate.cmd_stamp(argparse.Namespace(findings=str(findings), out=str(out)))
+    return code, out
+
+
+def test_stamped_evidence_records_the_review_md_blob_it_ran_under(monkeypatch, tmp_path):
+    code, out = _stamp(monkeypatch, tmp_path, OLD_RULES_BLOB)
+    assert code == 0
+    assert json.loads(out.read_text("utf-8"))["rules"] == {
+        "path": "REVIEW.md",
+        "blob": OLD_RULES_BLOB,
+    }
+
+
+@pytest.mark.parametrize("rules_blob", [None, "", "main", "A" * 40, OLD_RULES_BLOB[:39]])
+def test_stamp_refuses_evidence_without_a_review_md_blob(monkeypatch, tmp_path, rules_blob):
+    """Evidence that cannot say which rules it ran under is not written."""
+    code, out = _stamp(monkeypatch, tmp_path, rules_blob)
+    assert code == 1
+    assert not out.exists()
+
+
 def test_verdict_on_a_head_moving_mid_read_posts_nothing_and_exits_clean(monkeypatch, capsys):
     for key, value in {
         "GITHUB_REPOSITORY": "o/r",
@@ -2849,3 +2990,12 @@ def test_real_expired_artifact_is_unlisted_so_its_attempt_is_red_missing():
     assert (got.green, got.code) == (False, "evidence-missing")
     seen = gate.observe(bound, 2037, sha, "main", "main")
     assert seen == gate.Observation(frozenset(), frozenset({"38032557503:1"}), False)
+
+
+def test_review_md_defines_exactly_the_classes_the_gate_accepts():
+    """A class REVIEW.md defines but the gate rejects turns every finding of it into
+    invalid evidence; one the gate accepts but REVIEW.md drops is never raised."""
+    text = (_root / "REVIEW.md").read_text("utf-8")
+    section = text.split("\n## Finding classes\n", 1)[1].split("\n## ", 1)[0]
+    defined = tuple(re.findall(r"^- `([a-z-]+)` — ", section, re.M))
+    assert defined == gate.FINDING_CLASSES
