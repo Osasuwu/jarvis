@@ -42,7 +42,12 @@ def test_verdict_permissions_are_exactly_three_reads():
         "actions": "read",
         "pull-requests": "read",
     }
+    # One exception (#2202): re-running the `risk-tier` job after a review needs
+    # `actions: write`; that job holds no App key (test_risk_tier_redecide.py).
     for name, job in VERDICT["jobs"].items():
+        if name == "risk-tier-redecide":
+            assert job["permissions"] == {"actions": "write", "contents": "read"}
+            continue
         assert "permissions" not in job, f"job {name} must not widen the workflow permissions"
 
 
@@ -50,7 +55,7 @@ def test_verdict_never_checks_out_the_pr_head():
     checkouts = [
         s for s in _steps(VERDICT) if str(s.get("uses", "")).startswith("actions/checkout@")
     ]
-    assert len(checkouts) == 2  # resolve + verdict, both base-pinned
+    assert len(checkouts) == 3  # resolve, risk-tier-redecide, verdict: all base-pinned
     for step in checkouts:
         # A schedule's own ref is the default branch; every other trigger names it
         # through the event's repository (#2079).
@@ -68,6 +73,7 @@ def test_verdict_never_checks_out_the_pr_head():
     # verdict reads the gate set from the base's protected list through path_policy (#2067)
     assert sparse == {
         "resolve": [".github/scripts"],
+        "risk-tier-redecide": [".github/scripts"],
         "verdict": [".github/scripts", "agents", "config"],
     }
 
@@ -102,7 +108,9 @@ def test_verdict_runs_once_per_resolved_target():
     sweep decides every open PR and an event decides its one (#2079)."""
     resolve, verdict = VERDICT["jobs"]["resolve"], VERDICT["jobs"]["verdict"]
     assert resolve["outputs"] == {"targets": "${{ steps.resolve.outputs.targets }}"}
-    assert verdict["if"] == "needs.resolve.outputs.targets != '[]'"
+    # The re-run of risk-tier (#2202) is skipped on every event but workflow_run, so the
+    # verdict also runs on its skip: test_risk_tier_redecide.py pins that condition.
+    assert "needs.resolve.outputs.targets != '[]'" in verdict["if"]
     assert verdict["strategy"] == {
         "fail-fast": False,
         "matrix": {"target": "${{ fromJSON(needs.resolve.outputs.targets) }}"},

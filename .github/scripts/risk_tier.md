@@ -62,7 +62,9 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
    `::notice title=risk-tier::` annotation. The annotation is where an adoption count reads
    it. A new language gets no exemption until it has a comparison rule of its own, as
    Python's AST is here.
-3. **Final tier = max(computed, declared).** The declared line can raise the tier, never lower it.
+3. **Final tier = max(computed, declared, the reviewer's raise).** The declared line and the CI
+   reviewer's raise (*The reviewer's raise* below, #2202) can raise the tier, never lower it.
+   While the code review of the head has not completed, the check is red, waiting for it.
 4. LOW and MEDIUM → green. HIGH and CRITICAL → green when **the PR's author holds the releasing
    role (admin)** (#2088): the author of the live PR object (`GET pulls/{n}`) is not a `Bot`
    account, is not `LANE_BOT_LOGIN` (the caller's `bot-login`, compared case-insensitively;
@@ -171,6 +173,50 @@ row against the parser, so the table cannot drift from the code.
 
 The PR template (`.github/PULL_REQUEST_TEMPLATE.md`) carries `Risk: <LOW|MEDIUM|HIGH|CRITICAL> —
 <reason>` unfilled, which is malformed on purpose: the check stays red until the author fills it in.
+
+## The reviewer's raise
+
+The CI reviewer (`code-review.yml`) may raise the tier when the diff is riskier than the
+`Risk:` line and the path rules say (#2202). Its evidence (`review-evidence.json`, validated by
+`code_gate_verdict.py`) carries an optional top-level `"raise": {"tier": "MEDIUM"|"HIGH",
+"reason": "<1..300 chars>"}` (`LOW` validates but can never apply). Any other shape
+(another key, `CRITICAL`, an empty or overlong reason) fails validation: the reviewer retries, then the
+review run fails, so no evidence exists and `code-gate` stays red.
+
+- **Only up.** Final = max(declared, computed, raise). A raise at or below that max changes
+  nothing; the summary still logs it as `reviewer raise to <T> not applied: at or below <F>`.
+  An applied one reads `reviewer raise to <T> applied (was <F>)`, with the reviewer's reason.
+- **Which evidence.** The same runs `code-gate` reads (`gather_entries`): every attempt of
+  every `code-review.yml` run on the head SHA bound to this PR. The highest raise wins.
+- **Fail closed.** Evidence that is unreadable, malformed, bound to another commit, expired or
+  deleted, a run listing that cannot be read, or a lookup of `code-review.yml` that fails with
+  anything but 404, each read as a raise to HIGH: an unknown raise is not "no raise".
+- **Waiting.** Until a bound review run on the head has completed successfully with evidence
+  (`reviewed` or `skipped`), the check is red, `waiting for the code review of <sha7>`. A run
+  still in progress or awaiting approval also waits.
+- **Not read**: on a host with no `.github/workflows/code-review.yml` (404), and on a PR into a
+  branch other than the default one (`code-gate` does not review those). The summary notes why.
+- **Re-decision.** `risk-tier` is a job of `pr-body-check.yml`, so only a run of that job
+  changes its check. When a review completes, the `risk-tier-redecide` job of
+  `code-gate-verdict.yml` (the only job there with `actions: write`) re-runs the latest
+  `risk-tier` job on the reviewed head (`risk_tier_redecide.py`), unless a run created after
+  the review completed already reads its evidence; a run still in progress is awaited up to
+  600 s. The `verdict` job needs it, so `code-gate` is not posted for that review before
+  `risk-tier` is re-queued; a failed re-run leaves `code-gate` unposted for the event.
+
+Residuals:
+
+1. **Re-running a successful review on the same SHA floors the tier at HIGH.** The re-run
+   deletes the earlier attempt's artifact; that attempt then reads as deleted evidence.
+   Pushing a new commit clears it.
+2. **The re-run API refuses runs older than 30 days.** The redecide job then fails and
+   `code-gate` stays unposted for that event; a new push re-runs both.
+3. **A failed redecide followed by the scheduled sweep.** The sweep in `code-gate-verdict.yml`
+   can post a green `code-gate` while `risk-tier` still shows the run from before the review,
+   which was red (waiting) unless an earlier review had completed on the same head. Narrow
+   case: a draft marked ready, or a dispatched review, on a head already reviewed once.
+4. **A job re-run with `GITHUB_TOKEN` is unverified live** at merge time of #2202; the tests
+   drive the script against a fake API.
 
 ## Residual risks
 

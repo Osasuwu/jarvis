@@ -8,9 +8,11 @@ file; expected values are literals.
 
 import base64
 import importlib.util
+import io
 import json
 import re
 import shutil
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -32,6 +34,7 @@ def _load(name):
 
 risk_tier = _load("risk_tier")
 lane_publish = _load("lane_publish")
+gate = _load("code_gate_verdict")
 
 REPO = "Osasuwu/jarvis"
 HEAD = "a" * 40
@@ -48,6 +51,49 @@ BASE_LIST = {
     }
 }
 GOOD_BODY = "Refs #1\n\nRisk: LOW — small"
+
+# The code review of PR #7 at HEAD (#2202): one `pull_request` run of code-review.yml whose
+# attempt 1 uploaded its evidence. By default the review is clean and raises nothing.
+REVIEW_RUN = 900
+REVIEW_WORKFLOW = f"repos/{REPO}/actions/workflows/code-review.yml"
+
+
+def _review_run(**over):
+    run = {
+        "id": REVIEW_RUN,
+        "name": "Code Review",
+        "path": ".github/workflows/code-review.yml",
+        "event": "pull_request",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "head_sha": HEAD,
+        "display_title": f"Code review PR #7 @ {HEAD}",
+        "pull_requests": [
+            {"number": 7, "base": {"ref": "main", "sha": OLD}, "head": {"ref": "x", "sha": HEAD}}
+        ],
+    }
+    run.update(over)
+    return run
+
+
+def _evidence_zip(findings=None, sha=HEAD, **over):
+    """The evidence artifact as code-review.yml uploads it, built by the producer's own
+    `build_evidence`."""
+    evidence = gate.build_evidence(
+        findings or {"blocking": False, "findings": []}, sha, "main", "0" * 40
+    )
+    evidence.update(over)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("review-evidence.json", json.dumps(evidence))
+    return buf.getvalue()
+
+
+def _raising(tier, reason="rewrites the token refresh"):
+    findings = {"blocking": False, "findings": [], "raise": {"tier": tier, "reason": reason}}
+    assert gate.validate_findings(findings) == []  # what the review's `validate` step accepts
+    return {901: _evidence_zip(findings)}
 
 
 @pytest.fixture
@@ -73,19 +119,34 @@ class FakeGitHub(FakeApi):
         head=HEAD,
         changed_files=None,
         author=("carol", "User"),
+        base_ref="main",
+        review_runs=None,
+        artifacts=None,
+        evidence=None,
+        review_workflow=True,
         contents=None,
         merge_base=MERGE_BASE,
     ):
         self.pr = {
+            "number": 7,
             "body": body,
             "user": {"login": author[0], "type": author[1]},
             "head": {"sha": head},
-            "base": {"sha": BASE_TIP},
+            "base": {"ref": base_ref, "sha": BASE_TIP, "repo": {"default_branch": "main"}},
+            "created_at": "2026-11-01T00:00:00Z",
             "changed_files": len(files) if changed_files is None else changed_files,
         }
         self.files = list(files)
         self.reviews = list(reviews)
         self.permissions = permissions or {}
+        # The code review (#2202): runs of code-review.yml, each run's artifacts, their blobs.
+        self.review_runs = [_review_run()] if review_runs is None else review_runs
+        self.artifacts = (
+            {REVIEW_RUN: [{"id": 901, "name": "review-evidence-1", "expired": False}]}
+            if artifacts is None
+            else artifacts
+        )
+        self.review_workflow = review_workflow
         self.contents = contents or {}
         self.merge_base = merge_base
         prefix = f"repos/{REPO}/pulls/7"
@@ -95,10 +156,39 @@ class FakeGitHub(FakeApi):
                 f"{prefix}/files?": self._page(self.files),
                 f"{prefix}/reviews?": self._page(self.reviews),
                 f"repos/{REPO}/collaborators/": self._permission,
+                REVIEW_WORKFLOW: self._workflow,
+                f"{REVIEW_WORKFLOW}/runs?": self._runs,
+                f"repos/{REPO}/actions/runs/": self._run_detail,
                 f"repos/{REPO}/compare/": self._compare,
                 f"repos/{REPO}/contents/": self._content,
-            }
+            },
+            blobs={901: _evidence_zip()} if evidence is None else evidence,
         )
+
+    def _workflow(self, method, path, body):
+        if path != REVIEW_WORKFLOW:
+            return AssertionError(f"unexpected API call: {path}")
+        if self.review_workflow is not True:
+            return self.review_workflow
+        return {"id": 1, "path": ".github/workflows/code-review.yml"}
+
+    def _runs(self, method, path, body):
+        query = path.partition("?")[2].split("&")
+        if "page=1" not in query:
+            return {"workflow_runs": []}
+        event = "workflow_dispatch" if "event=workflow_dispatch" in query else "pull_request"
+        runs = self.review_runs
+        if isinstance(runs, BaseException):
+            return runs
+        return {"workflow_runs": [r for r in runs if r["event"] == event]}
+
+    def _run_detail(self, method, path, body):
+        m = re.fullmatch(rf"repos/{REPO}/actions/runs/(\d+)/artifacts\?.*page=(\d+)", path)
+        if m:
+            return {"artifacts": self.artifacts.get(int(m.group(1)), []) if m[2] == "1" else []}
+        if re.fullmatch(rf"repos/{REPO}/actions/runs/\d+/attempts/\d+", path):
+            return {"conclusion": "success"}
+        return AssertionError(f"unexpected API call: {path}")
 
     def _compare(self, method, path, body):
         if path.partition("?")[0] != f"repos/{REPO}/compare/{BASE_TIP}...{self.pr['head']['sha']}":
@@ -1116,7 +1206,8 @@ def test_the_job_is_one_pinned_action_step_time_boxed_with_unchanged_scope():
     # the job is the action alone; scope and grouping stay what the required check ran under.
     job = _job()
     assert job["timeout-minutes"] == 10
-    assert job["permissions"] == {"contents": "read", "pull-requests": "read"}
+    # actions: read lets the check read the code review's evidence, for its raise (#2202).
+    assert job["permissions"] == {"actions": "read", "contents": "read", "pull-requests": "read"}
     assert job["concurrency"] == {
         "group": "risk-tier-${{ github.event.pull_request.number }}",
         "cancel-in-progress": True,
@@ -1239,3 +1330,267 @@ def test_only_the_dependabot_bot_account_skips_the_risk_line(base, author):
             f"`{GRAMMAR_LINE}` (grammar and examples: .github/scripts/risk_tier.md)."
         ],
     )
+
+
+# --- #2202: the CI reviewer may raise the tier, never lower it ---------------------------
+
+RAISED_HOLD = (
+    "HIGH holds until a holder of the releasing role (admin, not a Bot account, not "
+    "osasuwu-bot) leaves an APPROVED review on the current head aaaaaaa; a new push "
+    "needs a new approval. See .github/scripts/risk_tier.md (residual risks)."
+)
+CLEAN = [_file("scripts/x.py")]  # computed LOW
+
+
+def test_a_low_pr_the_reviewer_raises_to_high_holds_naming_the_raise(base):
+    """AC2: findings with a raise go through the producer's validate and build_evidence,
+    into the artifact the check reads; the final tier is the raise."""
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, evidence=_raising("HIGH"))
+    assert _run(base, api) == (
+        False,
+        [
+            "declared LOW, computed LOW, final HIGH\n"
+            "  - reviewer raise to HIGH applied (was LOW): rewrites the token refresh",
+            RAISED_HOLD,
+        ],
+    )
+
+
+def test_the_same_low_pr_without_a_raise_is_green(base):
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN)
+    assert _run(base, api) == (True, ["declared LOW, computed LOW, final LOW"])
+
+
+def test_a_raise_below_the_declared_tier_changes_nothing_and_is_logged(base):
+    api = FakeGitHub(body="Risk: MEDIUM — x", files=CLEAN, evidence=_raising("LOW"))
+    assert _run(base, api) == (
+        True,
+        [
+            "declared MEDIUM, computed LOW, final MEDIUM\n"
+            "  - reviewer raise to LOW not applied: at or below MEDIUM: rewrites the token refresh"
+        ],
+    )
+
+
+def test_a_raise_below_the_computed_tier_changes_nothing_and_is_logged(base):
+    files = [_file("scripts/a.py"), _file("agents/b.py")]  # two areas: computed MEDIUM
+    api = FakeGitHub(body="Risk: LOW — x", files=files, evidence=_raising("LOW"))
+    assert _run(base, api) == (
+        True,
+        [
+            "declared LOW, computed MEDIUM, final MEDIUM\n"
+            "  - classifier ordinal 2\n"
+            "  - reviewer raise to LOW not applied: at or below MEDIUM: rewrites the token refresh"
+        ],
+    )
+
+
+def test_a_raise_equal_to_the_final_tier_changes_nothing_and_is_logged(base):
+    api = FakeGitHub(body="Risk: MEDIUM — x", files=CLEAN, evidence=_raising("MEDIUM"))
+    ok, messages = _run(base, api)
+    assert ok is True
+    assert messages[0] == (
+        "declared MEDIUM, computed LOW, final MEDIUM\n"
+        "  - reviewer raise to MEDIUM not applied: at or below MEDIUM: rewrites the token refresh"
+    )
+
+
+def test_a_raise_to_medium_is_green_at_medium(base):
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, evidence=_raising("MEDIUM"))
+    assert _run(base, api) == (
+        True,
+        [
+            "declared LOW, computed LOW, final MEDIUM\n"
+            "  - reviewer raise to MEDIUM applied (was LOW): rewrites the token refresh"
+        ],
+    )
+
+
+def test_a_newline_in_the_raise_reason_cannot_start_a_workflow_command_line(base):
+    api = FakeGitHub(
+        body="Risk: LOW — x", files=CLEAN, evidence=_raising("MEDIUM", "a\n::error::forged")
+    )
+    _, messages = _run(base, api)
+    assert "\n::" not in messages[0]
+    assert messages[0].endswith("(was LOW): a\\n::error::forged")
+
+
+def test_the_highest_raise_across_attempts_applies(base):
+    """A re-run's raise and an earlier attempt's both stand; the higher one wins."""
+    api = FakeGitHub(
+        body="Risk: LOW — x",
+        files=CLEAN,
+        review_runs=[_review_run(run_attempt=2)],
+        artifacts={
+            REVIEW_RUN: [
+                {"id": 901, "name": "review-evidence-1", "expired": False},
+                {"id": 902, "name": "review-evidence-2", "expired": False},
+            ]
+        },
+        evidence={901: _raising("MEDIUM")[901], 902: _raising("HIGH")[901]},
+    )
+    ok, messages = _run(base, api)
+    assert ok is False
+    assert messages[0] == (
+        "declared LOW, computed LOW, final HIGH\n"
+        "  - reviewer raise to HIGH applied (was LOW): rewrites the token refresh\n"
+        "  - reviewer raise to MEDIUM not applied: at or below HIGH: rewrites the token refresh"
+    )
+
+
+@pytest.mark.parametrize(
+    ("evidence", "artifacts", "why"),
+    [
+        (
+            {901: _evidence_zip(**{"raise": {"tier": "CRITICAL", "reason": "x"}})},
+            None,
+            "review evidence 900:1 is evidence-invalid",
+        ),
+        (
+            {901: _evidence_zip(**{"raise": None})},
+            None,
+            "review evidence 900:1 is evidence-invalid",
+        ),
+        ({901: _evidence_zip(sha=OLD)}, None, "review evidence 900:1 is evidence-sha-mismatch"),
+        ({901: b"not a zip"}, None, "review evidence 900:1 is unreadable"),
+        (
+            None,
+            {REVIEW_RUN: [{"id": 901, "name": "review-evidence-1", "expired": True}]},
+            "review evidence 900:1 is expired",
+        ),
+        (None, {REVIEW_RUN: []}, "review evidence 900:1 is missing"),
+    ],
+    ids=["critical-raise", "null-raise", "other-commit", "undownloadable", "expired", "deleted"],
+)
+def test_evidence_whose_raise_cannot_be_read_holds_at_high(base, evidence, artifacts, why):
+    """Fail closed: a raise that is malformed, or evidence that is gone or unreadable,
+    may hide a raise, so it reads as a raise to HIGH."""
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, evidence=evidence, artifacts=artifacts)
+    ok, messages = _run(base, api)
+    assert ok is False
+    assert messages[0] == (
+        "declared LOW, computed LOW, final HIGH\n"
+        f"  - reviewer raise to HIGH applied (was LOW): {why}: its raise is unknown, fail closed"
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [http_error(500), ValueError("page is not a list")],
+    ids=["http-500", "bad-page"],
+)
+def test_an_unreadable_review_listing_holds_at_high(base, error):
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, review_runs=error)
+    ok, messages = _run(base, api)
+    assert ok is False
+    assert messages[0].startswith(
+        "declared LOW, computed LOW, final HIGH\n"
+        "  - reviewer raise to HIGH applied (was LOW): review evidence unreadable ("
+    )
+
+
+PENDING = (
+    "waiting for the code review of aaaaaaa: {why}; the tier is re-decided when it "
+    "completes, since the reviewer may raise it (#2202)"
+)
+
+
+@pytest.mark.parametrize(
+    ("runs", "artifacts", "why"),
+    [
+        (
+            [_review_run(status="in_progress", conclusion=None)],
+            None,
+            "review run 900 is not finished",
+        ),
+        ([_review_run(conclusion="action_required")], None, "review run 900 is not finished"),
+        ([], None, "no successful review run has left evidence for this commit yet"),
+        (
+            [_review_run(conclusion="failure")],
+            {},
+            "no successful review run has left evidence for this commit yet",
+        ),
+    ],
+    ids=["in-progress", "awaiting-approval", "no-run", "failed-run"],
+)
+def test_the_check_is_red_while_the_review_is_pending(base, runs, artifacts, why):
+    """No review yet means no raise read yet: green now could merge before the raise lands."""
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, review_runs=runs, artifacts=artifacts)
+    assert _run(base, api) == (
+        False,
+        ["declared LOW, computed LOW, final LOW", PENDING.format(why=why)],
+    )
+
+
+def test_a_skipped_review_counts_as_done_with_no_raise(base):
+    """A cosmetic, draft or untrusted PR's review uploads `status: skipped`: no reviewer ran."""
+    skipped = gate.build_skipped_evidence(HEAD, "main", "cosmetic")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("review-evidence.json", json.dumps(skipped))
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, evidence={901: buf.getvalue()})
+    assert _run(base, api) == (True, ["declared LOW, computed LOW, final LOW"])
+
+
+def test_a_host_without_a_review_workflow_reads_no_raise_and_does_not_wait(base):
+    api = FakeGitHub(
+        body="Risk: LOW — x",
+        files=CLEAN,
+        review_workflow=http_error(404, url=f"https://api.github.com/{REVIEW_WORKFLOW}"),
+    )
+    assert _run(base, api) == (
+        True,
+        [
+            "declared LOW, computed LOW, final LOW\n"
+            "  - no .github/workflows/code-review.yml on this repo: no reviewer raise to read"
+        ],
+    )
+    assert not [p for _, p, _ in api.calls if "/runs" in p]
+
+
+def test_an_unreadable_review_workflow_lookup_holds_at_high(base):
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, review_workflow=http_error(500))
+    ok, messages = _run(base, api)
+    assert ok is False
+    assert messages[0].startswith("declared LOW, computed LOW, final HIGH\n")
+
+
+def test_a_pr_into_another_base_reads_no_raise(base):
+    """code-gate decides only PRs into the default branch, so no review evidence binds."""
+    api = FakeGitHub(
+        body="Risk: LOW — x", files=CLEAN, base_ref="release", evidence=_raising("HIGH")
+    )
+    assert _run(base, api) == (
+        True,
+        [
+            "declared LOW, computed LOW, final LOW\n"
+            "  - base release is not the default branch main: no reviewer raise to read"
+        ],
+    )
+
+
+def test_a_raise_on_an_admin_authors_pr_meets_the_unchanged_admin_pass(base):
+    """The raise moves the tier; who may release it is unchanged."""
+    api = FakeGitHub(
+        body="Risk: LOW — x",
+        files=CLEAN,
+        evidence=_raising("HIGH"),
+        author=("alice", "User"),
+        permissions={"alice": "admin"},
+    )
+    ok, messages = _run(base, api)
+    assert ok is True
+    assert messages[-1] == "HIGH hold skipped: author alice has admin permission"
+
+
+def test_main_binds_the_review_although_the_pr_number_arrives_as_a_string(
+    monkeypatch, capsys, base
+):
+    """main reads PR_NUMBER from the environment; the review binds the integer, so a
+    string compared raw would never bind and the check would wait for ever."""
+    api = FakeGitHub(body="Risk: LOW — x", files=CLEAN, evidence=_raising("HIGH"))
+    _main_env(monkeypatch, base)
+    with pytest.raises(SystemExit) as exit_info:
+        risk_tier.main(make_client=lambda token: api)
+    assert exit_info.value.code == 1
+    assert "reviewer raise to HIGH applied (was LOW)" in capsys.readouterr().out

@@ -3,7 +3,10 @@ description: >-
   The `risk-tier` required check (#2004) for a host repo (#2013, D2, D7). The
   classifier runs from this action's own repository at the commit the caller
   pinned; protected paths come from the host's `config/protected-paths.json` at
-  the PR's base commit. A host without that file gets HIGH on every diff.
+  the PR's base commit. A host without that file gets HIGH on every diff. The
+  CI reviewer's tier raise is read from the host's code-review.yml evidence
+  (#2202): the calling job needs `actions: read`; see
+  docs/reference/lane-host-setup.md.
 
 inputs:
   bot-login:

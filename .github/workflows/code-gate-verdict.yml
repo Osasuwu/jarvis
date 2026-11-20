@@ -33,6 +33,12 @@ permissions:
   actions: read
   pull-requests: read
 
+# An explicit `bash` runs every `run:` step with `-eo pipefail` (#2142,
+# tests/ci/test_workflow_run_fail_fast.py).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Emits `targets`, a JSON list of {pr_number, head_sha}. On an event it parses
   # event data only, no network; `[]` means the event is not bound to a PR (e.g. a
@@ -71,9 +77,46 @@ jobs:
           GH_TOKEN: ${{ github.event_name == 'schedule' && secrets.GITHUB_TOKEN || '' }}
         run: python -I .github/scripts/code_gate_verdict.py resolve
 
-  verdict:
+  # The CI reviewer may raise the risk tier through its evidence (#2202). `risk-tier` is a
+  # job of pr-body-check.yml, so only a run of that job changes its check: when a review
+  # completes, re-run it on the reviewed head. The verdict below waits for this, so a green
+  # `code-gate` never lands while `risk-tier` still shows the tier from before the review;
+  # a failed re-run leaves `code-gate` unposted for this event. The one job of this
+  # workflow with a write permission: `actions: write` on GITHUB_TOKEN, no App key.
+  risk-tier-redecide:
     needs: resolve
-    if: needs.resolve.outputs.targets != '[]'
+    if: github.event_name == 'workflow_run' && needs.resolve.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.resolve.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event_name == 'schedule' && github.ref || github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Re-run risk-tier on the reviewed head
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ matrix.target.pr_number }}
+          HEAD_SHA: ${{ matrix.target.head_sha }}
+          REVIEW_COMPLETED_AT: ${{ github.event.workflow_run.updated_at }}
+        run: python -I .github/scripts/risk_tier_redecide.py
+
+  verdict:
+    needs: [resolve, risk-tier-redecide]
+    if: >-
+      !cancelled() && needs.resolve.result == 'success'
+      && needs.resolve.outputs.targets != '[]'
+      && (needs.risk-tier-redecide.result == 'success'
+      || needs.risk-tier-redecide.result == 'skipped')
     runs-on: ubuntu-latest
     # One job per resolved (PR, SHA): an event's one, or every open PR on the
     # schedule. One PR's failure does not cancel the others' verdicts.

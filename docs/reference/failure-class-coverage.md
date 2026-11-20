@@ -34,28 +34,28 @@ most: jarvis neither configures nor reads them back.
 
 | Class | Covered | Partial | Absent | Accepted | Total |
 |---|---|---|---|---|---|
-| absence-read-as-success | 3 | 8 | 1 | 0 | 12 |
+| absence-read-as-success | 4 | 4 | 1 | 3 | 12 |
 | claims-from-plausibility | 3 | 7 | 4 | 2 | 16 |
 | pattern-matched-boundaries | 0 | 16 | 4 | 0 | 20 |
 | irreversible-effects | 1 | 3 | 0 | 8 | 12 |
-| **total** | 7 | 34 | 9 | 10 | 60 |
+| **total** | 8 | 30 | 9 | 13 | 60 |
 
 ## Matrix
 
 | # | Class | Protection | Jarvis gate | Status | Issue |
 |---|---|---|---|---|---|
-| 1 | absence-read-as-success | Prompt: report each check as ran, skipped or missing, not as passed | Prompt only: the PR template's `## Testing` section and the `/implement` skill ask for it; nothing reads it back | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
-| 2 | absence-read-as-success | Platform: know which results your platform counts as passed | Documented in workflow comments (`.github/workflows/pr-body-check.yml`: a skipped job reads as passing); no check | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
+| 1 | absence-read-as-success | Prompt: report each check as ran, skipped or missing, not as passed | Prompt only: the PR template's `## Testing` section and the `/implement` skill ask for it; nothing reads it back | accepted | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
+| 2 | absence-read-as-success | Platform: know which results your platform counts as passed | Documented in workflow comments (`.github/workflows/pr-body-check.yml`: a skipped job reads as passing); no check | accepted | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
 | 3 | absence-read-as-success | Branch rule: make the check required, and read the required list back | `.github/scripts/branch_protection_drift.py` `find_drift`, run daily by `.github/workflows/branch-protection-drift.yml`, compares the live required contexts with `docs/reference/github-repo-setup.md` | covered |  |
 | 4 | absence-read-as-success | Workflow: do not require a skippable job; aggregate with a job that always runs | Required jobs carry no path filter or job `if:` (`.github/workflows/gitleaks.yml`, `.github/workflows/pr-body-check.yml` for require-linked-issue and risk-tier, `.github/workflows/pytest.yml`, `.github/workflows/waiting-human-review.yml`); `code-gate` is a check run posted by `.github/scripts/code_gate_verdict.py`, so a skipped run leaves it pending, not green | covered |  |
-| 5 | absence-read-as-success | Tools: make each tool fail when it has nothing to check | pytest exits 5 on zero collected tests; gitleaks, ruff and the review prepare step have no empty-input check (seeded fixture `absence-read-as-success`) | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
-| 6 | absence-read-as-success | Shell: run steps fail-fast | `.github/workflows/code-review.yml`, `lane.yml`, `lane-watch.yml` and `lane-close.yml` set `set -euo pipefail`; other workflows use the runner default; nothing checks every `run:` step | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
-| 7 | absence-read-as-success | Preflight: fail the job when a tool the check needs is missing | none | absent | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
+| 5 | absence-read-as-success | Tools: make each tool fail when it has nothing to check | pytest exits 5 on zero collected tests; gitleaks, ruff and the review prepare step have no empty-input check (seeded fixture `absence-read-as-success`) | partial | [#2222](https://github.com/Osasuwu/jarvis/issues/2222) |
+| 6 | absence-read-as-success | Shell: run steps fail-fast | `tests/ci/test_workflow_run_fail_fast.py` (required `pytest`) fails on any `run:` step in a workflow or composite action whose effective shell is not an explicit `bash` (`-eo pipefail`) and whose script does not open with `set -euo pipefail`; every workflow with run steps sets `defaults.run.shell: bash` | covered |  |
+| 7 | absence-read-as-success | Preflight: fail the job when a tool the check needs is missing | none | absent | [#2222](https://github.com/Osasuwu/jarvis/issues/2222) |
 | 8 | absence-read-as-success | Heartbeat: alert when a check has not reported a result in time | `.github/scripts/required_check_heartbeat.py` `stale_checks`, run hourly by `.github/workflows/required-check-heartbeat.yml`: a required check (read from live protection) with no result on an open PR's head for 60 min or more turns the scheduled run red, and GitHub emails that to the user who last changed the workflow's `cron` line (if their Actions notifications are on); GitHub drops many scheduled runs, so the alert can come hours late | covered |  |
-| 9 | absence-read-as-success | Verdict: pass only on a positive result from the expected source, for this commit | `.github/scripts/code_gate_verdict.py` `evaluate_pr`: green on reviewed, non-blocking evidence whose SHA is the head, from a run titled for this PR and SHA; but a PR whose every file is cosmetic passes with no review evidence at all, where the Protection asks for an explicit nothing-to-review result from the expected source | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
+| 9 | absence-read-as-success | Verdict: pass only on a positive result from the expected source, for this commit | `.github/scripts/code_gate_verdict.py` `evaluate_pr`: green on reviewed, non-blocking evidence whose SHA is the head, from a run titled for this PR and SHA; but a PR whose every file is cosmetic passes with no review evidence at all, where the Protection asks for an explicit nothing-to-review result from the expected source | partial | [#2223](https://github.com/Osasuwu/jarvis/issues/2223) |
 | 10 | absence-read-as-success | Canary: run the gate against the ways it can be skipped | Unit tests of the skip paths in `tests/ci/test_code_gate_verdict.py`; the seeded-defect harness below (`scripts/seeded_defects.py`); no live canary | partial | [#1935](https://github.com/Osasuwu/jarvis/issues/1935) |
 | 11 | absence-read-as-success | One copy: run the same gate code in every repository | Each owned repo has its own code-review implementation | partial | [#1935](https://github.com/Osasuwu/jarvis/issues/1935) |
-| 12 | absence-read-as-success | Merge queue: run the slow checks on the exact merge before it lands | Strict up-to-date branch protection is the stand-in; a merge queue is not available on a user-owned repo | partial | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
+| 12 | absence-read-as-success | Merge queue: run the slow checks on the exact merge before it lands | Strict up-to-date branch protection is the stand-in; a merge queue is not available on a user-owned repo | accepted | [#2142](https://github.com/Osasuwu/jarvis/issues/2142) |
 | 13 | claims-from-plausibility | Prompt: report only what a tool result from this session shows | Prompt only (SOUL.md, AGENTS.md) | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
 | 14 | claims-from-plausibility | Prompt: after a compaction, treat what the summary carried as unverified | jarvis-private `hooks/post-compact-reminder` injects the reminder; nothing checks it is followed | partial | [#1961](https://github.com/Osasuwu/jarvis/issues/1961) |
 | 15 | claims-from-plausibility | Report: show the evidence, not the verdict | PR template `## Testing` asks for red runs and probes; not checked | partial | [#2144](https://github.com/Osasuwu/jarvis/issues/2144) |
@@ -108,11 +108,16 @@ most: jarvis neither configures nor reads them back.
 ## Accepted gaps
 
 One entry per `accepted` row, by its number: why the gap stays, and what would reopen it.
-Accepted in #2146 (2026-11-16). A new hook, guard or check is weighed by the three questions of
+Rows 1, 2 and 12 accepted in #2142, rows 18 and 20 declined in #2143, the rest accepted in #2146
+(all 2026-11-16). A new hook, guard or check is weighed by the three questions of
 the operator's rules (the incident it catches, what a miss costs, what the check costs); an entry
 that declines one answers them.
-Rows 18 and 20 were declined in #2143 (2026-11-16).
 
+- **1**: The report is free text in a PR body or chat, and no check can read back reliably whether
+  each check ran, was skipped or was missing.
+- **2**: This is knowledge, not a check; rows 3, 4 and 8 enforce what it is for (required list read
+  back, no skippable required job, heartbeat on a missing result).
+- **12**: GitHub offers merge queues only to organization-owned repositories.
 - **18**: The lookalike half: a check that a package which exists is the one intended, not a
   typosquat. (1) Incident: none in jarvis; a malicious lookalike would run with the operator's
   tokens, a leaked-secret catastrophe, so it is weighed anyway. (2) Cost of a miss: it needs a new
