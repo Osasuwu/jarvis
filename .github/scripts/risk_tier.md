@@ -13,11 +13,13 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
 1. The body must carry **exactly one** well-formed `Risk:` line (grammar below). Missing,
    malformed or duplicate → red.
 2. The **computed tier** is the highest of:
-   - **path tier** — HIGH when a changed path (or a rename's old path) matches any bucket
-     (`hitl`, `guarded`, `machinery`, `gate`) of this repo's entry in the host's
-     `config/protected-paths.json` at the base commit, in the glob dialect of
-     `agents/path_policy.py` (#2067). A missing file, or no entry for the repo,
-     is HIGH on every diff (D2), with a reason that points at `docs/reference/lane-host-setup.md`;
+   - **path tier** — HIGH when a changed path (or a rename's old path) matches the `guarded`
+     bucket of this repo's entry in the host's `config/protected-paths.json` at the base
+     commit, in the glob dialect of `agents/path_policy.py` (#2067). The `hitl`, `machinery`
+     and `gate` buckets set no floor (#2200): their paths reach the tier through test
+     weakening and the classifier like any other path. A missing file, or no entry for the
+     repo, is HIGH on every diff (D2), with a reason that points at
+     `docs/reference/lane-host-setup.md`;
    - **test weakening** — HIGH when the PR removes a test function that no file of the PR
      re-adds, removes a test file, touches a test file GitHub could not diff, or adds
      `pytest.mark.skip`, `skipif`, `xfail`, `pytest.skip(`, `pytest.xfail(`,
@@ -96,8 +98,8 @@ approves its current head.
   third-party text.
 - HIGH rather than the computed tier alone: on a host whose protected list omits the dependency
   manifests, the classifier's dependency-bump exemption reads LOW, and a commit a maintainer pushes
-  onto the Dependabot branch would ride it. In jarvis the `machinery` bucket already floors every
-  Dependabot diff (`pyproject.toml`, `uv.lock`, `.github/**`) at HIGH.
+  onto the Dependabot branch would ride it. Since #2200 the `machinery` bucket no longer floors
+  a dependency manifest, so this fixed tier is what holds a Dependabot diff at HIGH.
 
 ## Base-commit trust model
 
@@ -111,8 +113,8 @@ through the API as data and is never checked out, imported or executed. It is a 
 workflow, not `pull_request_target` (D11/D11b). Host setup: `docs/reference/lane-host-setup.md`.
 
 Reconciliation with the classifier's exempt short-circuit (docs-only, dependency-bump, …): the
-exemption lowers only the classifier ordinal. It never lowers the path floor, so a change to a
-dependency manifest or a doc under `docs/security/` stays HIGH through the `machinery` bucket.
+exemption lowers only the classifier ordinal. It never lowers the path floor, so a docs-only
+change to a `guarded` path stays HIGH.
 The one rule that lowers the path floor is the comment-only exemption above. It decides
 from the code on both sides of the diff, never from the paths alone.
 

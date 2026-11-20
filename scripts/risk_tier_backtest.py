@@ -4,13 +4,14 @@ The decision "Three risk tiers; the final tier is computed from the diff, and th
 only raise it" (docs/decisions/2026-Q4.md, PR #2197) keeps these computed inputs and locks their
 thresholds only after this backtest:
 
-- protected paths: a changed path in any bucket of `config/protected-paths.json` -> HIGH
-  (the floor `risk_tier.path_tier` applies today);
+- guarded paths: a changed path in the `guarded` bucket of `config/protected-paths.json`
+  -> HIGH (the floor `risk_tier.path_tier` applies; `hitl`, `machinery` and `gate` set none
+  since #2200);
 - test weakening -> HIGH (`risk_tier.test_weakening`, unchanged);
 - the plan classifier's ordinal -> MEDIUM when churn is above the threshold (lockfiles
   excluded) or the diff touches at least the minimum number of production areas, unless the
   diff is docs-only (`agents.plan_classifier.classify`, thresholds overridden per variant);
-- the comment-only exemption: a protected-path diff drops to LOW when every changed file is
+- the comment-only exemption: a guarded-path diff drops to LOW when every changed file is
   `.py`, the AST is equal before and after, and no directive comment changed. A parse
   failure means no exemption. Computed from the merge commit and its first parent.
 
@@ -332,25 +333,15 @@ def render(results, *, since, until, command, run_date):
             fired[item.split(" (")[0]] += 1
     out += ["", "## Inputs that fired (baseline)", "", "| input | PRs |", "|---|---|"]
     out += [f"| {k} | {v} |" for k, v in sorted(fired.items(), key=lambda kv: -kv[1])]
-    only_mach = [
-        r
-        for r in results
-        if r.tier == "HIGH"
-        and not r.unreadable
-        and not r.weakening
-        and r.buckets
-        and set(r.buckets) <= {"machinery", "gate"}
-    ]
-    without_mach = (counts["HIGH"] - len(only_mach)) / n if n else 0.0
+    unfloored = [r for r in results if r.buckets and "guarded" not in r.buckets]
     kinds = collections.Counter(
         re.split(r": | in ", reason)[0] for r in results for reason in r.weakening
     )
     out += [
         "",
-        f"HIGH from the `machinery`/`gate` buckets alone (no `hitl`/`guarded` path, no test "
-        f"weakening, list readable): {len(only_mach)} of {counts['HIGH']} HIGH PRs. Were those "
-        f"two buckets not to floor the tier, HIGH would be {_pct(without_mach)} "
-        "(those PRs would fall to the classifier's MEDIUM or LOW).",
+        f"Touched a `hitl`, `machinery` or `gate` path but no `guarded` one: {len(unfloored)} "
+        f"PRs, {sum(1 for r in unfloored if r.tier == 'HIGH')} of them HIGH by another input. "
+        "Only the `guarded` bucket floors the tier (#2200).",
         "",
         "Test-weakening reasons (one PR can carry several):",
         "",
@@ -358,11 +349,11 @@ def render(results, *, since, until, command, run_date):
         "|---|---|",
     ]
     out += [f"| {k} | {v} |" for k, v in sorted(kinds.items(), key=lambda kv: -kv[1])]
-    protected = [r for r in results if r.buckets and not r.unreadable]
+    protected = [r for r in results if "guarded" in r.buckets and not r.unreadable]
     all_py = [r for r in protected if not r.exemption_why.startswith("not .py")]
     out += [
         "",
-        f"Comment-only exemption: {len(protected)} PRs touched a protected path, "
+        f"Comment-only exemption: {len(protected)} PRs touched a guarded path, "
         f"{len(all_py)} of them changed only `.py` files, "
         f"{sum(1 for r in protected if r.exemption)} were exempted, "
         f"{sum(1 for r in protected if r.exemption is None)} could not be computed.",

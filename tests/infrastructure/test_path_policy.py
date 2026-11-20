@@ -84,13 +84,17 @@ def test_hitl_wins_over_guarded_and_names_its_matches():
     )
 
 
-def test_a_guarded_match_is_class_2():
-    verdict = path_policy.classify_buckets(["src/a.py", "supabase/x.sql"], BUCKETS)
-    assert (verdict.afk_class, verdict.afk_bucket, verdict.afk_matched) == (
-        2,
-        "guarded",
-        ("supabase/x.sql",),
+def test_a_guarded_match_is_class_2_and_floors_risk_naming_only_guarded_paths():
+    verdict = path_policy.classify_buckets(
+        ["src/a.py", ".github/workflows/x.yml", "supabase/x.sql"], BUCKETS
     )
+    assert (
+        verdict.afk_class,
+        verdict.afk_bucket,
+        verdict.afk_matched,
+        verdict.risk_floor,
+        verdict.risk_matched,
+    ) == (2, "guarded", ("supabase/x.sql",), "HIGH", ("supabase/x.sql",))
 
 
 def test_no_bucket_match_is_low_with_no_class():
@@ -107,19 +111,26 @@ def test_no_bucket_match_is_low_with_no_class():
     )
 
 
-def test_a_machinery_only_match_floors_risk_without_an_afk_class():
-    verdict = path_policy.classify_buckets([".github/workflows/x.yml", "src/a.py"], BUCKETS)
-    assert (verdict.afk_class, verdict.risk_floor, verdict.risk_matched, verdict.machinery) == (
-        None,
-        "HIGH",
-        (".github/workflows/x.yml",),
-        True,
-    )
+# #2200: only `guarded` floors the risk tier; `machinery`, `gate`, `hitl` and unknown buckets
+# set their flags (or AFK class) and no floor.
+@pytest.mark.parametrize(
+    ("paths", "flag"),
+    [
+        ([".github/workflows/x.yml", "src/a.py"], "machinery"),
+        ([".github/scripts/code_gate_verdict.py"], "gate"),
+        (["AGENTS.md"], "hitl"),
+    ],
+    ids=["machinery", "gate", "hitl"],
+)
+def test_a_match_outside_guarded_sets_its_flag_and_no_risk_floor(paths, flag):
+    buckets = {**BUCKETS, "guarded": ["supabase/**"]}
+    verdict = path_policy.classify_buckets(paths, buckets)
+    assert (getattr(verdict, flag), verdict.risk_floor, verdict.risk_matched) == (True, "LOW", ())
 
 
-def test_a_bucket_name_the_policy_does_not_know_still_floors_risk():
+def test_a_bucket_name_the_policy_does_not_know_sets_no_risk_floor():
     verdict = path_policy.classify_buckets(["infra/x.tf"], {"future": ["infra/**"]})
-    assert (verdict.risk_floor, verdict.risk_matched) == ("HIGH", ("infra/x.tf",))
+    assert (verdict.risk_floor, verdict.risk_matched) == ("LOW", ())
 
 
 def test_the_gate_flag_is_set_only_by_the_gate_bucket():
@@ -156,14 +167,19 @@ def test_classify_reads_the_repos_own_entry(tmp_path):
     assert (verdict.afk_class, verdict.afk_matched) == (2, ("x/a.py",))
 
 
-def test_review_md_is_machinery_with_a_high_floor_and_not_gate_machinery():
+def test_review_md_is_guarded_with_a_high_floor_and_not_gate_machinery():
     """The review rules (#2204): an edit is held at HIGH but reviewed like any file. As gate
     machinery every rules edit would need an admin-merge (rejected in docs/decisions/2026-Q4.md,
-    "Local pass before ready, ...")."""
+    "Local pass before ready, ..."). `guarded`, since #2200 left the floor to that bucket alone."""
     verdict = path_policy.load_policy(ROOT / "config" / "protected-paths.json").classify(
         REPO, ["REVIEW.md"]
     )
-    assert (verdict.machinery, verdict.gate, verdict.risk_floor) == (True, False, "HIGH")
+    assert (verdict.afk_bucket, verdict.machinery, verdict.gate, verdict.risk_floor) == (
+        "guarded",
+        False,
+        False,
+        "HIGH",
+    )
 
 
 def test_an_unknown_repo_raises_naming_it(tmp_path):

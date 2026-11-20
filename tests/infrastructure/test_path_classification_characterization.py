@@ -23,7 +23,8 @@ Rows that changed with the move, each a drift fix #2067 names: `supabase` (bare)
 `agents/plan_lock.py` and `agents/path_policy.py` path_tier LOW -> HIGH; gate machinery for
 `.github/actions` (bare), `agents/path_policy.py` and `config/protected-paths.json`
 False -> True. Added since: `.github/scripts/github_client.py`, which the verdict job
-executes, joined the gate bucket (#2068).
+executes, joined the gate bucket (#2068). Changed by #2200: only the `guarded` bucket floors
+`path_tier`, so every jarvis `hitl`, `machinery` and `gate` row went HIGH -> LOW.
 """
 
 from __future__ import annotations
@@ -60,35 +61,35 @@ GUARDED = (2, "guarded")
 #        classifier ordinal, gate machinery)
 EXPECTED = {
     # jarvis hitl
-    "config/SOUL.md": (HITL, NONE, "HIGH", "LOW", 1, False),
-    "AGENTS.md": (HITL, NONE, "HIGH", "LOW", 1, False),
-    ".gitleaks.toml": (HITL, NONE, "HIGH", "LOW", 1, False),
-    ".pre-commit-config.yaml": (HITL, NONE, "HIGH", "LOW", 1, False),
-    ".claude/settings.json": (HITL, NONE, "HIGH", "LOW", 1, False),
+    "config/SOUL.md": (HITL, NONE, "LOW", "LOW", 1, False),
+    "AGENTS.md": (HITL, NONE, "LOW", "LOW", 1, False),
+    ".gitleaks.toml": (HITL, NONE, "LOW", "LOW", 1, False),
+    ".pre-commit-config.yaml": (HITL, NONE, "LOW", "LOW", 1, False),
+    ".claude/settings.json": (HITL, NONE, "LOW", "LOW", 1, False),
     # jarvis guarded, which is also the plan classifier's shared-surface list
     "supabase/sub/f.py": (GUARDED, NONE, "HIGH", "LOW", 2, False),
     "supabase": (GUARDED, NONE, "HIGH", "LOW", 2, False),
     "config/repos.conf": (GUARDED, NONE, "HIGH", "LOW", 2, False),
     # jarvis machinery
-    ".github/sub/f.py": (NONE, NONE, "HIGH", "LOW", 1, False),
-    ".github": (NONE, NONE, "HIGH", "LOW", 1, False),
-    ".claude/sub/f.py": (NONE, NONE, "HIGH", "LOW", 1, False),
-    ".claude": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "agents/plan_classifier.py": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "agents/plan_review_config.py": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "config/plan_review.yaml": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "config/protected-paths.json": (NONE, NONE, "HIGH", "LOW", 1, True),
-    "scripts/to_tickets_afk_fit.py": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "pyproject.toml": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "uv.lock": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "package.json": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "package-lock.json": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "docs/reference/github-repo-setup.md": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "docs/reference/test-quality.md": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "docs/security/sub/f.py": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "docs/security": (NONE, NONE, "HIGH", "LOW", 1, False),
-    ".gitleaksignore": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "SECURITY.md": (NONE, NONE, "HIGH", "LOW", 1, False),
+    ".github/sub/f.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    ".github": (NONE, NONE, "LOW", "LOW", 1, False),
+    ".claude/sub/f.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    ".claude": (NONE, NONE, "LOW", "LOW", 1, False),
+    "agents/plan_classifier.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    "agents/plan_review_config.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    "config/plan_review.yaml": (NONE, NONE, "LOW", "LOW", 1, False),
+    "config/protected-paths.json": (NONE, NONE, "LOW", "LOW", 1, True),
+    "scripts/to_tickets_afk_fit.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    "pyproject.toml": (NONE, NONE, "LOW", "LOW", 1, False),
+    "uv.lock": (NONE, NONE, "LOW", "LOW", 1, False),
+    "package.json": (NONE, NONE, "LOW", "LOW", 1, False),
+    "package-lock.json": (NONE, NONE, "LOW", "LOW", 1, False),
+    "docs/reference/github-repo-setup.md": (NONE, NONE, "LOW", "LOW", 1, False),
+    "docs/reference/test-quality.md": (NONE, NONE, "LOW", "LOW", 1, False),
+    "docs/security/sub/f.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    "docs/security": (NONE, NONE, "LOW", "LOW", 1, False),
+    ".gitleaksignore": (NONE, NONE, "LOW", "LOW", 1, False),
+    "SECURITY.md": (NONE, NONE, "LOW", "LOW", 1, False),
     # redrobot guarded
     "redrobot/driver/sub/f.py": (NONE, GUARDED, "LOW", "HIGH", 1, False),
     "redrobot/driver": (NONE, GUARDED, "LOW", "HIGH", 1, False),
@@ -99,21 +100,21 @@ EXPECTED = {
     "tests/safety": (NONE, GUARDED, "LOW", "HIGH", 1, False),
     "tests/experiments/test_rehearsal_guard.py": (NONE, GUARDED, "LOW", "HIGH", 1, False),
     # code_gate_verdict's gate machinery
-    ".github/workflows/code-review.yml": (NONE, NONE, "HIGH", "LOW", 1, True),
-    ".github/workflows/code-gate-verdict.yml": (NONE, NONE, "HIGH", "LOW", 1, True),
-    ".github/scripts/code_gate_verdict.py": (NONE, NONE, "HIGH", "LOW", 1, True),
-    ".github/scripts/github_client.py": (NONE, NONE, "HIGH", "LOW", 1, True),
-    ".github/actions/sub/f.py": (NONE, NONE, "HIGH", "LOW", 1, True),
-    ".github/actions": (NONE, NONE, "HIGH", "LOW", 1, True),
+    ".github/workflows/code-review.yml": (NONE, NONE, "LOW", "LOW", 1, True),
+    ".github/workflows/code-gate-verdict.yml": (NONE, NONE, "LOW", "LOW", 1, True),
+    ".github/scripts/code_gate_verdict.py": (NONE, NONE, "LOW", "LOW", 1, True),
+    ".github/scripts/github_client.py": (NONE, NONE, "LOW", "LOW", 1, True),
+    ".github/actions/sub/f.py": (NONE, NONE, "LOW", "LOW", 1, True),
+    ".github/actions": (NONE, NONE, "LOW", "LOW", 1, True),
     # outside every list today
-    "agents/plan_lock.py": (NONE, NONE, "HIGH", "LOW", 1, False),
-    "agents/path_policy.py": (NONE, NONE, "HIGH", "LOW", 1, True),
+    "agents/plan_lock.py": (NONE, NONE, "LOW", "LOW", 1, False),
+    "agents/path_policy.py": (NONE, NONE, "LOW", "LOW", 1, True),
     "agents/__init__.py": (NONE, NONE, "LOW", "LOW", 1, False),
     "README.md": (NONE, NONE, "LOW", "LOW", 1, False),
     "docs/guide.md": (NONE, NONE, "LOW", "LOW", 1, False),
     "src/app.py": (NONE, NONE, "LOW", "LOW", 1, False),
-    ".github/workflows/pytest.yml": (NONE, NONE, "HIGH", "LOW", 1, False),
-    ".github/scripts/unblock_ready.py": (NONE, NONE, "HIGH", "LOW", 1, False),
+    ".github/workflows/pytest.yml": (NONE, NONE, "LOW", "LOW", 1, False),
+    ".github/scripts/unblock_ready.py": (NONE, NONE, "LOW", "LOW", 1, False),
 }
 
 

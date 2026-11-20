@@ -125,7 +125,7 @@ Two workflows, split so a PR can never change the rule that judges it:
   rules; its new text is `.pr-head/REVIEW.md.pr`, data under review. `prepare` reads the blob
   SHA before the reviewer runs and fails the job when the base has no `REVIEW.md`; `stamp`
   refuses evidence without that SHA. The verdict does not read `rules` (an additive field,
-  `schema` stays 1). `REVIEW.md` is in the `machinery` bucket (HIGH floor), not `gate`: a rules
+  `schema` stays 1). `REVIEW.md` is in the `guarded` bucket (HIGH floor, #2200), not `gate`: a rules
   edit is reviewed like any file and needs no admin-merge. The class names stay pinned to
   `FINDING_CLASSES` by `tests/ci/test_code_gate_verdict.py`.
 - **The reviewer is contained, not trusted** (#2024). The review job's token is `contents: read`
@@ -342,14 +342,12 @@ optional third, below):
   AFK-eligible once a plan locks) — not a refusal, just a higher bar.
 
 - **`machinery`** (optional) — the CI/process machinery that decides what merges: workflows,
-  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs, the
-  review rules (`REVIEW.md`, #2204). Read only
-  by the `risk-tier` check, from the base commit, never by `/to-tickets`; any changed file
-  matching these globs floors the PR at HIGH. A repo without the bucket still gets the `hitl`
-  and `guarded` floors.
+  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs. Read
+  only by the `risk-tier` check, from the base commit, never by `/to-tickets`. It sets no risk floor (#2200): only `guarded` floors a PR
+  at HIGH.
 - **`gate`** (jarvis only today) — the code-review gate's own machinery. `code_gate_verdict.py`
-  reads it and posts a `gate-machinery` red for any PR touching it; `risk-tier` floors it at
-  HIGH like any other bucket. It holds `.github/scripts/github_client.py` too, since the
+  reads it and posts a `gate-machinery` red for any PR touching it; `risk-tier` sets no floor
+  for it (#2200). It holds `.github/scripts/github_client.py` too, since the
   verdict job executes it (#2068).
 
 Every reader matches these globs through `agents/path_policy.py`, whose docstring defines the
