@@ -1,8 +1,9 @@
 """The jarvis-oss failure-class coverage matrix, docs/reference/failure-class-coverage.md (#2131).
 
 The matrix must hold one row per Protection in the class docs as pinned (60: 12/16/20/12),
-every row a known status, every partial or absent row an issue link, every covered row a
-gate path, and the summary counts must be the table's counts.
+every row a known status, every row not covered an issue link, every covered row a gate path,
+every accepted row (and no other) a reason under *Accepted gaps* (#2146), and the summary
+counts must be the table's counts.
 """
 
 import re
@@ -19,9 +20,13 @@ CLASSES = {
     "pattern-matched-boundaries": 20,
     "irreversible-effects": 12,
 }
-STATUSES = ("covered", "partial", "absent")
+STATUSES = ("covered", "partial", "absent", "accepted")
 _ROW = re.compile(r"^\| (\d+) \| ([a-z-]+) \| (.+?) \| (.*?) \| (\w+) \| (.*?) \|$")
-_SUMMARY = re.compile(r"^\| ([a-z-]+|\*\*total\*\*) \| (\d+) \| (\d+) \| (\d+) \| (\d+) \|$")
+_SUMMARY = re.compile(
+    r"^\| ([a-z-]+|\*\*total\*\*) \| (\d+) \| (\d+) \| (\d+) \| (\d+) \| (\d+) \|$"
+)
+# An entry of the *Accepted gaps* section: "- **<row>**: <reason>" (#2146).
+_ACCEPTED_ENTRY = re.compile(r"^- \*\*(\d+)\*\*: (\S.*)$")
 _ISSUE = re.compile(r"\[#\d+\]\(https://github\.com/Osasuwu/jarvis/issues/\d+\)")
 
 
@@ -61,7 +66,7 @@ def test_every_row_has_a_status_and_the_evidence_it_needs():
         elif status == "covered" and not _names_a_gate(gate):
             bad.append((num, "covered row names no existing gate file"))
         elif status != "covered" and not _ISSUE.search(issue):
-            bad.append((num, "partial/absent row has no issue link"))
+            bad.append((num, f"{status} row has no issue link"))
     assert not bad
 
 
@@ -71,9 +76,29 @@ def test_summary_counts_equal_the_table():
     summary = _summary(text)
     for cls, total in CLASSES.items():
         got = Counter(r[4] for r in rows if r[1] == cls)
-        assert summary[cls] == (got["covered"], got["partial"], got["absent"], total), cls
+        counts = (got["covered"], got["partial"], got["absent"], got["accepted"], total)
+        assert summary[cls] == counts, cls
     got = Counter(r[4] for r in rows)
-    assert summary["**total**"] == (got["covered"], got["partial"], got["absent"], 60)
+    counts = (got["covered"], got["partial"], got["absent"], got["accepted"], 60)
+    assert summary["**total**"] == counts
+
+
+def _accepted_entries(text):
+    """{row number: reason} from the *Accepted gaps* section."""
+    section = text.split("\n## Accepted gaps\n", 1)[1].split("\n## ", 1)[0]
+    return {
+        int(m.group(1)): m.group(2)
+        for line in section.splitlines()
+        if (m := _ACCEPTED_ENTRY.match(line))
+    }
+
+
+def test_every_accepted_row_and_only_those_has_a_reason_under_accepted_gaps():
+    """An accepted gap without its reason reads as a gap nobody decided (#2146 AC3)."""
+    text = DOC.read_text(encoding="utf-8")
+    accepted = {int(r[0]) for r in _rows(text) if r[4] == "accepted"}
+    assert accepted
+    assert set(_accepted_entries(text)) == accepted
 
 
 _SEEDED_ROW = re.compile(

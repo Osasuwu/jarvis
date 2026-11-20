@@ -14,6 +14,11 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    # Minimum release age (#2143): hold a new version 7 days before Dependabot proposes it.
+    # Monthly cadence means a week costs at most one cycle; it covers the usual yank/malware window.
+    # Security updates ignore cooldown. github-actions has no semver keys, so default-days only.
+    cooldown:
+      default-days: 7
     target-branch: main
     groups:
       python-dependencies:
@@ -25,6 +30,11 @@ updates:
     directory: "/"
     schedule:
       interval: monthly
+    # Minimum release age (#2143): hold a new version 7 days before Dependabot proposes it.
+    # Monthly cadence means a week costs at most one cycle; it covers the usual yank/malware window.
+    # Security updates ignore cooldown. github-actions has no semver keys, so default-days only.
+    cooldown:
+      default-days: 7
     target-branch: main
     groups:
       github-actions:

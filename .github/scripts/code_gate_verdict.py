@@ -74,6 +74,10 @@ EVIDENCE_ARTIFACT = "review-evidence"
 EVIDENCE_ARTIFACT_NAME = re.compile(rf"{EVIDENCE_ARTIFACT}-([1-9][0-9]*)")
 EVIDENCE_FILE = "review-evidence.json"
 EVIDENCE_SCHEMA = 1
+# The review rules (#2204): read from the base checkout, their blob SHA stamped into the
+# evidence. An additive field, so `schema` stays 1 and the verdict does not read it.
+RULES_FILE = "REVIEW.md"
+BLOB_SHA = re.compile(r"[0-9a-f]{40}")
 MAX_EVIDENCE_BYTES = 1 << 20
 MAX_ARTIFACT_BYTES = MAX_EVIDENCE_BYTES * 8
 DEPENDABOT = "dependabot[bot]"
@@ -270,12 +274,30 @@ def check_clean_tree(porcelain, findings_path):
     return dirty
 
 
-def build_evidence(findings, sha, base_ref):
+def review_rules_blob():
+    """Blob SHA of `REVIEW.md` in the commit checked out in the cwd, or None.
+
+    The review job's workspace is the base commit, so this names the rules the reviewer
+    reads there, never the PR's edit to them (staged inert under `.pr-head/`). Read by
+    `prepare`, before the reviewer runs; `check-tree` later proves the file unchanged.
+    """
+    out = subprocess.run(
+        ["git", "ls-tree", "HEAD", "--", RULES_FILE],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    m = re.fullmatch(rf"[0-7]{{6}} blob ([0-9a-f]{{40}})\t{re.escape(RULES_FILE)}\n", out)
+    return m.group(1) if m else None
+
+
+def build_evidence(findings, sha, base_ref, rules_blob):
     return {
         "schema": EVIDENCE_SCHEMA,
         "status": "reviewed",
         "sha": sha,
         "base_ref": base_ref,
+        "rules": {"path": RULES_FILE, "blob": rules_blob},
         "blocking": findings["blocking"],
         "findings": findings["findings"],
     } | ({"raise": findings["raise"]} if "raise" in findings else {})
@@ -1181,10 +1203,19 @@ def cmd_prepare(args):
         return 1
     head_sha = pr["head"]["sha"]
     reason = review_skip_reason(pr, files, os.environ["EVENT_NAME"])
+    rules_blob = None
+    if not reason:
+        rules_blob = review_rules_blob()
+        if rules_blob is None:
+            message = f"the base commit has no {RULES_FILE}, so there are no review rules to run"
+            print(f"::error::{message}", file=sys.stderr)
+            _summary(f"**Review not run:** {message}")
+            return 1
     _output("head_sha", head_sha)
     _output("base_ref", pr["base"]["ref"])
     _output("skip_reason", reason)
     if not reason:
+        _output("rules_blob", rules_blob)
         write_head_data(api, pr["head"]["repo"]["full_name"], files, args.head_dir)
     return 0
 
@@ -1228,8 +1259,13 @@ def cmd_stamp(args):
     if validate_findings(findings):
         print("refusing to stamp invalid findings", file=sys.stderr)
         return 1
+    rules_blob = os.environ.get("RULES_BLOB", "")
+    if not BLOB_SHA.fullmatch(rules_blob):
+        print(f"refusing to stamp: RULES_BLOB {rules_blob!r} is not a blob SHA", file=sys.stderr)
+        return 1
     _write_evidence(
-        build_evidence(findings, os.environ["HEAD_SHA"], os.environ["BASE_REF"]), args.out
+        build_evidence(findings, os.environ["HEAD_SHA"], os.environ["BASE_REF"], rules_blob),
+        args.out,
     )
     return 0
 

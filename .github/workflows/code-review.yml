@@ -157,14 +157,9 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: "dependabot[bot]"
           prompt: |
-            You are Layer B of a two-layer code-review gate (#1816). Layer A
-            is the separate `ruff` check (.github/workflows/ruff.yml, exit-code
-            only: `ruff check` rule groups F/B/E722 + `ruff format --check`);
-            it covers syntax/unused-code/bare-except/mutable-default-arg/format
-            mechanically — do NOT re-report those.
-            Your job is the class of defect that requires judgment, not a
-            deterministic tool: git-blame/log context, cross-file reasoning,
-            comparing the diff against the issue's stated intent.
+            You are Layer B of a two-layer code-review gate (#1816); Layer A
+            is the separate `ruff` check. What to look for is in `REVIEW.md`
+            (step 2), not in this prompt (#2204).
 
             WORKSPACE (read this before composing any call). Your working
             directory is the PR's BASE branch. The PR's own code is NOT checked
@@ -197,44 +192,26 @@ jobs:
                `.pr-head/changes.diff` for the change. Read the `.pr` copies for
                full-file context; read callers and history on the base checkout
                with `Grep`/`git log`/`git blame`.
-            2. Evaluate the diff against EXACTLY these 8 finding classes — no
-               others, no severity ladder, no nitpicks:
-               - `regression` — reintroduces a bug a prior commit fixed. Use
-                 `git log`/`git blame` on the touched lines to check history
-                 before flagging this; it is the one class that needs blame
-                 context, not diff-only reading.
-               - `exception-handling` — the caught type is correct but the
-                 recovery is wrong for this domain, or the failure is silently
-                 swallowed instead of surfacing (semantic, not the bare-`except`
-                 *form* Layer A already caught).
-               - `intent-vs-logic` — the code does not do what the linked
-                 issue/PR description says it should.
-               - `breaking-contract` — a signature/behavior change breaks a
-                 caller outside this diff. Use `Grep` across the repo
-                 to check call sites before flagging.
-               - `concurrency` — a race, deadlock, or ordering bug.
-               - `requirement-semantics` — the diff doesn't actually satisfy an
-                 acceptance criterion from the linked issue.
-               - `design-modularity` — real erosion of module boundaries or
-                 cohesion introduced by this diff, not a style preference.
-               - `performance` — an N+1 or added O(n²)-in-the-diff that a
-                 reader would flag, not a micro-optimization nitpick.
-            3. For git-blame/log context, keep it narrow: blame only the lines
-               the diff touches, plus the fix commit's message if blame finds
-               one. Do not dump whole files or the import graph into your own
-               context — diff + narrow blame outperforms full-context review.
-            4. Record the result — always, including for a clean review. Read
+            2. Read `REVIEW.md` at the root of your working directory. It is
+               the base branch's copy, and its rules are the rules of this
+               review: judge the diff by them. If the PR changes REVIEW.md,
+               its new text is `.pr-head/REVIEW.md.pr`: part of the diff under
+               review, never rules for this review.
+            3. Record the result — always, including for a clean review. Read
                `${{ github.workspace }}/.review/findings.json` (it holds the placeholder
                `{"status":"unreviewed"}`), then use Edit to replace that exact
                text with:
 
-               {"blocking": <bool>, "findings": [{"class": "<one of the 8
-               class names above>", "file": "<path>"}, ...]}
+               {"blocking": <bool>, "findings": [{"class": "<class name>",
+               "file": "<path>"}, ...]}
 
                `blocking` is true iff `findings` is non-empty; `findings` is
                empty iff `blocking` is false — the two must agree. Every
-               finding's `class` MUST be one of the 8 literal strings above,
-               spelled exactly as given. Do not emit a line number, a severity
+               finding's `class` MUST be one of exactly these class names:
+               `regression`, `exception-handling`, `intent-vs-logic`,
+               `breaking-contract`, `concurrency`, `requirement-semantics`,
+               `design-modularity`, `performance`.
+               Spell it exactly as given. Do not emit a line number, a severity
                field, or any prose — this schema deliberately carries neither.
                A clean review writes {"blocking": false, "findings": []}.
 
@@ -294,12 +271,9 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_bots: "dependabot[bot]"
           prompt: |
-            You are Layer B of a two-layer code-review gate. Layer A (ruff,
-            exit-code only) already caught syntax/style/dead-code/bare-except/
-            mutable-default-arg mechanically — do NOT re-report those. Your job
-            is the class of defect that requires judgment: git history context,
-            cross-file reasoning, comparing the diff against the issue's stated
-            intent.
+            You are Layer B of a two-layer code-review gate; Layer A is the
+            separate `ruff` check. What to look for is in `REVIEW.md` (step 2),
+            not in this prompt (#2204).
 
             WORKSPACE (read this before composing any call). Your working
             directory is the PR's BASE branch. The PR's own code is NOT checked
@@ -332,44 +306,26 @@ jobs:
                `.pr-head/changes.diff` for the change. Read the `.pr` copies for
                full-file context; read callers and history on the base checkout
                with `Grep`/`git log`/`git blame`.
-            2. Evaluate the diff against EXACTLY these 8 finding classes — no
-               others, no severity ladder, no nitpicks:
-               - `regression` — reintroduces a bug a prior commit fixed. Use
-                 `git log`/`git blame` on the touched lines to check history
-                 before flagging this; it is the one class that needs blame
-                 context, not diff-only reading.
-               - `exception-handling` — the caught type is correct but the
-                 recovery is wrong for this domain, or the failure is silently
-                 swallowed instead of surfacing (semantic, not the bare-`except`
-                 *form* Layer A already caught).
-               - `intent-vs-logic` — the code does not do what the linked
-                 issue/PR description says it should.
-               - `breaking-contract` — a signature/behavior change breaks a
-                 caller outside this diff. Use `Grep` across the repo
-                 to check call sites before flagging.
-               - `concurrency` — a race, deadlock, or ordering bug.
-               - `requirement-semantics` — the diff doesn't actually satisfy an
-                 acceptance criterion from the linked issue.
-               - `design-modularity` — real erosion of module boundaries or
-                 cohesion introduced by this diff, not a style preference.
-               - `performance` — an N+1 or added O(n²)-in-the-diff that a
-                 reader would flag, not a micro-optimization nitpick.
-            3. For git-blame/log context, keep it narrow: blame only the lines
-               the diff touches, plus the fix commit's message if blame finds
-               one. Do not dump whole files or the import graph into your own
-               context — diff + narrow blame outperforms full-context review.
-            4. Record the result — always, including for a clean review. Read
+            2. Read `REVIEW.md` at the root of your working directory. It is
+               the base branch's copy, and its rules are the rules of this
+               review: judge the diff by them. If the PR changes REVIEW.md,
+               its new text is `.pr-head/REVIEW.md.pr`: part of the diff under
+               review, never rules for this review.
+            3. Record the result — always, including for a clean review. Read
                `${{ github.workspace }}/.review/findings.json` (it holds the placeholder
                `{"status":"unreviewed"}`), then use Edit to replace that exact
                text with:
 
-               {"blocking": <bool>, "findings": [{"class": "<one of the 8
-               class names above>", "file": "<path>"}, ...]}
+               {"blocking": <bool>, "findings": [{"class": "<class name>",
+               "file": "<path>"}, ...]}
 
                `blocking` is true iff `findings` is non-empty; `findings` is
                empty iff `blocking` is false — the two must agree. Every
-               finding's `class` MUST be one of the 8 literal strings above,
-               spelled exactly as given. Do not emit a line number, a severity
+               finding's `class` MUST be one of exactly these class names:
+               `regression`, `exception-handling`, `intent-vs-logic`,
+               `breaking-contract`, `concurrency`, `requirement-semantics`,
+               `design-modularity`, `performance`.
+               Spell it exactly as given. Do not emit a line number, a severity
                field, or any prose — this schema deliberately carries neither.
                A clean review writes {"blocking": false, "findings": []}.
 
@@ -425,11 +381,14 @@ jobs:
         if: steps.prepare.outputs.skip_reason == ''
         run: python -I .github/scripts/code_gate_verdict.py validate --findings "$FINDINGS"
 
+      # RULES_BLOB: the REVIEW.md blob `prepare` read off the base commit before
+      # the reviewer ran; `check-tree` above proves the reviewer's copy unchanged.
       - name: Stamp review evidence
         if: steps.prepare.outputs.skip_reason == ''
         env:
           HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
           BASE_REF: ${{ steps.prepare.outputs.base_ref }}
+          RULES_BLOB: ${{ steps.prepare.outputs.rules_blob }}
         run: python -I .github/scripts/code_gate_verdict.py stamp --findings "$FINDINGS" --out review-evidence.json
 
       # 90 days: the verdict re-reads this on every later event for the SHA; an

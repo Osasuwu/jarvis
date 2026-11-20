@@ -110,7 +110,7 @@ Two workflows, split so a PR can never change the rule that judges it:
   write grant is `Edit(/${{ github.workspace }}/.review/findings.json)` — absolute once expanded,
   so a reviewer that `cd`s still writes the seeded file (#2179). Deterministic base steps then validate the
   findings, enforce `blocking ⇔ findings non-empty`, check the tree is clean, stamp `sha` /
-  `base_ref`, and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
+  `base_ref` and `rules` (the `REVIEW.md` blob SHA), and upload `review-evidence.json` as the artifact `review-evidence-<run_attempt>`
   (one per attempt, `overwrite: false`, 90-day retention). A re-run still deletes the earlier
   attempts' artifacts, so the verdict keeps a blocking result in its own ledger, not in the
   artifact (#2062); the upload is the review job's last step and runs unconditionally, so an
@@ -119,6 +119,15 @@ Two workflows, split so a PR can never change the rule that judges it:
   superseded run (a push, a dispatch or a base change); a title/body edit gets a per-run group so
   it never cancels the review in flight (#2044). The PR comment is for humans only and is never
   parsed.
+- **The rules are `REVIEW.md` on the base commit** (#2204). The prompt carries the workspace
+  limits and the findings schema; what to look for is in root `REVIEW.md`, which the reviewer
+  reads from its base checkout. A PR that edits `REVIEW.md` is therefore reviewed under the old
+  rules; its new text is `.pr-head/REVIEW.md.pr`, data under review. `prepare` reads the blob
+  SHA before the reviewer runs and fails the job when the base has no `REVIEW.md`; `stamp`
+  refuses evidence without that SHA. The verdict does not read `rules` (an additive field,
+  `schema` stays 1). `REVIEW.md` is in the `machinery` bucket (HIGH floor), not `gate`: a rules
+  edit is reviewed like any file and needs no admin-merge. The class names stay pinned to
+  `FINDING_CLASSES` by `tests/ci/test_code_gate_verdict.py`.
 - **The reviewer is contained, not trusted** (#2024). The review job's token is `contents: read`
   + `pull-requests: read` with no `id-token`, and both reviewer steps pass it as `github_token`,
   so the reviewer's `gh` cannot write and the action cannot mint a write-scoped App token over
@@ -158,6 +167,53 @@ fail-open gate. Change the block and the live setting together
   "risk-tier": 15368
 }
 ```
+
+**Rulesets: history of the default branch and release tags (#2146).** The same probe also goes red
+unless force pushes and deletion of the default branch are confirmed blocked, by an active
+ruleset rule (`GET /repos/<owner>/<repo>/rules/branches/<default>`) or by classic protection's
+`allow_force_pushes` / `allow_deletions`. The job's `GITHUB_TOKEN` can read only the first:
+classic protection needs Administration: read, which a workflow token cannot be given. Classic
+protection on `main` blocks both today (read back with an admin token, 2026-11-16), so until the
+branch ruleset below exists the scheduled run is red for want of a readable source, not for a
+real change.
+
+Two rulesets, **not applied** as of 2026-11-16 (a repository setting is the human's to change):
+
+- `default-branch-history`: blocks deletion and non-fast-forward pushes on the default branch,
+  in a form the job token can read back.
+- `release-tags`: blocks deletion and update (a force-moved tag) of `v*` tags, so a published
+  release keeps pointing at the commit it was cut from. Creating a tag stays open, so
+  `weekly-release` still publishes; it never moves or deletes a tag (its error path forbids
+  `--force`). Until it exists, a release tag can be deleted or moved by any token with push
+  access, the operator's included.
+
+No bypass actors on either: whoever needs to move a tag disables the ruleset for that change, in
+the UI, on purpose.
+
+```json
+{
+  "name": "default-branch-history",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+  "rules": [{"type": "deletion"}, {"type": "non_fast_forward"}]
+}
+```
+
+```json
+{
+  "name": "release-tags",
+  "target": "tag",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+  "rules": [{"type": "deletion"}, {"type": "update"}]
+}
+```
+
+Apply each with `gh api -X POST repos/<owner>/<repo>/rulesets --input <file>.json`; read back with
+`gh api repos/<owner>/<repo>/rulesets` and `gh api repos/<owner>/<repo>/rules/branches/<default>`.
 
 `code-gate` is **green iff**:
 
@@ -286,7 +342,8 @@ optional third, below):
   AFK-eligible once a plan locks) — not a refusal, just a higher bar.
 
 - **`machinery`** (optional) — the CI/process machinery that decides what merges: workflows,
-  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs. Read only
+  hooks, the plan classifier and this file, dependency manifests, the merge-gate docs, the
+  review rules (`REVIEW.md`, #2204). Read only
   by the `risk-tier` check, from the base commit, never by `/to-tickets`; any changed file
   matching these globs floors the PR at HIGH. A repo without the bucket still gets the `hitl`
   and `guarded` floors.

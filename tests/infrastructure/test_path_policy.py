@@ -156,6 +156,16 @@ def test_classify_reads_the_repos_own_entry(tmp_path):
     assert (verdict.afk_class, verdict.afk_matched) == (2, ("x/a.py",))
 
 
+def test_review_md_is_machinery_with_a_high_floor_and_not_gate_machinery():
+    """The review rules (#2204): an edit is held at HIGH but reviewed like any file. As gate
+    machinery every rules edit would need an admin-merge (rejected in docs/decisions/2026-Q4.md,
+    "Local pass before ready, ...")."""
+    verdict = path_policy.load_policy(ROOT / "config" / "protected-paths.json").classify(
+        REPO, ["REVIEW.md"]
+    )
+    assert (verdict.machinery, verdict.gate, verdict.risk_floor) == (True, False, "HIGH")
+
+
 def test_an_unknown_repo_raises_naming_it(tmp_path):
     policy = _policy(tmp_path, {REPO: {"hitl": []}})
     with pytest.raises(path_policy.UnknownRepoError, match="other/repo"):
