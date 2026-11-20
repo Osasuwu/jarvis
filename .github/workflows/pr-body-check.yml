@@ -214,6 +214,6 @@ jobs:
     # repo's base checkout; the action reads only `config/` from the base. Same
     # SHA as the lane callers. Pin-bump procedure: docs/reference/lane-host-setup.md.
     steps:
-      - uses: Osasuwu/jarvis/.github/actions/risk-tier@2d4b5aeb9b3ff8a0a6c204ccadbec81aea04ad0d
+      - uses: Osasuwu/jarvis/.github/actions/risk-tier@471e75da5b25d6d8b6d6d6b60a6fba653e07a74c
         with:
           bot-login: osasuwu-bot
