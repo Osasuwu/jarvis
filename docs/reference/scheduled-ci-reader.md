@@ -1,7 +1,7 @@
 # Scheduled CI reader
 
-Pull-only reference for `scripts/scheduled_ci_reader.py` (#2225). Decision:
-`docs/decisions/2026-Q4.md`, 2026-11-18.
+Pull-only reference for `scripts/scheduled_ci_reader.py` (#2225, alert rule changed in #2229).
+Decisions: `docs/decisions/2026-Q4.md`, the two 2026-11-18 entries.
 
 ## What it is
 
@@ -10,13 +10,20 @@ a red one. The reader is run once a morning by a desktop scheduled task on the r
 reads the run history of every workflow in `config/scheduled-ci.conf` through `gh` and sends to
 Telegram, through `scripts/notify_telegram.py`:
 
-- **an alert** on the first red run of a workflow, and again when the set of failing jobs
-  changes. A red streak with the same failing jobs sends nothing more;
+- **an alert** on the first red run of a workflow, and again when a job fails that this red
+  streak has not named yet. A red run whose failing jobs were all named already sends nothing;
 - **a summary** every Monday, one line per watched workflow (runs and red runs of the week
   before), also when everything is green. A Monday with no summary means the reader is down.
 
 It sends messages only. It opens no PR, reruns nothing and blocks nothing, so it is not a gate.
-Diagnosing and fixing a red run is a separate agent (#2226), not part of the reader.
+Diagnosing and fixing a red run is the fixer's part (#2226, [`scheduled-ci-fixer.md`](scheduled-ci-fixer.md)),
+not the reader's.
+
+**Deferred mode.** The fixer runs the reader with `run(defer=True)`. An alert is then not sent
+but stored as one item per workflow in `pending.json` in the state directory, and that
+workflow's state is not committed: the fixer sends the item with what the agent did and commits
+the state with it. Summaries and green workflows are handled as in a plain run. The plain
+command below has no such flag and behaves as before.
 
 ## Watch list
 
@@ -46,8 +53,13 @@ Adding a scheduled check is one new line.
   keeps its newest alerts and says how many earlier ones were left out; a single over-long
   alert is cut before its link.
 - A red run with no red job (a `startup_failure`) is named `(no failed job: <conclusion>)`.
-- A failing-job set that flips between two values night after night (one flaky job) alerts on
-  every flip: each is a changed set.
+- A red streak runs from its first red run to the next green one. Every job an alert has named
+  in it is remembered, and a later run alerts only when one of its failing jobs is not among
+  them; the alert says which (`new failing jobs: …`) and lists the run's whole failing set. So
+  a failing-job set that flips night after night (one flaky job) alerts once per job, not on
+  every flip, and a job that stops failing while the run stays red is not reported. A green
+  run ends the streak and clears the named jobs: the same job failing afterwards is a new red
+  run (#2229).
 - The summary is due when the most recent Monday is later than the last summary sent, so a host
   that was off on Monday sends it on its next run. It counts finished runs created from that
   Monday minus 7 days up to the Sunday.
@@ -60,9 +72,11 @@ Adding a scheduled check is one new line.
 State and the send log live on the machine, never in the repo: `~/.jarvis/scheduled-ci/`
 (`--state-dir` overrides it).
 
-- `state.json`: per workflow the last handled run and the open red streak with its failing
-  jobs; the Monday of the last summary. A workflow's state is written only after its message
-  was sent, so a failed send is retried the next morning.
+- `state.json`: per workflow the last handled run and the open red streak (`jobs`: the failing
+  set of its last red run; `named`: every job reported in it; `since`); the Monday of the last
+  summary. A streak stored before #2229 has no `named`, and its `jobs` are taken as named. A
+  workflow's state is written only after its message was sent, so a failed send is retried the
+  next morning.
 - `log.jsonl`: one line per send attempt: UTC time, `kind` (`alert` or `summary`), workflow (or
   `all`), `result` (`ok` or `failed`). No credential is ever written.
 

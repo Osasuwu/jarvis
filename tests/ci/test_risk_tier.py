@@ -6,6 +6,7 @@ the diff, and holds a non-admin author's HIGH/CRITICAL until a holder of the rel
 file; expected values are literals.
 """
 
+import base64
 import importlib.util
 import json
 import re
@@ -35,6 +36,8 @@ lane_publish = _load("lane_publish")
 REPO = "Osasuwu/jarvis"
 HEAD = "a" * 40
 OLD = "b" * 40
+BASE_TIP = "c" * 40
+MERGE_BASE = "d" * 40
 GRAMMAR_LINE = "Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>"
 BASE_LIST = {
     REPO: {
@@ -70,16 +73,21 @@ class FakeGitHub(FakeApi):
         head=HEAD,
         changed_files=None,
         author=("carol", "User"),
+        contents=None,
+        merge_base=MERGE_BASE,
     ):
         self.pr = {
             "body": body,
             "user": {"login": author[0], "type": author[1]},
             "head": {"sha": head},
+            "base": {"sha": BASE_TIP},
             "changed_files": len(files) if changed_files is None else changed_files,
         }
         self.files = list(files)
         self.reviews = list(reviews)
         self.permissions = permissions or {}
+        self.contents = contents or {}
+        self.merge_base = merge_base
         prefix = f"repos/{REPO}/pulls/7"
         super().__init__(
             {
@@ -87,8 +95,32 @@ class FakeGitHub(FakeApi):
                 f"{prefix}/files?": self._page(self.files),
                 f"{prefix}/reviews?": self._page(self.reviews),
                 f"repos/{REPO}/collaborators/": self._permission,
+                f"repos/{REPO}/compare/": self._compare,
+                f"repos/{REPO}/contents/": self._content,
             }
         )
+
+    def _compare(self, method, path, body):
+        if path.partition("?")[0] != f"repos/{REPO}/compare/{BASE_TIP}...{self.pr['head']['sha']}":
+            return AssertionError(f"unexpected API call: {path}")
+        if isinstance(self.merge_base, BaseException):
+            return self.merge_base
+        return {"merge_base_commit": {"sha": self.merge_base}}
+
+    def _content(self, method, path, body):
+        """`contents[(path, ref)]`: bytes become a base64 file entry, anything else is the
+        answer as given; an unknown path or ref is a 404."""
+        m = re.fullmatch(rf"repos/{REPO}/contents/(.+)\?ref=(\w+)", path)
+        entry = self.contents.get((m.group(1), m.group(2))) if m else None
+        if entry is None:
+            return http_error(404, url=f"https://api.github.com/{path}")
+        if isinstance(entry, bytes):
+            return {
+                "type": "file",
+                "encoding": "base64",
+                "content": base64.b64encode(entry).decode(),
+            }
+        return entry
 
     def _pr(self, method, path, body):
         if path != f"repos/{REPO}/pulls/7":
@@ -207,10 +239,10 @@ def test_a_bad_risk_line_is_red_and_names_the_expected_grammar(base, body, probl
 
 
 def test_a_guarded_path_reads_high_whatever_the_declared_line(base):
-    ok, messages = _run(base, FakeGitHub(body="Risk: LOW — x", files=[_file("shared/x.py")]))
+    ok, messages = _run(base, FakeGitHub(body="Risk: LOW — x", files=[_file("shared/x.sql")]))
     assert ok is False
     assert (
-        messages[0] == "declared LOW, computed HIGH, final HIGH\n  - guarded path(s): shared/x.py"
+        messages[0] == "declared LOW, computed HIGH, final HIGH\n  - guarded path(s): shared/x.sql"
     )
 
 
@@ -229,7 +261,7 @@ def test_a_path_in_a_bucket_other_than_guarded_sets_no_floor(base, path):
 # The real list, read from this checkout: its `guarded` members floor at HIGH, and members of
 # `machinery`, `gate` and `hitl` do not (#2200). Each path's bucket is asserted first, so a
 # path dropped from its bucket fails here instead of passing as LOW for the wrong reason.
-REAL_GUARDED = ["supabase/migrations/x.sql", "config/repos.conf"]
+REAL_GUARDED = ["supabase/migrations/x.sql", "config/repos.conf", "REVIEW.md"]
 REAL_UNFLOORED = {
     ".gitleaksignore": "machinery",
     "SECURITY.md": "machinery",
@@ -417,6 +449,269 @@ def test_an_unreadable_plan_review_config_reads_high(base, tmp_path):
     assert reasons[0].startswith("plan_review.yaml unreadable (")
 
 
+# --- #2201: the comment-only exemption on protected paths --------------------------------
+# A protected-path diff loses its path floor only when every changed file is `.py`, both sides
+# parse to the same AST, and every directive comment is unchanged and in place. Anything the
+# rule cannot read keeps the floor.
+
+SCRIPT = "shared/x.py"  # guarded bucket here, one production area, no shared surface
+SCRIPT_FLOOR = ("HIGH", [f"guarded path(s): {SCRIPT}"])
+CODE = b'"""Doc."""\nimport os  # noqa: F401\n\n\ndef f():  # why f\n    return 1\n'
+
+
+def _with_sources(base, sources, files=None, note=""):
+    """`computed_tier` on modified files, with `read_sources` answering `sources`."""
+    files = files or [_file(path) for path in sources]
+    return risk_tier.computed_tier(
+        files, len(files), REPO, base, read_sources=lambda: (sources, note)
+    )
+
+
+def test_a_comment_only_edit_on_a_protected_path_drops_to_low_and_says_so(base):
+    # an own-line comment above a directive, a reworded trailing one, one at the end
+    after = (
+        CODE.replace(b"import os", b"# about os\nimport os").replace(
+            b"# why f", b"# why f, reworded"
+        )
+        + b"# the end\n"
+    )
+    assert _with_sources(base, {SCRIPT: (CODE, after)}) == (
+        "LOW",
+        [f"comment-only exemption: protected path(s) {SCRIPT} changed in comments only"],
+    )
+    # `supabase/**` is the guarded bucket here and the classifier's shared surface too.
+    guarded = "supabase/functions/f.py"
+    assert _with_sources(base, {guarded: (CODE, after)}) == (
+        "LOW",
+        [f"comment-only exemption: protected path(s) {guarded} changed in comments only"],
+    )
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        CODE.replace(b'"""Doc."""', b'"""Doc, reworded."""'),
+        CODE.replace(b"return 1", b"return 2"),
+        CODE.replace(b"# noqa: F401", b"# noqa: E501"),
+        CODE.replace(b"  # noqa: F401", b""),
+        CODE.replace(b"  # noqa: F401", b"").replace(b"# why f", b"# noqa: F401"),
+        CODE.replace(b"# why f", b"# why f  # type: ignore"),
+        CODE.replace(b"# why f", b"# pragma: no cover"),
+        CODE.replace(b"# why f", b"# fmt: skip"),
+        CODE.replace(b"# why f", b"# Pylint: disable=invalid-name"),
+        b"#!/usr/bin/env python\n" + CODE,
+        b"# -*- coding: latin-1 -*-\n" + CODE,
+    ],
+    ids=[
+        "docstring",
+        "code",
+        "noqa code changed",
+        "noqa dropped",
+        "noqa moved",
+        "type: ignore added",
+        "pragma",
+        "fmt:",
+        "a directive in another case",
+        "shebang",
+        "coding cookie",
+    ],
+)
+def test_a_docstring_code_or_directive_change_keeps_the_floor(base, after):
+    assert _with_sources(base, {SCRIPT: (CODE, after)}) == SCRIPT_FLOOR
+
+
+@pytest.mark.parametrize(
+    ("sources", "files"),
+    [
+        ({SCRIPT: (b"def f(:\n", b"def f(:  # x\n")}, None),
+        # sides that would pass as Python, so only the extension can refuse it
+        ({SCRIPT: (CODE, CODE + b"# x\n"), "docs/a.md": (b"a\n", b"a  # x\n")}, None),
+        ({SCRIPT: (CODE, CODE + b"# x\n")}, [_file(SCRIPT), _file("docs/a.md")]),
+        ({"shared/x.pyi": (b"x: int\n", b"x: int  # x\n")}, None),
+        ({SCRIPT: (None, CODE)}, None),
+        ({SCRIPT: (CODE, None)}, None),
+        (None, [_file(SCRIPT)]),
+        ({SCRIPT: (b"x = '\xff'\n", b"x = '\xff'  # x\n")}, None),
+        ({SCRIPT: (CODE, CODE + b"# note\r# ruff: noqa\n")}, None),
+        ({SCRIPT: (CODE, CODE.replace(b"F401", b"F401\r# ruff: noqa"))}, None),
+        (
+            {SCRIPT: (CODE, CODE + b"# x\n")},
+            [_file(SCRIPT, status="renamed", previous_filename="scripts/old.py")],
+        ),
+    ],
+    ids=[
+        "does not parse",
+        "a non-.py file beside it",
+        "a non-.py file with no source",
+        ".pyi",
+        "added",
+        "removed",
+        "no sources",
+        "invalid UTF-8",
+        "a lone CR at the end of the file",
+        "a lone CR after a trailing comment",
+        "renamed",
+    ],
+)
+def test_what_the_rule_cannot_read_keeps_the_floor(base, sources, files):
+    tier, reasons = _with_sources(base, sources, files)
+    floor = [
+        f["filename"] for f in files or [_file(p) for p in sources] if f["filename"] != "docs/a.md"
+    ]
+    assert tier == "HIGH"
+    assert [r for r in reasons if r.startswith(("guarded", "comment-only"))] == [
+        f"guarded path(s): {floor[0]}"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        (b"x = f(\n    1,\n    # nosec\n    2,\n)\n", b"x = f(\n    1,  # nosec\n    2,\n)\n"),
+        (b"#!/usr/bin/env python\nx = 1\n", b"# note\n#!/usr/bin/env python\nx = 1\n"),
+        (b"# coding: utf-8\nx = 1\n", b"# note\n\n# coding: utf-8\nx = 1\n"),
+    ],
+    ids=[
+        "onto a line of code",
+        "shebang pushed down",
+        "coding cookie pushed down",
+    ],
+)
+def test_a_directive_moved_to_another_line_keeps_the_floor(base, before, after):
+    assert _with_sources(base, {SCRIPT: (before, after)}) == SCRIPT_FLOOR
+
+
+def test_a_path_in_the_reason_cannot_start_a_workflow_command(base):
+    path = "supabase/a\n::error::x.py"
+    shown = "supabase/a\\n::error::x.py"
+    comments = (CODE, CODE + b"# x\n")
+    assert _with_sources(base, {path: comments}) == (
+        "LOW",
+        [f"comment-only exemption: protected path(s) {shown} changed in comments only"],
+    )
+    code = (CODE, CODE.replace(b"return 1", b"return 2"))
+    assert _with_sources(base, {path: code}) == (  # supabase/** is the shared surface too
+        "HIGH",
+        [f"guarded path(s): {shown}", "classifier ordinal 2"],
+    )
+
+
+def test_the_exemption_lowers_only_the_path_floor(base):
+    after = CODE + b"# x\n"
+    churned = [_file(SCRIPT, additions=500)]
+    assert _with_sources(base, {SCRIPT: (CODE, after)}, churned) == (
+        "MEDIUM",
+        [
+            f"comment-only exemption: protected path(s) {SCRIPT} changed in comments only",
+            "classifier ordinal 2",
+        ],
+    )
+    test_file = "shared/tests/test_x.py"
+    weakened = [_file(test_file, patch="@@ -1 +1,2 @@\n x = 1\n+# pytest.mark.skip")]
+    assert _with_sources(
+        base, {test_file: (b"x = 1\n", b"x = 1\n# pytest.mark.skip\n")}, weakened
+    ) == (
+        "HIGH",
+        [
+            f"comment-only exemption: protected path(s) {test_file} changed in comments only",
+            f"skip/xfail added in {test_file}: # pytest.mark.skip",
+        ],
+    )
+
+
+def _exempt_line(*paths):
+    return f"comment-only exemption: protected path(s) {', '.join(paths)} changed in comments only"
+
+
+def _sides(paths, before=CODE, after=CODE + b"# x\n"):
+    """`contents` for FakeGitHub: each path at the merge base and at the head."""
+    return {k: v for p in paths for k, v in (((p, MERGE_BASE), before), ((p, HEAD), after))}
+
+
+def _source_reads(api):
+    return [p for _, p, _ in api.calls if "/compare/" in p or "/contents/" in p]
+
+
+def test_evaluate_reads_the_two_sides_at_the_merge_base_and_the_head(base):
+    # the base tip moved on since the branch point: its version is not the PR's "before"
+    contents = {**_sides([SCRIPT]), (SCRIPT, BASE_TIP): CODE.replace(b"return 1", b"return 3")}
+    api = FakeGitHub(body="Risk: LOW — x", files=[_file(SCRIPT)], contents=contents)
+    assert _run(base, api) == (
+        True,
+        [f"declared LOW, computed LOW, final LOW\n  - {_exempt_line(SCRIPT)}"],
+    )
+
+
+_NOT_A_FILE = {"type": "dir", "encoding": "base64", "content": ""}
+_TOO_LARGE = {"type": "file", "encoding": "none", "content": ""}
+_NOT_INLINE = f"{SCRIPT}@{HEAD[:7]} is not an inline file"
+
+
+@pytest.mark.parametrize(
+    ("contents", "merge_base", "why"),
+    [
+        ({(SCRIPT, MERGE_BASE): CODE}, MERGE_BASE, "HTTP Error 404: error"),
+        ({**_sides([SCRIPT]), (SCRIPT, HEAD): _TOO_LARGE}, MERGE_BASE, _NOT_INLINE),
+        ({**_sides([SCRIPT]), (SCRIPT, HEAD): _NOT_A_FILE}, MERGE_BASE, _NOT_INLINE),
+        ({**_sides([SCRIPT]), (SCRIPT, HEAD): []}, MERGE_BASE, _NOT_INLINE),
+        (_sides([SCRIPT]), http_error(500), "HTTP Error 500: error"),
+    ],
+    ids=[
+        "missing at the head",
+        "too large to inline",
+        "not a file",
+        "a directory",
+        "compare fails",
+    ],
+)
+def test_an_unreadable_source_keeps_the_floor_and_says_why(base, contents, merge_base, why):
+    api = FakeGitHub(
+        body="Risk: LOW — x", files=[_file(SCRIPT)], contents=contents, merge_base=merge_base
+    )
+    ok, messages = _run(base, api)
+    assert ok is False
+    assert messages[0].split("\n  - ") == [
+        "declared LOW, computed HIGH, final HIGH",
+        f"comment-only exemption not checked: {why}",
+        f"guarded path(s): {SCRIPT}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [_file(SCRIPT, status="added")],
+        [_file(SCRIPT, status="renamed", previous_filename=".github/scripts/old.py")],
+        [_file(SCRIPT), _file(".github/workflows/w.yml")],
+        [_file("scripts/x.py")],
+    ],
+    ids=["added", "renamed", "a .yml beside it", "no protected path"],
+)
+def test_a_diff_the_rule_does_not_cover_reads_no_source(base, files):
+    api = FakeGitHub(body="Risk: HIGH — x", files=files, contents=_sides([SCRIPT, "scripts/x.py"]))
+    _, messages = _run(base, api)
+    assert _source_reads(api) == []
+    assert "comment-only exemption" not in messages[0]
+
+
+def test_the_rule_reads_at_most_30_files(base):
+    paths = [f"shared/x{i:02}.py" for i in range(31)]
+    api = FakeGitHub(
+        body="Risk: LOW — x", files=[_file(p) for p in paths[:30]], contents=_sides(paths)
+    )
+    assert _run(base, api) == (
+        True,
+        [f"declared LOW, computed LOW, final LOW\n  - {_exempt_line(*paths[:30])}"],
+    )
+    api = FakeGitHub(body="Risk: LOW — x", files=[_file(p) for p in paths], contents=_sides(paths))
+    _, messages = _run(base, api)
+    assert _source_reads(api) == []
+    assert messages[0].split("\n  - ")[:2] == [
+        "declared LOW, computed HIGH, final HIGH",
+        "comment-only exemption not checked: 31 files, more than 30",
+    ]
+
+
 # --- AC3: test weakening -----------------------------------------------------------------
 
 
@@ -525,12 +820,12 @@ def test_a_test_file_without_a_readable_diff_reads_high(base):
 
 # --- AC4: the release is an approval at the current head from a releasing-role holder -----
 
-HIGH_FILES = [_file("shared/x.py")]
+HIGH_FILES = [_file("shared/x.sql")]
 
 
 @pytest.fixture
 def high(base):
-    """Evaluate a PR that touches shared/x.py (HIGH by a guarded path) with the given reviews."""
+    """Evaluate a PR that touches shared/x.sql (HIGH by a guarded path) with the given reviews."""
 
     def run(reviews, permissions, body="Risk: HIGH — rules file", head=HEAD, files=HIGH_FILES):
         api = FakeGitHub(body=body, files=files, reviews=reviews, permissions=permissions)
@@ -624,7 +919,7 @@ def test_an_event_for_a_head_that_has_since_moved_is_red_as_superseded(high):
 
 # --- #2088: an admin author's own HIGH/CRITICAL PR skips the hold ------------------------
 
-HIGH_SUMMARY = "declared HIGH, computed HIGH, final HIGH\n  - guarded path(s): shared/x.py"
+HIGH_SUMMARY = "declared HIGH, computed HIGH, final HIGH\n  - guarded path(s): shared/x.sql"
 HIGH_HOLD = (
     "HIGH holds until a holder of the releasing role (admin, not a Bot account, not "
     "osasuwu-bot) leaves an APPROVED review on the current head aaaaaaa; a new push "
@@ -772,6 +1067,28 @@ def test_main_without_a_bot_login_fails_naming_the_variable(monkeypatch, capsys,
     assert capsys.readouterr().out.strip() == (
         "::error::risk-tier: LANE_BOT_LOGIN is empty; the calling workflow must pass the lane's "
         "bot login"
+    )
+
+
+@pytest.mark.parametrize(
+    ("after", "exempt"),
+    [(CODE + b"# x\n", True), (CODE.replace(b"return 1", b"return 2"), False), (None, False)],
+    ids=["comments only", "code", "unreadable"],
+)
+def test_main_annotates_an_applied_exemption(monkeypatch, capsys, base, after, exempt):
+    contents = {(SCRIPT, MERGE_BASE): CODE, (SCRIPT, HEAD): after}
+    api = FakeGitHub(body="Risk: LOW — x", files=[_file(SCRIPT)], contents=contents)
+    _main_env(monkeypatch, base)
+    with pytest.raises(SystemExit):
+        risk_tier.main(make_client=lambda token: api)
+    notices = [line for line in capsys.readouterr().out.splitlines() if line.startswith("::notice")]
+    assert notices == (
+        [
+            f"::notice title=risk-tier::comment-only exemption: protected path(s) {SCRIPT} "
+            "changed in comments only"
+        ]
+        if exempt
+        else []
     )
 
 

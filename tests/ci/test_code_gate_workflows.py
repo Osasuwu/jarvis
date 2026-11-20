@@ -311,3 +311,37 @@ def test_every_gate_script_call_runs_isolated(spec):
     calls = [m for body in _run_bodies(spec) for m in _GATE_SCRIPT.findall(body)]
     assert calls, "no code_gate_verdict.py call found"
     assert calls == ["python -I"] * len(calls)
+
+
+# --- the review rules: REVIEW.md from the base commit (#2204) ---------------
+
+
+def _reviewer_prompts() -> list[str]:
+    return [s["with"]["prompt"] for s in _steps(REVIEW) if s.get("id") in ("review1", "review2")]
+
+
+def test_stamp_gets_the_rules_blob_prepare_read_before_the_reviewer_ran():
+    """The blob comes from `prepare`, which runs before the reviewer: a reviewer that
+    moved HEAD could not change which rules the evidence names."""
+    (stamp,) = [s for s in _steps(REVIEW) if s.get("name") == "Stamp review evidence"]
+    assert stamp["env"]["RULES_BLOB"] == "${{ steps.prepare.outputs.rules_blob }}"
+
+
+@pytest.mark.parametrize("attempt", [0, 1], ids=["attempt-1", "attempt-2"])
+def test_reviewer_reads_the_rules_from_the_base_checkouts_review_md(attempt):
+    """The rules live in REVIEW.md, not in the prompt: the prompt points at the base
+    copy and calls the PR's own copy data. A class definition back in the prompt would
+    be a second copy that a REVIEW.md edit does not change."""
+    prompt = _reviewer_prompts()[attempt]
+    assert "Read `REVIEW.md` at the root of your working directory" in prompt
+    assert "`.pr-head/REVIEW.md.pr`" in prompt
+    for rule_text in ("reintroduces a bug", "N+1", "outperforms full-context review"):
+        assert rule_text not in prompt
+
+
+@pytest.mark.parametrize("attempt", [0, 1], ids=["attempt-1", "attempt-2"])
+def test_reviewer_prompt_names_exactly_the_classes_the_gate_accepts(attempt):
+    prompt = _reviewer_prompts()[attempt]
+    named = re.search(r"exactly these class names:\s*(.*?)\.\n", prompt, re.S)
+    assert named, "the findings schema no longer names the accepted classes"
+    assert tuple(re.findall(r"`([a-z-]+)`", named.group(1))) == _gate().FINDING_CLASSES

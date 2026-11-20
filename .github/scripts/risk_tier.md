@@ -30,6 +30,38 @@ It runs on `pull_request` (opened, edited, reopened, synchronize) and on `pull_r
 
    Anything the check cannot read (the protected list, `config/plan_review.yaml`, a files
    listing shorter than the PR's `changed_files`) is HIGH: unreadable never reads as clean.
+
+   **Comment-only exemption** (#2201). A diff that matches a protected path loses the path
+   tier, and the classifier loses its shared-surface input, when it changes comments alone.
+   Test weakening, churn and the area count still apply, so a comment-only diff can still
+   read MEDIUM or HIGH. The rule covers Python only. It applies when all of these hold:
+   - Every listed file is a `.py` file with status `modified`. An added, removed or renamed
+     file has no two sides of one path, so the diff gets no exemption. Neither does any
+     other file type, a `.md` or `.yml` beside the Python included.
+   - The PR lists at most 30 files (`MAX_SOURCE_FILES`). Past that, nothing is read, and
+     the summary says `comment-only exemption not checked: <n> files, more than 30`.
+   - Both sides are readable. Each file is read through the contents API at the PR's
+     merge base (from `compare/{base}...{head}`, the commit the file list is a diff
+     against) and at its head. A failed read, or an entry that is not an inline base64
+     file, keeps the floor. That includes a directory and a file over the API's 1 MB
+     inline limit. The summary says `comment-only exemption not checked: <why>`.
+   - The `ast.dump` of both sides is equal. A docstring is a node of the AST, so a
+     docstring edit is a code change here.
+   - Every directive comment is unchanged and at the same anchor: its count of code tokens
+     before it, and whether it trails code on its line. A shebang or coding cookie must
+     also keep its line number. The directives covered are `noqa`, `type:`, `pragma`, `fmt:`, `isort:`,
+     `pylint:`, `mypy:`, `pyright:`, `pyre-`, `ruff:`, `flake8`, `nosec`, `gitleaks:`,
+     `yapf:`, a shebang and a coding cookie, in any case. They steer a linter, a type
+     checker or a scanner, so moving one changes what the code is checked for.
+   - Neither side has a lone CR. Python versions and tools disagree on whether it ends a
+     line, so the line a directive sits on is not well defined.
+   - Neither side fails to decode, parse or tokenize. Any such failure keeps the floor.
+
+   When the exemption applies, the summary carries `comment-only exemption: protected
+   path(s) <paths> changed in comments only`, and the job emits the same text as a
+   `::notice title=risk-tier::` annotation. The annotation is where an adoption count reads
+   it. A new language gets no exemption until it has a comparison rule of its own, as
+   Python's AST is here.
 3. **Final tier = max(computed, declared).** The declared line can raise the tier, never lower it.
 4. LOW and MEDIUM → green. HIGH and CRITICAL → green when **the PR's author holds the releasing
    role (admin)** (#2088): the author of the live PR object (`GET pulls/{n}`) is not a `Bot`
@@ -81,6 +113,8 @@ workflow, not `pull_request_target` (D11/D11b). Host setup: `docs/reference/lane
 Reconciliation with the classifier's exempt short-circuit (docs-only, dependency-bump, …): the
 exemption lowers only the classifier ordinal. It never lowers the path floor, so a docs-only
 change to a `guarded` path stays HIGH.
+The one rule that lowers the path floor is the comment-only exemption above. It decides
+from the code on both sides of the diff, never from the paths alone.
 
 ## The `Risk:` grammar
 

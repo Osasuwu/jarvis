@@ -6,12 +6,16 @@ scheduled task on the routine host. For every line of
 ``config/scheduled-ci.conf`` it reads the workflow's run history through ``gh``
 and sends to Telegram, through ``scripts/notify_telegram.py``:
 
-- a message on the first red run of a workflow, and again when the set of
-  failing jobs changes — an unchanged red streak stays silent;
+- a message on the first red run of a workflow, and again when a job fails
+  that this red streak has not named yet (#2229) — a streak whose failing jobs
+  were all named already stays silent, also when the set flips night to night;
 - every Monday a summary, one line per watched workflow, also when everything
   is green. A missing Monday summary means the reader itself is down.
 
-It sends messages only: it opens no PR and blocks nothing.
+It sends messages only: it opens no PR and blocks nothing. In deferred mode
+(``run(defer=True)``, used by ``scripts/scheduled_ci_fixer.py``, #2226) an alert
+is not sent but queued in ``pending.json`` for the fixing step, which sends it
+with what the agent did.
 
 Split: the decision core (``parse_watch_conf``, ``decide``, ``alert_message``,
 ``weekly_summary``) is pure — no I/O, no clock. ``run`` is the I/O shell: ``gh``
@@ -83,7 +87,7 @@ class Watch:
 class Alert:
     run: dict
     jobs: list[str]
-    previous: list[str] | None  # None: a new red streak; a list: the set it replaced
+    new: list[str] | None  # None: a new red streak; a list: the jobs not named in it before
 
 
 @dataclass(frozen=True)
@@ -137,8 +141,13 @@ def decide(
 ) -> Decision:
     """Walk the runs not handled yet, oldest first, and say what to report.
 
-    ``wstate`` is ``{"cursor": {"id", "attempt"} | None, "red": {"jobs", "since"} | None}``
-    or ``None`` on the first read of a workflow. With no cursor only the newest
+    ``wstate`` is ``{"cursor": {"id", "attempt"} | None, "red": {"jobs", "since",
+    "named"} | None}`` or ``None`` on the first read of a workflow. In an open
+    streak ``jobs`` is the failing set of its last red run and ``named`` every job
+    reported since it began: a run alerts only when one of its failing jobs is not
+    in ``named``, so a flaky job that leaves the set and comes back is not
+    reported twice (#2229). A streak stored before #2229 has no ``named``; its
+    ``jobs`` are taken as named. With no cursor only the newest
     completed run is handled, so a first run does not replay history. ``since``
     (a ``YYYY-MM-DD`` date) replaces the stored state: every run created on or
     after it is walked from a green start.
@@ -164,10 +173,13 @@ def decide(
             jobs = failing_jobs_for(run)
             if red is None:
                 alerts.append(Alert(run, jobs, None))
-                red = {"jobs": jobs, "since": run["created_at"][:10]}
-            elif red["jobs"] != jobs:
-                alerts.append(Alert(run, jobs, red["jobs"]))
-                red = {**red, "jobs": jobs}
+                red = {"jobs": jobs, "since": run["created_at"][:10], "named": jobs}
+            else:
+                named = red.get("named", red["jobs"])
+                new = [job for job in jobs if job not in named]
+                if new:
+                    alerts.append(Alert(run, jobs, new))
+                red = {**red, "jobs": jobs, "named": sorted({*named, *jobs})}
         elif conclusion == GREEN:
             red = None
     return Decision(alerts, {"cursor": cursor, "red": red})
@@ -187,22 +199,20 @@ def _fit(head: str, url: str, limit: int) -> str:
     return f"{head[: max(0, limit - len(url) - 2)]}…\n{url}"
 
 
-def alert_message(watch: Watch, alerts: list[Alert]) -> tuple[str, str]:
+def alert_message(watch: Watch, alerts: list[Alert], reserve: int = 0) -> tuple[str, str]:
     """One message for all of a workflow's alerts, never over Telegram's size.
 
     Telegram refuses a longer text, and an unsent alert is retried the next
     morning, so an oversized message would be rebuilt and refused for ever. The
-    newest alerts are kept and the number left out is said.
+    newest alerts are kept and the number left out is said. ``reserve`` characters
+    are left free for text the caller appends (#2226: the fixer's outcome).
     """
     subject = f"Scheduled CI red: {watch.label}"
-    limit = TELEGRAM_LIMIT - len(subject) - 2  # notify_telegram joins them with "\n\n"
+    # notify_telegram joins subject and body with "\n\n"
+    limit = TELEGRAM_LIMIT - len(subject) - 2 - reserve
     parts = []
     for alert in alerts:
-        what = (
-            "new red run"
-            if alert.previous is None
-            else f"failing jobs changed (was: {', '.join(alert.previous)})"
-        )
+        what = "new red run" if alert.new is None else f"new failing jobs: {', '.join(alert.new)}"
         head = f"{alert.run['created_at'][:10]} — {what}\nFailing jobs: {', '.join(alert.jobs)}"
         parts.append((head, alert.run["html_url"]))
     body = "\n\n".join(_fit(head, url, limit) for head, url in parts)
@@ -307,13 +317,59 @@ def _save_state(state_dir: Path, state: dict) -> None:
     tmp.replace(state_dir / "state.json")
 
 
-def _log(state_dir: Path, kind: str, workflow: str, result: str) -> None:
+def load_pending(state_dir: Path) -> list[dict]:
+    """The alerts queued for the fixing step (#2226), oldest first."""
+    path = state_dir / "pending.json"
+    if not path.is_file():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))["items"]
+
+
+def save_pending(state_dir: Path, items: list[dict]) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tmp = state_dir / "pending.json.tmp"
+    tmp.write_text(json.dumps({"items": items}, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(state_dir / "pending.json")
+
+
+def _queue(state_dir: Path, watch: Watch, decision: Decision, message: tuple[str, str]) -> None:
+    """Store the workflow's alert as its one pending item.
+
+    The run to handle is the newest alerting one. ``state`` is committed only
+    when the item's message is sent, so an item replaced by a later read loses
+    nothing: that read walked from the same cursor and its alert covers it.
+    """
+    alert = decision.alerts[-1]
+    item = {
+        "watch_key": watch.key,
+        "repo": watch.repo,
+        "workflow": watch.workflow,
+        "run_id": alert.run["id"],
+        "html_url": alert.run["html_url"],
+        "head_sha": alert.run.get("head_sha"),
+        "failing_jobs": alert.jobs,
+        "subject": message[0],
+        "body": message[1],
+        "state": decision.state,
+        "created": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    items = load_pending(state_dir)
+    keys = [i["watch_key"] for i in items]
+    if watch.key in keys:
+        items[keys.index(watch.key)] = item
+    else:
+        items.append(item)
+    save_pending(state_dir, items)
+
+
+def _log(state_dir: Path, kind: str, workflow: str, result: str, **extra: object) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     entry = {
         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "kind": kind,
         "workflow": workflow,
         "result": result,
+        **extra,
     }
     with (state_dir / "log.jsonl").open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -333,8 +389,15 @@ def run(
     env: Mapping[str, str],
     dry_run: bool = False,
     since: str | None = None,
+    defer: bool = False,
+    outcome_room: int = 0,
 ) -> int:
     """Read every watched workflow, send what is due, remember what was sent.
+
+    With ``defer`` a workflow's alert is not sent: it is queued in
+    ``pending.json`` (also in a dry run, which is how the fixer's dry run gets
+    its items) with ``outcome_room`` characters left free in it, and the
+    workflow's state stays uncommitted until the fixer sends the item.
 
     Returns the exit code: 0, or 1 when any read or any send failed.
     """
@@ -387,6 +450,9 @@ def run(
                     f"{NAME}: GAP — {watch.label}: the last handled run is older than the "
                     f"{PER_PAGE} runs read; runs in between were not read"
                 )
+        if decision.alerts and defer:
+            _queue(state_dir, watch, decision, alert_message(watch, decision.alerts, outcome_room))
+            continue  # state not committed: the fixer commits it with the item's message
         if decision.alerts and not deliver(
             "alert", watch.key, alert_message(watch, decision.alerts)
         ):
@@ -407,6 +473,38 @@ def run(
         print("--- state a live run would write ---")
         print(json.dumps(state, indent=2, ensure_ascii=False))
     return code
+
+
+HOST_REFUSAL = (
+    f"refused: routines are host-only ({DEVICE_CONF_RELPATH} routine_host != true); "
+    "use --dry-run to read without sending."
+)
+
+
+def since_problem(since: str | None, dry_run: bool) -> str | None:
+    """Why ``--since`` cannot be taken, or ``None``."""
+    if since is None:
+        return None
+    if not dry_run:
+        return "--since needs --dry-run"
+    try:
+        # Runs are compared with it as text, so only the exact form is taken:
+        # "20261031" is a date to fromisoformat and matches no run.
+        if date.fromisoformat(since).isoformat() != since:
+            raise ValueError(since)
+    except ValueError:
+        return "--since is not a YYYY-MM-DD date"
+    return None
+
+
+def on_routine_host(root: Path) -> bool:
+    """Same gate as /weekly-release Step 0: one device is the routine host, every
+    other one refuses a live run, so two devices never report the same run."""
+    try:
+        device = json.loads((root / DEVICE_CONF_RELPATH).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(device, dict) and is_routine_host(device)
 
 
 def main(
@@ -430,33 +528,13 @@ def main(
     args = parser.parse_args(argv)
     root = root or Path(__file__).resolve().parents[1]
 
-    if args.since is not None:
-        if not args.dry_run:
-            print(f"{NAME}: --since needs --dry-run", file=sys.stderr)
-            return 2
-        try:
-            # Runs are compared with it as text, so only the exact form is taken:
-            # "20261031" is a date to fromisoformat and matches no run.
-            if date.fromisoformat(args.since).isoformat() != args.since:
-                raise ValueError(args.since)
-        except ValueError:
-            print(f"{NAME}: --since is not a YYYY-MM-DD date", file=sys.stderr)
-            return 2
-
-    if not args.dry_run:
-        # Same gate as /weekly-release Step 0: one device is the routine host,
-        # every other one refuses, so two devices never report the same run.
-        try:
-            device = json.loads((root / DEVICE_CONF_RELPATH).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            device = {}
-        if not isinstance(device, dict) or not is_routine_host(device):
-            print(
-                f"refused: routines are host-only ({DEVICE_CONF_RELPATH} routine_host != true); "
-                "use --dry-run to read without sending.",
-                file=sys.stderr,
-            )
-            return 1
+    problem = since_problem(args.since, args.dry_run)
+    if problem:
+        print(f"{NAME}: {problem}", file=sys.stderr)
+        return 2
+    if not args.dry_run and not on_routine_host(root):
+        print(HOST_REFUSAL, file=sys.stderr)
+        return 1
 
     try:
         watches = parse_watch_conf((root / WATCH_CONF_RELPATH).read_text(encoding="utf-8"))

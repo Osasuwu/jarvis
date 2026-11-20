@@ -17,7 +17,10 @@ Verdict, in order:
 2. the computed tier is the highest of: a changed path in the `guarded` bucket of the host
    base's `config/protected-paths.json` entry (HIGH; the other buckets set no floor, #2200),
    test weakening (HIGH), and the plan classifier's ordinal (3 -> HIGH, 2 -> MEDIUM,
-   1 -> LOW). Anything unreadable is HIGH;
+   1 -> LOW). Anything unreadable is HIGH.
+   A diff of modified `.py` files whose two sides (merge base, head; read through the
+   contents API) differ in plain comments alone loses the path floor and the classifier's
+   shared-surface input (the comment-only exemption, #2201);
 3. final tier = max(computed, declared). LOW and MEDIUM pass;
 4. HIGH and CRITICAL pass when the live PR's author holds the releasing role: `admin`
    permission, not a `Bot` account, not the lane's bot (#2088). Every other author's HIGH or
@@ -30,12 +33,17 @@ the pinned code root, and the shared GitHub client `github_client.py` beside thi
 (#2068), loaded by file path at import.
 """
 
+import ast
+import base64
 import collections
+import dataclasses
 import fnmatch
 import importlib.util
+import io
 import os
 import re
 import sys
+import tokenize
 import urllib.parse
 from pathlib import Path
 
@@ -73,6 +81,7 @@ HOLD_TIERS = ("HIGH", "CRITICAL")
 GRAMMAR = "Risk: LOW|MEDIUM|HIGH|CRITICAL — <reason>"
 DOC = ".github/scripts/risk_tier.md"
 HOST_SETUP_DOC = "docs/reference/lane-host-setup.md"
+EXEMPTION = "comment-only exemption"
 # A Dependabot PR carries upstream release notes, not a Risk line, so its body is not read and
 # its declared tier is fixed (#2059). HIGH: only a releasing-role holder's head-SHA approval
 # releases it.
@@ -82,6 +91,9 @@ DEPENDABOT_TIER = "HIGH"
 # reaches its cap fails closed, never reads as whole.
 MAX_FILE_PAGES = 30
 MAX_REVIEW_PAGES = 10
+# The comment-only exemption reads two blobs per file; past this many files it reads none
+# and the floor stands (#2201).
+MAX_SOURCE_FILES = 30
 
 _COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
@@ -107,6 +119,23 @@ _SKIP_MARKERS = (
     "collect_ignore",
 )
 _TEST_BASENAMES = ("test_*.py", "*_test.py", "conftest.py")
+
+# The comment-only exemption (#2201). A comment some tool or the interpreter reads: decision
+# "Three risk tiers" names noqa, type: ignore, pragma and fmt:; the rest change a linter's, a
+# type checker's or a scanner's verdict just the same (the set redrobot#3368 chose). Matched
+# anywhere in the comment, case-insensitively: a prose comment that only looks like one costs
+# the exemption, nothing more.
+_DIRECTIVE = re.compile(
+    r"^#!|noqa|type\s*:|pragma|fmt\s*:|yapf\s*:|isort\s*:|pylint\s*:|mypy\s*:|pyright\s*:"
+    r"|pyre-|ruff\s*:|flake8|nosec|gitleaks\s*:|coding[:=]",
+    re.IGNORECASE,
+)
+# A CR not followed by LF. Python versions and tools disagree on whether it ends a line
+# (tokenize on 3.12+ says no, 3.11 and ruff say yes), so the line a directive sits on is
+# not well defined: no exemption.
+_LONE_CR = re.compile(rb"\r(?!\n)")
+# A shebang or a coding cookie: read by position, on the first line or two.
+_HEADER = re.compile(r"^#!|coding[:=]", re.IGNORECASE)
 
 
 def _visible_lines(body):
@@ -171,35 +200,137 @@ def path_tier(paths, repo, host_root):
     classifier and test weakening like any other path. A host with no list, or none for this repo, is HIGH on every diff: the reason names the
     fix (D2, D7), so a host that has not finished enabling the lane reads it in the check.
     """
+    tier, reasons, _ = _path_floor(paths, repo, host_root)
+    return tier, reasons
+
+
+def _path_floor(paths, repo, host_root):
+    """`(tier, reasons, matched)`: :func:`path_tier`'s verdict plus the protected paths that
+    matched. `matched` is empty unless the floor comes from a match, so a list that cannot be
+    read never offers the comment-only exemption anything to drop."""
     if host_root is None:
-        return "HIGH", [
-            "RISK_TIER_HOST_ROOT is not set: no host checkout to read "
-            "config/protected-paths.json from"
-        ]
+        return (
+            "HIGH",
+            [
+                "RISK_TIER_HOST_ROOT is not set: no host checkout to read "
+                "config/protected-paths.json from"
+            ],
+            (),
+        )
     adopt = f"every diff is HIGH until the host adds it (D2, {HOST_SETUP_DOC})"
     try:
         policy = path_policy.load_policy(Path(host_root) / "config" / "protected-paths.json")
         buckets = policy.buckets(repo)
     except path_policy.UnknownRepoError:
-        return "HIGH", [
-            f"config/protected-paths.json has no entry for {repo} at the base commit: {adopt}"
-        ]
+        why = f"config/protected-paths.json has no entry for {repo} at the base commit: {adopt}"
+        return "HIGH", [why], ()
     except path_policy.MalformedBucketError:
-        return "HIGH", [
+        why = (
             f"protected-path list for {repo} has a bucket that is not a list of globs: fail closed"
-        ]
+        )
+        return "HIGH", [why], ()
     except FileNotFoundError:
-        return "HIGH", [f"config/protected-paths.json not found at the base commit: {adopt}"]
+        return "HIGH", [f"config/protected-paths.json not found at the base commit: {adopt}"], ()
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        return "HIGH", [
-            f"protected-path list unreadable at base ({type(exc).__name__}): fail closed"
-        ]
+        why = f"protected-path list unreadable at base ({type(exc).__name__}): fail closed"
+        return "HIGH", [why], ()
     if not any(buckets.values()):
-        return "HIGH", [f"protected-path list for {repo} has no globs at the base commit: {adopt}"]
+        why = f"protected-path list for {repo} has no globs at the base commit: {adopt}"
+        return "HIGH", [why], ()
     verdict = path_policy.classify_buckets(paths, buckets)
     if verdict.risk_floor == "HIGH":
-        return "HIGH", [f"guarded path(s): {', '.join(verdict.risk_matched)}"]
-    return "LOW", []
+        matched = tuple(verdict.risk_matched)
+        return "HIGH", [f"guarded path(s): {', '.join(map(_clean, matched))}"], matched
+    return "LOW", [], ()
+
+
+def _directives(source):
+    """Each directive comment of `source` (bytes) with its anchor: the number of code tokens
+    before it, and whether it trails code on its line. Comments and blank lines do not move
+    the anchor, so a plain comment added next to a directive leaves it in place; a directive
+    moved to another line of code, or from its own line onto a line of code, does not. A
+    shebang or coding cookie works only on the first lines, so its line number counts too."""
+    anchor, last, found = 0, None, []
+    for tok in tokenize.tokenize(io.BytesIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            if _DIRECTIVE.search(tok.string):
+                trailing = last is not None and last.end[0] == tok.start[0]
+                row = tok.start[0] if _HEADER.search(tok.string) else None
+                found.append((anchor, trailing, row, tok.string))
+        elif tok.type != tokenize.NL:
+            anchor += 1
+            if tok.type not in (tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT):
+                last = tok
+    return found
+
+
+def is_comment_only_edit(before, after):
+    """True when `before` -> `after` (bytes) changes plain comments alone (#2201).
+
+    The AST is equal, and a docstring is a node of it, so a docstring edit fails here; every
+    directive comment is unchanged and at the same anchor. A missing side, a lone CR, or a
+    side that does not decode, parse or tokenize is False: the rule fails closed.
+    """
+    try:
+        if _LONE_CR.search(before) or _LONE_CR.search(after):
+            return False
+        if ast.dump(ast.parse(before)) != ast.dump(ast.parse(after)):
+            return False
+        return _directives(before) == _directives(after)
+    except Exception:  # anything the rule cannot read is no exemption
+        return False
+
+
+def is_comment_only(files, sources):
+    """True when every listed file is a `.py` file whose `(before, after)` in `sources` is a
+    comment-only edit. A file with no entry, or any other language, means no exemption: a
+    new language gets none until it has a rule of its own (risk_tier.md)."""
+    if not files or not sources:
+        return False
+    for f in files:
+        pair = sources.get(f["filename"])
+        if not _covered(f) or pair is None or not is_comment_only_edit(*pair):
+            return False
+    return True
+
+
+def _covered(f):
+    """A modified `.py` file: added, removed or renamed has no two sides of one path."""
+    return f.get("status") == "modified" and f["filename"].endswith(".py")
+
+
+def read_sources(api, repo, pr, files):
+    """`(sources, note)` for :func:`computed_tier`: each file at the PR's merge base and at
+    its head, the two commits its file list is a diff of. Nothing is read when a file is not
+    covered or there are more than MAX_SOURCE_FILES; any failure reads as no sources."""
+    if not files or not all(_covered(f) for f in files):
+        return None, ""
+    if len(files) > MAX_SOURCE_FILES:
+        return None, f"{EXEMPTION} not checked: {len(files)} files, more than {MAX_SOURCE_FILES}"
+    head = pr["head"]["sha"]
+    try:
+        compare = api("GET", f"repos/{repo}/compare/{pr['base']['sha']}...{head}")
+        merge_base = compare["merge_base_commit"]["sha"]
+        return {
+            f["filename"]: (
+                _blob(api, repo, f["filename"], merge_base),
+                _blob(api, repo, f["filename"], head),
+            )
+            for f in files
+        }, ""
+    except Exception as exc:  # what cannot be read keeps the floor
+        return None, f"{EXEMPTION} not checked: {_clean(str(exc))}"
+
+
+def _blob(api, repo, path, ref):
+    entry = api("GET", f"repos/{repo}/contents/{urllib.parse.quote(path)}?ref={ref}")
+    if not (
+        isinstance(entry, dict)
+        and entry.get("type") == "file"
+        and entry.get("encoding") == "base64"
+    ):  # a directory, a submodule, or a file over the contents API's 1 MB inline limit
+        raise ValueError(f"{path}@{ref[:7]} is not an inline file")
+    return base64.b64decode(entry["content"])
 
 
 def test_weakening(files):
@@ -240,30 +371,54 @@ def _changed_paths(files):
     return tuple(p for f in files for p in (f["filename"], f.get("previous_filename")) if p)
 
 
-def classifier_tier(files, code_root):
+def classifier_tier(files, code_root, shared_surface=True):
+    """The plan classifier's ordinal as a tier. `shared_surface=False` drops its shared-surface
+    input (the `guarded` bucket again), for a diff the comment-only exemption covers."""
     paths = _changed_paths(files)
     churn = sum(f.get("additions", 0) + f.get("deletions", 0) for f in files)
     try:
         config = load_plan_review_config(Path(code_root) / "config" / "plan_review.yaml")
     except Exception as exc:  # unreadable config must not read as a clean diff
         return "HIGH", [f"plan_review.yaml unreadable ({type(exc).__name__}): fail closed"]
+    if not shared_surface:
+        config = dataclasses.replace(
+            config, class_2=dataclasses.replace(config.class_2, shared_surface_globs=())
+        )
     ordinal = classify(config, ChangeSet(paths, churn, prod_areas_from_paths(paths)))
     return {1: "LOW", 2: "MEDIUM", 3: "HIGH"}[ordinal], (
         [f"classifier ordinal {ordinal}"] if ordinal > 1 else []
     )
 
 
-def computed_tier(files, changed_files, repo, host_root, code_root=CODE_ROOT):
-    """`(tier, reasons)` from the diff alone; the declared line cannot lower it."""
+def computed_tier(files, changed_files, repo, host_root, code_root=CODE_ROOT, read_sources=None):
+    """`(tier, reasons)` from the diff alone; the declared line cannot lower it.
+
+    `read_sources()` returns `(sources, note)`: each listed file's `(before, after)` bytes, or
+    None, and a line for the log. It is called only when a protected path matched, and a diff
+    it shows to change comments alone (:func:`is_comment_only`) loses the path floor and the
+    classifier's shared-surface input, nothing else (#2201).
+    """
     tiers, reasons = [], []
     if len(files) < changed_files:
         tiers.append("HIGH")
         reasons.append(f"only {len(files)} of {changed_files} changed files listable: fail closed")
     paths = _changed_paths(files)
+    floor = _path_floor(paths, repo, host_root)
+    exempt = False
+    if floor[2] and read_sources is not None:
+        sources, note = read_sources()
+        if note:
+            reasons.append(note)
+        exempt = is_comment_only(files, sources)
+    if exempt:
+        reasons.append(
+            f"{EXEMPTION}: protected path(s) {', '.join(map(_clean, floor[2]))} changed in comments only"
+        )
+        floor = ("LOW", [], ())
     for tier, why in (
-        path_tier(paths, repo, host_root),
+        floor[:2],
         ("HIGH", test_weakening(files)),
-        classifier_tier(files, code_root),
+        classifier_tier(files, code_root, shared_surface=not exempt),
     ):
         if why:
             tiers.append(tier)
@@ -349,7 +504,12 @@ def evaluate(api, repo, number, event_head_sha, host_root, bot, code_root=CODE_R
     except github_client.ListingTruncated as exc:
         files, truncated = exc.items, f"files listing truncated at {MAX_FILE_PAGES} pages"
     computed, reasons = computed_tier(
-        files, pr.get("changed_files", len(files)), repo, host_root, code_root
+        files,
+        pr.get("changed_files", len(files)),
+        repo,
+        host_root,
+        code_root,
+        read_sources=lambda: read_sources(api, repo, pr, files),
     )
     if truncated:  # what went unread could be any path: a hold tier, CRITICAL still reachable
         computed = max(computed, "HIGH", key=SEVERITY.index)
@@ -407,6 +567,9 @@ def main(make_client=None):
     )
     for line in messages:
         print(line)
+    for reason in messages[0].split("\n  - ")[1:]:
+        if reason.startswith(f"{EXEMPTION}:"):  # where the review retro counts it (#2201)
+            print(f"::notice title=risk-tier::{reason}")
     if not ok:
         print(f"::error::{messages[-1]}")
     sys.exit(0 if ok else 1)
