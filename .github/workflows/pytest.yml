@@ -12,6 +12,12 @@ on:
   push:
     branches: [main]
 
+# An explicit `bash` runs every `run:` step with `-eo pipefail` (#2142,
+# tests/ci/test_workflow_run_fail_fast.py).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   lockfile-check:
     runs-on: ubuntu-latest

@@ -36,6 +36,12 @@ permissions:
   issues: write
   pull-requests: read
 
+# An explicit `bash` runs every `run:` step with `-eo pipefail` (#2142,
+# tests/ci/test_workflow_run_fail_fast.py).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # Which issues does this event touch, and with which planner? A PR event
   # writes labels on the issues it closes, and those numbers exist only after
