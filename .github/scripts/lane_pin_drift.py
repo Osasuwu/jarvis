@@ -40,6 +40,7 @@ PINNED_PATHS = (
     ".github/scripts/lane_ledger.py",
     ".github/scripts/risk_tier.py",
     ".github/scripts/github_client.py",
+    ".github/scripts/code_gate_verdict.py",
     "agents/__init__.py",
     "agents/plan_lock.py",
     "agents/plan_classifier.py",

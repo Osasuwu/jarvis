@@ -201,6 +201,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     steps:
@@ -208,6 +209,15 @@ jobs:
         with:
           bot-login: <bot login>
 ```
+
+**The reviewer's raise (#2202).** From a pin at or past #2202, the check also reads the CI
+reviewer's tier raise from the review evidence of the host's `.github/workflows/code-review.yml`
+(`actions: read` above), and stays red as "waiting for the code review" until a successful review
+run has left evidence for the head. A host without that workflow file reads no raise and does not
+wait. A host with it also needs the re-run job, or `risk-tier` stays red until the next PR event
+after the review: copy the `risk-tier-redecide` job of jarvis's `code-gate-verdict.yml` and
+`.github/scripts/risk_tier_redecide.py` into the host's verdict workflow, with the verdict job
+waiting for it. Details: `.github/scripts/risk_tier.md`, "The reviewer's raise".
 
 Declare no `concurrency` in a lane caller, at workflow or job level: the group belongs to
 `lane.yml` (cap 1 per host repo, `queue: max`, `cancel-in-progress: false`), and a caller group
