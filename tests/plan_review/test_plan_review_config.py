@@ -96,9 +96,14 @@ def test_repo_config_covers_supabase_as_a_shared_surface() -> None:
 
 def test_repo_config_reads_its_shared_surface_from_the_guarded_bucket() -> None:
     """#2067: the shared-surface globs are jarvis's `guarded` bucket in
-    config/protected-paths.json, not a second list kept in sync by hand."""
+    config/protected-paths.json, not a second list kept in sync by hand.
+    REVIEW.md joined the bucket in #2211 (#2204)."""
     cfg = load_plan_review_config(_REPO_CONFIG)
-    assert cfg.class_2.shared_surface_globs == ("supabase/**", "config/repos.conf")
+    assert cfg.class_2.shared_surface_globs == (
+        "supabase/**",
+        "config/repos.conf",
+        "REVIEW.md",
+    )
 
 
 def test_a_config_still_listing_shared_surface_globs_is_rejected(tmp_path: Path) -> None:
